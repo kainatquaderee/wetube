@@ -19,7 +19,7 @@ resolves.
 ## Features
 
 **Playback**
-- Media3/ExoPlayer, H.264/AAC preferred for hardware decode, up to 2160p
+- Media3/ExoPlayer, H.264/AAC for hardware decode, 1080p by default with 4K fallback
 - Separate high-quality video + audio tracks merged automatically
 - Live streams via HLS
 - Background audio via `MediaSessionService`, media notification, lock screen
@@ -46,14 +46,17 @@ resolves.
 
 ## Install
 
-Grab `app-release.apk` from
-[Releases](https://github.com/kainatquaderee/wetube/releases), or from the
-artifacts of any successful [CI run](https://github.com/kainatquaderee/wetube/actions),
-then:
+Grab `app-release.apk` from the
+[latest release](https://github.com/kainatquaderee/wetube/releases/latest), or
+from the artifacts of any successful
+[CI run](https://github.com/kainatquaderee/wetube/actions), then:
 
 ```bash
 adb install -r app-release.apk
 ```
+
+Release APKs are signed with the project key; `apksigner verify --print-certs`
+prints `CN=WeTube`.
 
 The debug build carries a `.debug` application id, so it can sit next to the
 release build without replacing it.
