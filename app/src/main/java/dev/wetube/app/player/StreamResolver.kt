@@ -36,12 +36,32 @@ object StreamResolver {
         val bestVideo = pickVideo(p.videoOnly)
         val bestMuxed = p.muxed.maxByOrNull { it.height }
 
+        // HLS wins whenever a backend offers it: one adaptive stream, no
+        // separate audio track, and (in direct mode) it is the only URL shape
+        // this network lets us read to the end of a long video.
+        p.hls?.takeIf { it.isNotBlank() }?.let { url ->
+            return MediaItem.Builder()
+                .setUri(url)
+                .setMimeType(MimeTypes.APPLICATION_M3U8)
+                .setMediaMetadata(metadata)
+                .build()
+        }
+
         if (audioOnly) {
             val track = bestAudio ?: bestMuxed
             return track?.let { build(it.url, it.mime, metadata) }
         }
 
-        if (bestVideo != null && bestAudio != null && bestVideo.url.isNotBlank() && bestAudio.url.isNotBlank()) {
+        // Prefer the muxed track when a backend offers one. It needs a single
+        // connection and avoids pairing URLs that can expire independently;
+        // separate tracks are the main source of 403s after the first segment.
+        bestMuxed?.takeIf { it.url.isNotBlank() }?.let { track ->
+            return build(track.url, track.mime, metadata)
+        }
+
+        if (bestVideo != null && bestAudio != null &&
+            bestVideo.url.isNotBlank() && bestAudio.url.isNotBlank()
+        ) {
             val uri = Uri.Builder()
                 .scheme(MERGE_SCHEME)
                 .appendQueryParameter("video", bestVideo.url)

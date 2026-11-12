@@ -61,7 +61,10 @@ class StreamSourceFactory(
             return hls.createMediaSource(mediaItem)
         }
 
-        return delegate.createMediaSource(mediaItem)
+        // Everything else is a plain progressive URL: keep it on OkHttp too, so
+        // a single-file stream cannot fall back to the platform's IPv6-first
+        // resolver and stall.
+        return progressive.createMediaSource(mediaItem)
     }
 
     override fun getSupportedTypes(): IntArray = delegate.supportedTypes

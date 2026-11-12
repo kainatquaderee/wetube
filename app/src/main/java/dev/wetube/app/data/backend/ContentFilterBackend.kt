@@ -75,7 +75,11 @@ class ContentFilterBackend(
 
     override suspend fun related(id: String): List<VideoItem> = visible(delegate.related(id))
 
+    override suspend fun shorts(): List<VideoItem> = visible(delegate.shorts())
+
     override suspend fun suggestions(query: String): List<String> = delegate.suggestions(query)
+
+    override suspend fun subscriptions(): List<VideoItem> = visible(delegate.subscriptions())
 
     private fun isAgeWall(message: String?): Boolean {
         val text = message.orEmpty()

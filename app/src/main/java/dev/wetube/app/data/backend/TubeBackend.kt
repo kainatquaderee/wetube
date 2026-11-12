@@ -31,6 +31,12 @@ interface TubeBackend {
 
     suspend fun related(id: String): List<VideoItem> = emptyList()
 
+    /** A Shorts feed for the dedicated Shorts section. */
+    suspend fun shorts(): List<VideoItem> = emptyList()
+
+    /** The signed-in account's subscriptions. Empty when not signed in. */
+    suspend fun subscriptions(): List<VideoItem> = emptyList()
+
     /** Query autocomplete. Backends that cannot answer return an empty list. */
     suspend fun suggestions(query: String): List<String> = emptyList()
 }

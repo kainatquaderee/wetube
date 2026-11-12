@@ -183,8 +183,11 @@ Compose nav graph.
 arrive through Phenotype; images go through Glide with modern codec support.
 
 **What WeTube does.** Preferences DataStore for settings and a JSON-encoded local
-library (history, favourites, resume points). No account, no experiments, no
-remote flags. Coil for images (OkHttp-backed, Coroutine-friendly).
+library (history, favourites, resume points, local subscriptions). Signing in is
+optional: an in-app browser session is harvested into the app's private storage
+and used only for the web surfaces, so feeds and subscriptions can be personal
+while playback stays anonymous. No experiments, no remote flags. Coil for
+images (OkHttp-backed, Coroutine-friendly).
 
 ---
 
@@ -227,7 +230,9 @@ in the dependency graph.
 | — | **SponsorBlock auto-skip** (new) |
 | — | **Return YouTube Dislike** (new) |
 | — | **Instance failover** (new) |
-| — | **Local-only library, no account** (new) |
+| — | **Local-only library, optional account** (new) |
+| — | **Backup file to Drive/anywhere** (new) |
+| — | **Shorts section** (new) |
 
 ---
 

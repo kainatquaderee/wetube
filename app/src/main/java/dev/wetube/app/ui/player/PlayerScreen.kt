@@ -55,6 +55,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import dev.wetube.app.data.extras.SponsorSegment
@@ -131,6 +133,7 @@ class PlayerViewModel(
                     dislikes = dislikes,
                     favourite = favourite,
                 )
+                recoveries = 0
             }.onFailure {
                 if (dev.wetube.app.BuildConfig.DEBUG) {
                     android.util.Log.d(
@@ -138,11 +141,7 @@ class PlayerViewModel(
                         "player load failed: ${it::class.java.simpleName} msg=${it.message}",
                     )
                 }
-                val message = friendlyError(it)
-                if (dev.wetube.app.BuildConfig.DEBUG) {
-                    android.util.Log.d("WeTube", "friendlyError -> [${message.length}] $message")
-                }
-                state = state.copy(loading = false, error = message)
+                state = state.copy(loading = false, error = friendlyError(it))
             }
         }
     }
@@ -182,6 +181,40 @@ class PlayerViewModel(
         state = state.copy(descriptionExpanded = !state.descriptionExpanded)
     }
 
+    /**
+     * Media URLs can expire or be rejected by the CDN. Re-resolve the video and
+     * resume where the listener stopped instead of leaving them on an error
+     * screen.
+     */
+    fun recoverPlayback(positionMs: Long) {
+        if (recoveries >= 3) {
+            state = state.copy(
+                error = state.error
+                    ?: "Playback stopped because YouTube refused the stream. Try again, or pick another video.",
+            )
+            return
+        }
+        recoveries += 1
+        viewModelScope.launch {
+            runCatching {
+                val settings = locator.settings.settings.first()
+                val detail = locator.backend().video(videoId)
+                val item = StreamResolver.mediaItem(detail, settings.audioOnly)
+                    ?: error("This video has no playable streams any more.")
+                state = state.copy(detail = detail, error = null)
+                locator.playback.play(
+                    item = item,
+                    speed = settings.playbackSpeed,
+                    startAtMs = positionMs,
+                )
+            }.onFailure {
+                state = state.copy(error = friendlyError(it))
+            }
+        }
+    }
+
+    private var recoveries = 0
+
     companion object {
         fun factory(locator: ServiceLocator, videoId: String) = viewModelFactory {
             initializer { PlayerViewModel(locator, videoId) }
@@ -215,6 +248,23 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(controller) { playerView.player = controller }
+
+    DisposableEffect(controller) {
+        val player = controller ?: return@DisposableEffect onDispose { }
+        val listener = object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                // Re-resolving helps with expired URLs and flaky connections. A
+                // decode/unsupported error would fail identically on retry, so
+                // only network and HTTP failures are retried.
+                val retryable = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+                if (retryable) viewModel.recoverPlayback(player.currentPosition)
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
 
     DisposableEffect(Unit) {
         onDispose {

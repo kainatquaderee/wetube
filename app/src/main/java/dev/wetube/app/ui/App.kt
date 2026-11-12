@@ -3,6 +3,7 @@ package dev.wetube.app.ui
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -23,17 +24,21 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.ui.auth.SignInScreen
 import dev.wetube.app.ui.channel.ChannelScreen
+import dev.wetube.app.ui.credits.CreditsScreen
 import dev.wetube.app.ui.home.HomeScreen
 import dev.wetube.app.ui.library.LibraryScreen
 import dev.wetube.app.ui.player.PlayerScreen
 import dev.wetube.app.ui.search.SearchScreen
 import dev.wetube.app.ui.settings.SettingsScreen
+import dev.wetube.app.ui.shorts.ShortsScreen
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
 private val tabs = listOf(
     Tab("home", "Home", Icons.Default.Home),
+    Tab("shorts", "Shorts", Icons.Default.PlayCircle),
     Tab("search", "Search", Icons.Default.Search),
     Tab("library", "Library", Icons.Default.VideoLibrary),
     Tab("settings", "Settings", Icons.Default.Settings),
@@ -82,6 +87,9 @@ fun WeTubeRoot(locator: ServiceLocator, startVideoId: String? = null) {
                     onChannelClick = { id -> navController.navigate("channel/$id") },
                 )
             }
+            composable("shorts") {
+                ShortsScreen(locator = locator)
+            }
             composable("search") {
                 SearchScreen(
                     locator = locator,
@@ -93,10 +101,24 @@ fun WeTubeRoot(locator: ServiceLocator, startVideoId: String? = null) {
                 LibraryScreen(
                     locator = locator,
                     onVideoClick = { id -> navController.navigate("watch/$id") },
+                    onChannelClick = { id -> navController.navigate("channel/$id") },
                 )
             }
             composable("settings") {
-                SettingsScreen(locator = locator)
+                SettingsScreen(
+                    locator = locator,
+                    onSignIn = { navController.navigate("signin") },
+                    onCredits = { navController.navigate("credits") },
+                )
+            }
+            composable("credits") {
+                CreditsScreen(onBack = { navController.popBackStack() })
+            }
+            composable("signin") {
+                SignInScreen(
+                    locator = locator,
+                    onDone = { navController.popBackStack() },
+                )
             }
             composable(
                 route = "watch/{videoId}",

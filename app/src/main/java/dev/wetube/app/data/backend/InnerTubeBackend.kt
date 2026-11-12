@@ -1,6 +1,7 @@
 package dev.wetube.app.data.backend
 
 import dev.wetube.app.BuildConfig
+import dev.wetube.app.data.auth.AuthStore
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.Playback
@@ -19,6 +20,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.coroutines.sync.withLock
+import android.os.SystemClock
 import java.io.IOException
 import java.net.URLEncoder
 
@@ -30,12 +32,15 @@ import java.net.URLEncoder
  * that tree as generic JSON instead of binding DTOs, so new fields on
  * YouTube's side do not break deserialization.
  *
- * Two client profiles are used, because they are good at different things:
+ * Two client profiles carry the load, because they are good at different
+ * things:
  *
- * | profile      | used for                  | why                                  |
- * |--------------|---------------------------|--------------------------------------|
- * | `ANDROID_VR` | player, home, channel     | returns plain (non-ciphered) URLs    |
- * | `WEB`        | search, suggestions       | richer cards: duration + upload date |
+ * | profile      | used for                      | why                              |
+ * |--------------|-------------------------------|----------------------------------|
+ * | `ANDROID`    | playback                      | plain progressive URLs, no `n`   |
+ * | `ANDROID_VR` | anonymous home, channel, next | only client that answers those   |
+ * | `WEB`        | signed-in feed, subscriptions | the only surface that takes a    |
+ * |              |                               | session (native clients 400 it)  |
  *
  * Fragility is expected: profiles get rotated or gated by YouTube. That is why
  * [TubeBackend] exists and Invidious/Piped remain selectable in Settings.
@@ -43,6 +48,7 @@ import java.net.URLEncoder
 class InnerTubeBackend(
     private val http: JsonHttp,
     private val region: String,
+    private val auth: AuthStore,
 ) : TubeBackend {
 
     override val displayName: String = "Direct (InnerTube)"
@@ -53,6 +59,12 @@ class InnerTubeBackend(
         /** Numeric id YouTube uses for this client in `X-Youtube-Client-Name`. */
         val clientId: String,
         val version: String,
+        /**
+         * Whether this client accepts a session. The native clients answer a
+         * cookie-bearing request with HTTP 400 `INVALID_ARGUMENT`, so they are
+         * never given one; only the web clients can speak for an account.
+         */
+        val acceptsAuth: Boolean = true,
     )
 
     // 1.65.10 is deliberate. Older ANDROID_VR builds (1.60.x) now get
@@ -66,6 +78,7 @@ class InnerTubeBackend(
         userAgent = vrUa,
         clientId = "28",
         version = "1.65.10",
+        acceptsAuth = false,
         context = clientContext(
             name = "ANDROID_VR",
             version = "1.65.10",
@@ -95,6 +108,36 @@ class InnerTubeBackend(
     )
 
     /**
+     * The plain Android client.
+     *
+     * It is the workhorse for playback: it hands out un-ciphered progressive
+     * URLs, and those URLs stay readable for the whole video here (a two-hour
+     * 360p file downloaded end to end). Other clients either answer with
+     * sign-in challenges, SABR-only responses, or URLs that stop working after
+     * 64 MB.
+     *
+     * It cannot be combined with cookies: YouTube rejects ANDROID requests that
+     * carry a session ("invalid argument"), so [call] skips the auth headers
+     * for this profile.
+     */
+    private val androidClient = Profile(
+        userAgent = "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip",
+        clientId = "3",
+        version = "21.02.35",
+        acceptsAuth = false,
+        context = clientContext(
+            name = "ANDROID",
+            version = "21.02.35",
+            extra = mapOf(
+                "androidSdkVersion" to 30,
+                "userAgent" to "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip",
+                "osName" to "Android",
+                "osVersion" to "11",
+            ),
+        ),
+    )
+
+    /**
      * YouTube binds freshness to a visitor id. Without one, most player calls
      * are answered with a bot challenge no matter how correct the rest of the
      * request is. We cache whatever the last response handed us and fall back
@@ -102,6 +145,39 @@ class InnerTubeBackend(
      */
     @Volatile
     private var visitorCache: String = ""
+
+    /** The `WEB` client version the homepage currently advertises. */
+    @Volatile
+    private var webVersionCache: String = ""
+
+    /**
+     * The player signature timestamp (`sts`). The desktop player rejects a
+     * request that omits it with "The page needs to be reloaded.", and it can
+     * only be read from a watch page, so it is cached for an hour at a time.
+     */
+    @Volatile
+    private var stsCache: Int = 0
+    @Volatile
+    private var stsAt: Long = 0L
+
+    private suspend fun signatureTimestamp(id: String): Int {
+        val age = SystemClock.elapsedRealtime() - stsAt
+        if (stsCache > 0 && age < 60 * 60 * 1000L) return stsCache
+        return runCatching {
+            val html = http.getText(
+                "https://www.youtube.com/watch?v=$id",
+                buildMap {
+                    put("User-Agent", web.userAgent)
+                    put("Accept-Language", "en-US,en;q=0.9")
+                    putAll(auth.headers())
+                },
+            )
+            Regex("\"STS\":(\\d{4,8})").find(html)?.groupValues?.get(1)?.toIntOrNull()
+        }.getOrNull()?.also {
+            stsCache = it
+            stsAt = SystemClock.elapsedRealtime()
+        } ?: stsCache
+    }
 
     private val visitorLock = kotlinx.coroutines.sync.Mutex()
 
@@ -112,13 +188,25 @@ class InnerTubeBackend(
                 runCatching {
                     val html = http.getText(
                         "https://www.youtube.com/",
-                        mapOf("User-Agent" to web.userAgent, "Accept-Language" to "en-US,en;q=0.9"),
+                        buildMap {
+                            put("User-Agent", web.userAgent)
+                            put("Accept-Language", "en-US,en;q=0.9")
+                            putAll(auth.headers())
+                        },
                     )
                     Regex("\"visitorData\":\"([^\"]+)\"")
                         .find(html)
                         ?.groupValues
                         ?.get(1)
                         ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                        .also { visitor ->
+                            Regex("\"INNERTUBE_CLIENT_VERSION\":\"([^\"]+)\"")
+                                .find(html)
+                                ?.groupValues
+                                ?.get(1)
+                                ?.takeIf { it.isNotBlank() }
+                                ?.let { webVersionCache = it }
+                        }
                 }.getOrNull().orEmpty().also { visitorCache = it }
             }
         }
@@ -147,6 +235,7 @@ class InnerTubeBackend(
         path: String,
         profile: Profile,
         extra: JsonObject,
+        withAuth: Boolean = true,
     ): JsonObject {
         val visitor = visitor()
         val client = profile.context["client"]!!.jsonObject.toMutableMap().apply {
@@ -156,6 +245,11 @@ class InnerTubeBackend(
             put("context", buildJsonObject { put("client", JsonObject(client)) })
             extra.forEach { (key, value) -> put(key, value) }
         }
+        // Signed in, these turn an anonymous call into an account call: YouTube
+        // then answers with the user's own feed, subscriptions and age-gated
+        // videos instead of the generic surface. Native clients do not accept a
+        // session at all, so only the profile itself decides.
+        val session = if (withAuth && profile.acceptsAuth) auth.headers() else emptyMap()
         val response = http.postJson(
             "$endpoint/$path?prettyPrint=false",
             payload,
@@ -166,6 +260,8 @@ class InnerTubeBackend(
                 put("X-Youtube-Client-Version", profile.version)
                 put("Origin", "https://www.youtube.com")
                 if (visitor.isNotBlank()) put("X-Goog-Visitor-Id", visitor)
+                putAll(session)
+                if (session.isNotEmpty()) put("X-Youtube-Bootstrap-Logged-In", "true")
             },
         )
         response["responseContext"].obj()?.str("visitorData")
@@ -177,10 +273,56 @@ class InnerTubeBackend(
     // ---- TubeBackend ----------------------------------------------------
 
     override suspend fun trending(region: String): List<VideoItem> {
+        // Signed in, the account's own recommendations only exist on the web
+        // surface; the native home feed would be the anonymous one. Fall back
+        // to the anonymous feed if the web response comes back empty.
+        if (auth.headers().isNotEmpty()) {
+            val personal = runCatching {
+                call("browse", web, buildJsonObject { put("browseId", "FEwhat_to_watch") }).videos()
+            }.getOrDefault(emptyList())
+            if (personal.isNotEmpty()) return personal
+        }
         val response = call("browse", vr, buildJsonObject {
             put("browseId", "FEwhat_to_watch")
         })
         return response.videos()
+    }
+
+    /**
+     * The account's own subscriptions feed. Empty without a session, because the
+     * anonymous equivalent is just another list of recommendations.
+     */
+    override suspend fun subscriptions(): List<VideoItem> {
+        if (auth.headers().isEmpty()) return emptyList()
+        val response = call("browse", web, buildJsonObject {
+            put("browseId", "FEsubscriptions")
+        })
+        return response.videos()
+    }
+
+    /**
+     * A Shorts feed for the dedicated section.
+     *
+     * YouTube exposes no anonymous Shorts shelf in the responses we read, so we
+     * search for the hashtag creators put in their titles and keep clips of a
+     * minute or less. When a search comes back with only long videos (some
+     * regions do that), the regular feed is filtered instead.
+     */
+    override suspend fun shorts(): List<VideoItem> {
+        val candidates = runCatching {
+            call("search", web, buildJsonObject { put("query", "#shorts") }).videos()
+        }.getOrDefault(emptyList())
+        val short = candidates.filter { it.durationSeconds in 1..61 }
+        return (short.ifEmpty { candidates.filter { it.durationSeconds in 1..90 } })
+            .ifEmpty {
+                runCatching {
+                    call("browse", vr, buildJsonObject { put("browseId", "FEwhat_to_watch") })
+                        .videos()
+                        .filter { it.durationSeconds in 1..61 }
+                }.getOrDefault(emptyList())
+            }
+            .distinctBy { it.id }
+            .take(40)
     }
 
     override suspend fun search(query: String, nextPage: String?): SearchResult {
@@ -206,17 +348,87 @@ class InnerTubeBackend(
             .orEmpty()
     }.getOrDefault(emptyList())
 
-    override suspend fun video(id: String): VideoDetail {
-        val response = call("player", vr, buildJsonObject {
+    /**
+     * Two player calls for the same video, made at the same time with the same
+     * visitor, invalidate each other: YouTube signs each response against one
+     * playback session, and the losing response comes back with media URLs that
+     * answer 403. The UI can legitimately ask twice (the screen is recreated
+     * while a deep link is handled), so collapse concurrent calls for the same
+     * id onto the first response instead of racing them.
+     */
+    private val playerLock = kotlinx.coroutines.sync.Mutex()
+    private var playerMemoId: String = ""
+    private var playerMemoAt: Long = 0L
+    private var playerMemo: JsonObject? = null
+
+    /**
+     * Asks YouTube for stream URLs.
+     *
+     * Client choice is deliberately narrow. `ANDROID` returns un-ciphered
+     * progressive URLs (no `n` throttling token) that keep working for the whole
+     * video even when the carrier rotates the egress address between
+     * connections. `ANDROID_VR` is the fallback for the rare video the plain
+     * client will not serve; its URLs are capped at 64 MB, so it only helps
+     * clips.
+     *
+     * Mobile web and desktop web are not used here: they answer with URLs that
+     * need a JavaScript `n` challenge solved, which WeTube does not fake.
+     */
+    private suspend fun playerResponse(id: String): JsonObject = playerLock.withLock {
+        val memo = playerMemo
+        val fresh = SystemClock.elapsedRealtime() - playerMemoAt < 3_000
+        if (memo != null && playerMemoId == id && fresh) return@withLock memo
+
+        val progressive = buildJsonObject {
             put("videoId", id)
             put("contentCheckOk", true)
             put("racyCheckOk", true)
+        }
+
+        val withSignature = buildJsonObject {
+            progressive.forEach { (key, value) -> put(key, value) }
             put("playbackContext", buildJsonObject {
                 put("contentPlaybackContext", buildJsonObject {
                     put("html5Preference", "HTML5_PREF_WANTS")
+                    val sts = signatureTimestamp(id)
+                    if (sts > 0) put("signatureTimestamp", sts)
                 })
             })
-        })
+        }
+
+        // Native clients reject a request that carries a session ("invalid
+        // argument"), so playback is anonymous even while signed in. The
+        // session is still used for feeds and subscriptions.
+        val androidPlain = runCatching {
+            call("player", androidClient, progressive, withAuth = false)
+        }
+            .onFailure {
+                if (BuildConfig.DEBUG) {
+                    android.util.Log.w("WeTube", "player (android) failed: ${it.javaClass.simpleName}")
+                }
+            }
+            .getOrNull()
+            ?.takeIf { it.playableUrlCount() > 0 }
+
+        val response = androidPlain ?: runCatching {
+            call("player", vr, withSignature, withAuth = false)
+        }
+            .onFailure {
+                if (BuildConfig.DEBUG) {
+                    android.util.Log.w("WeTube", "player (vr) failed: ${it.javaClass.simpleName}")
+                }
+            }
+            .getOrNull()
+            ?: error("YouTube did not answer the player request.")
+
+        playerMemoId = id
+        playerMemoAt = SystemClock.elapsedRealtime()
+        playerMemo = response
+        response
+    }
+
+    override suspend fun video(id: String): VideoDetail {
+        val response = playerResponse(id)
 
         val status = response["playabilityStatus"].obj()?.str("status")
         if (status != "OK") {
@@ -238,17 +450,7 @@ class InnerTubeBackend(
             )
         }
         val muxed = streaming?.get("formats").objects().mapNotNull { it.toFormat(audio = false) }
-            .toMutableList()
-        streaming?.str("hlsManifestUrl")?.takeIf { it.isNotBlank() }?.let { url ->
-            muxed += StreamFormat(
-                url = url,
-                label = "live",
-                mime = "application/x-mpegURL",
-                bitrate = 0,
-                height = 0,
-                audio = false,
-            )
-        }
+        val hls = streaming?.str("hlsManifestUrl")?.takeIf { it.isNotBlank() }
 
         val adaptive = streaming?.get("adaptiveFormats").objects()
         val videoOnly = adaptive
@@ -315,6 +517,7 @@ class InnerTubeBackend(
                 muxed = muxed,
                 videoOnly = videoOnly,
                 audioOnly = audioOnly,
+                hls = hls,
             ),
             related = related,
             isLive = live,
@@ -350,12 +553,101 @@ class InnerTubeBackend(
 
     // ---- JSON walking ---------------------------------------------------
 
+    /** Progressively downloadable tracks (a URL, not a cipher) in a player response. */
+    private fun JsonObject.playableUrlCount(): Int {
+        val data = this["streamingData"].obj() ?: return 0
+        val tracks = data["formats"].objects() + data["adaptiveFormats"].objects()
+        return tracks.count { !it.str("url").isNullOrBlank() }
+    }
+
+    /**
+     * Video cards, in the order the page lists them.
+     *
+     * Two card families exist: the older `*VideoRenderer` objects used by the
+     * native surfaces, and the web's `lockupViewModel` cards. Walking the tree
+     * once keeps the feed order instead of grouping by renderer name.
+     */
     private fun JsonObject.videos(): List<VideoItem> {
-        val renderers = findAll("compactVideoRenderer") +
-            findAll("videoRenderer") +
-            findAll("videoWithContextRenderer") +
-            findAll("gridVideoRenderer")
-        return renderers.mapNotNull { it.toVideoItem() }.distinctBy { it.id }
+        val found = ArrayList<VideoItem>()
+
+        fun walk(element: JsonElement) {
+            when (element) {
+                is JsonObject -> element.forEach { (key, value) ->
+                    val item = when (key) {
+                        "compactVideoRenderer", "videoRenderer", "videoWithContextRenderer",
+                        "gridVideoRenderer", "reelItemRenderer",
+                        -> (value as? JsonObject)?.toVideoItem()
+
+                        "lockupViewModel" -> (value as? JsonObject)?.toLockupItem()
+
+                        else -> null
+                    }
+                    if (item != null) found.add(item)
+                    walk(value)
+                }
+
+                is JsonArray -> element.forEach(::walk)
+                else -> Unit
+            }
+        }
+
+        walk(this)
+        return found.distinctBy { it.id }
+    }
+
+    /**
+     * A web lockup card ("lockupViewModel"). It carries its video id in
+     * `contentId` and its metadata in `lockupMetadataViewModel`.
+     */
+    private fun JsonObject.toLockupItem(): VideoItem? {
+        val type = str("contentType").orEmpty()
+        if (!type.endsWith("VIDEO") && !type.endsWith("SHORTS")) return null
+
+        val videoId = str("contentId")?.takeIf { it.isNotBlank() } ?: return null
+        val meta = this["metadata"].obj()?.get("lockupMetadataViewModel").obj() ?: return null
+        val title = meta["title"].text()?.takeIf { it.isNotBlank() } ?: return null
+
+        val texts = meta["metadata"].obj()
+            ?.get("contentMetadataViewModel").obj()
+            ?.get("metadataRows").objects()
+            .flatMap { it["metadataParts"].objects() }
+            .mapNotNull { it["text"].text() }
+
+        val channelName = texts.firstOrNull().orEmpty()
+        val viewsText = texts.firstOrNull { it.contains("view", ignoreCase = true) }.orEmpty()
+        val published = texts.firstOrNull { it.contains("ago", ignoreCase = true) }.orEmpty()
+
+        val thumbnail = this["contentImage"].obj()
+            ?.get("thumbnailViewModel").obj()
+            ?.get("image").thumbnailUrl()
+            ?: meta["image"].thumbnailUrl()
+
+        val overlays = this["contentImage"].obj()
+            ?.get("thumbnailViewModel").obj()
+            ?.get("overlays").objects()
+            .orEmpty()
+        val badgeText = overlays
+            .flatMap { it["thumbnailBottomOverlayViewModel"].obj()?.get("badges").objects().orEmpty() }
+            .mapNotNull { it["thumbnailBadgeViewModel"].obj()?.str("text") }
+            .joinToString(" ")
+
+        return VideoItem(
+            id = videoId,
+            title = title,
+            channelName = channelName,
+            channelId = meta.findAll("browseEndpoint").firstOrNull()?.str("browseId").orEmpty(),
+            thumbnail = thumbnail ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
+            durationSeconds = overlays
+                .mapNotNull { it["thumbnailBottomOverlayViewModel"].obj() }
+                .flatMap { it["badges"].objects() }
+                .mapNotNull { it["thumbnailBadgeViewModel"].obj()?.str("text") }
+                .map(::parseLength)
+                .firstOrNull { it > 0 } ?: 0,
+            views = parseCount(viewsText),
+            publishedText = published,
+            live = badgeText.contains("LIVE", ignoreCase = true) ||
+                viewsText.contains("watching", ignoreCase = true),
+        )
     }
 
     private fun JsonObject.toVideoItem(): VideoItem? {
@@ -465,7 +757,9 @@ private fun JsonElement?.objects(): List<JsonObject> =
 private fun JsonElement?.asArray(): JsonArray? = this as? JsonArray
 
 private fun JsonElement?.thumbnailUrl(): String? {
-    val thumbnails = (this as? JsonObject)?.get("thumbnails").objects()
+    val object0 = this as? JsonObject ?: return null
+    // Native renderers say `thumbnails`; web view models say `sources`.
+    val thumbnails = (object0["thumbnails"] ?: object0["sources"]).objects()
     return thumbnails
         .maxByOrNull { (it["width"] as? JsonPrimitive)?.intOrNull ?: 0 }
         ?.get("url")?.text()

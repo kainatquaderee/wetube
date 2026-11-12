@@ -1,6 +1,9 @@
 package dev.wetube.app.ui.home
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -8,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,12 +39,16 @@ import dev.wetube.app.ui.friendlyError
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+enum class Feed { FOR_YOU, SUBSCRIPTIONS }
+
 data class HomeUiState(
     val loading: Boolean = true,
     val videos: List<VideoItem> = emptyList(),
     val error: String? = null,
     val region: String = "US",
     val refreshing: Boolean = false,
+    val feed: Feed = Feed.FOR_YOU,
+    val signedIn: Boolean = false,
 )
 
 class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
@@ -57,17 +65,31 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
             state = state.copy(loading = state.videos.isEmpty(), refreshing = true, error = null)
             runCatching {
                 val settings = locator.settings.settings.first()
-                val videos = locator.backend().trending(settings.region)
+                val signedIn = locator.auth.account.first() != null
+                val feed = if (signedIn) state.feed else Feed.FOR_YOU
+                val videos = if (feed == Feed.SUBSCRIPTIONS) {
+                    locator.backend().subscriptions()
+                } else {
+                    locator.backend().trending(settings.region)
+                }
                 state = state.copy(
                     loading = false,
                     refreshing = false,
                     videos = videos,
                     region = settings.region,
+                    feed = feed,
+                    signedIn = signedIn,
                 )
             }.onFailure {
                 state = state.copy(loading = false, refreshing = false, error = friendlyError(it))
             }
         }
+    }
+
+    fun select(feed: Feed) {
+        if (feed == state.feed) return
+        state = state.copy(feed = feed, videos = emptyList(), loading = true)
+        load()
     }
 
     companion object {
@@ -104,6 +126,26 @@ fun HomeScreen(
             },
         )
 
+        if (state.signedIn) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = state.feed == Feed.FOR_YOU,
+                    onClick = { viewModel.select(Feed.FOR_YOU) },
+                    label = { Text("For you") },
+                )
+                FilterChip(
+                    selected = state.feed == Feed.SUBSCRIPTIONS,
+                    onClick = { viewModel.select(Feed.SUBSCRIPTIONS) },
+                    label = { Text("Subscriptions") },
+                )
+            }
+        }
+
         when {
             state.loading -> LoadingBox()
             state.error != null && state.videos.isEmpty() -> MessageBox(
@@ -114,7 +156,12 @@ fun HomeScreen(
             }
             state.videos.isEmpty() -> MessageBox(
                 title = "Nothing here",
-                body = "This instance returned no trending videos for ${state.region}.",
+                body = if (state.feed == Feed.SUBSCRIPTIONS) {
+                    "No subscriptions yet. Subscribe to channels on YouTube and they will " +
+                        "show up here."
+                } else {
+                    "This instance returned no trending videos for ${state.region}."
+                },
             )
             else -> LazyColumn(modifier = Modifier.fillMaxSize().padding(bottom = 8.dp)) {
                 items(state.videos, key = { it.id }) { video ->

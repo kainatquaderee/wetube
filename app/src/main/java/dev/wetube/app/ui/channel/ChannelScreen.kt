@@ -37,17 +37,21 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
 import dev.wetube.app.data.model.ChannelInfo
+import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.ui.LoadingBox
 import dev.wetube.app.ui.MessageBox
 import dev.wetube.app.ui.VideoCard
 import dev.wetube.app.ui.friendlyError
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 data class ChannelUiState(
     val loading: Boolean = true,
     val channel: ChannelInfo? = null,
     val error: String? = null,
+    /** Subscribed in WeTube. This is the local list, independent of YouTube. */
+    val subscribed: Boolean = false,
 )
 
 class ChannelViewModel(
@@ -67,10 +71,28 @@ class ChannelViewModel(
             state = state.copy(loading = true, error = null)
             runCatching {
                 val channel = locator.backend().channel(channelId)
-                state = state.copy(loading = false, channel = channel)
+                val subscribed = locator.library.subscriptions.first().any { it.id == channel.id }
+                state = state.copy(loading = false, channel = channel, subscribed = subscribed)
             }.onFailure {
                 state = state.copy(loading = false, error = friendlyError(it))
             }
+        }
+    }
+
+    /** Adds or removes the channel in the local subscription list. */
+    fun toggleSubscription() {
+        val channel = state.channel ?: return
+        viewModelScope.launch {
+            val added = locator.library.toggleSubscription(
+                VideoItem(
+                    id = channel.id,
+                    title = channel.name,
+                    channelName = channel.name,
+                    channelId = channel.id,
+                    thumbnail = channel.avatar,
+                ),
+            )
+            state = state.copy(subscribed = added)
         }
     }
 
@@ -119,7 +141,11 @@ fun ChannelScreen(
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     item {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Row2(channel)
+                            Row2(
+                                channel = channel,
+                                subscribed = state.subscribed,
+                                onToggle = viewModel::toggleSubscription,
+                            )
                             if (channel.description.isNotBlank()) {
                                 Spacer(Modifier.height(10.dp))
                                 Text(
@@ -142,7 +168,7 @@ fun ChannelScreen(
 }
 
 @Composable
-private fun Row2(channel: ChannelInfo) {
+private fun Row2(channel: ChannelInfo, subscribed: Boolean, onToggle: () -> Unit) {
     androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
@@ -156,7 +182,7 @@ private fun Row2(channel: ChannelInfo) {
             )
         }
         Spacer(Modifier.size(12.dp))
-        Column {
+        Column(Modifier.weight(1f)) {
             Text(channel.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             if (channel.subscribersText.isNotBlank()) {
                 Text(
@@ -165,6 +191,9 @@ private fun Row2(channel: ChannelInfo) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+        Button(onClick = onToggle) {
+            Text(if (subscribed) "Subscribed" else "Subscribe")
         }
     }
 }

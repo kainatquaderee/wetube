@@ -9,9 +9,11 @@ import dev.wetube.app.data.backend.InvidiousBackend
 import dev.wetube.app.data.backend.JsonHttp
 import dev.wetube.app.data.backend.PipedBackend
 import dev.wetube.app.data.backend.TubeBackend
+import dev.wetube.app.data.auth.AuthStore
 import dev.wetube.app.data.extras.DislikeClient
 import dev.wetube.app.data.extras.SponsorBlockClient
 import dev.wetube.app.data.content.AgeGateStore
+import dev.wetube.app.data.local.BackupStore
 import dev.wetube.app.data.local.LibraryStore
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.data.prefs.SettingsStore
@@ -59,36 +61,48 @@ class ServiceLocator(context: Context) {
         .readTimeout(25, TimeUnit.SECONDS)
         .callTimeout(40, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
-        .apply { if (BuildConfig.DEBUG) HttpLog.install(this) }
+        .apply {
+            if (BuildConfig.DEBUG) HttpLog.install(this)
+        }
         .build()
 
     private val jsonHttp = JsonHttp(http, json)
 
+    val auth = AuthStore(appContext, jsonHttp)
+
     val settings = SettingsStore(appContext)
     val library = LibraryStore(appContext, json)
+    val backup = BackupStore(library, settings, json)
     val ageGate = AgeGateStore(appContext)
     val sponsorBlock = SponsorBlockClient(jsonHttp)
     val dislikes = DislikeClient(jsonHttp)
     val playback = PlaybackController(appContext)
 
+    /** Settings plus whichever account the backends were built for. */
+    private data class BackendKey(val settings: AppSettings, val account: String)
+
     @Volatile
-    private var cached: Pair<AppSettings, TubeBackend>? = null
+    private var cached: Pair<BackendKey, TubeBackend>? = null
 
     suspend fun backend(): TubeBackend {
         val current = settings.settings.first()
-        cached?.let { (cachedSettings, backend) ->
-            if (cachedSettings == current) return backend
+        // Rebuild when the session changes: a signed-in backend sends cookies,
+        // a signed-out one must not keep using them.
+        val account = auth.account.first()?.cookies.orEmpty()
+        val key = BackendKey(current, account)
+        cached?.let { (cachedKey, backend) ->
+            if (cachedKey == key) return backend
         }
         val backend = ContentFilterBackend(
             when (current.backend) {
-                BackendType.INNERTUBE -> InnerTubeBackend(jsonHttp, current.region)
+                BackendType.INNERTUBE -> InnerTubeBackend(jsonHttp, current.region, auth)
                 BackendType.INVIDIOUS -> InvidiousBackend(jsonHttp, current.invidiousHost, current.proxyStreams)
                 BackendType.PIPED -> PipedBackend(jsonHttp, current.pipedHost)
             },
             settings,
             ageGate,
         )
-        cached = current to backend
+        cached = key to backend
         return backend
     }
 }
