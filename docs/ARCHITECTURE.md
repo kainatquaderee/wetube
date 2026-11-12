@@ -7,6 +7,31 @@ Nothing in this repository was copied from the APK. Decompiled output was used
 only to understand structure and trade-offs; WeTube's implementation was written
 from scratch against public, documented APIs.
 
+## Method: clean-room reimplementation
+
+The working model is **Nouveau**, the community NVIDIA driver: an independent
+implementation of a proprietary interface, built from observed behaviour and
+public documentation, released under an open licence, and explicit about its
+provenance.
+
+That analogy sets the expectations honestly:
+
+- **Source discipline.** Study the shipped binary, never lift from it. No
+  decompiled code, resources, layouts or string tables end up in this tree.
+- **Interface-level understanding, not internals.** Nouveau talks to the GPU
+  through documented registers and firmware interfaces; WeTube talks to
+  `youtubei/v1/*` through the request/response shapes it actually returns. We do
+  not reimplement Google's server internals, DRM, or attestation.
+- **It will lag.** Nouveau arrives after new hardware does. A reverse-engineered
+  client breaks when the vendor rotates a client profile. That is a maintenance
+  property of the approach, not a bug to be argued away — which is why the
+  transport is a swappable interface with three implementations instead of one
+  hard-coded path.
+- **Legal posture.** Interoperability work, no circumvention, no redistribution
+  of vendor assets. Trademarks stay with their owners; see the note at the end.
+- **Your own risk.** Like running Nouveau, this is for people who prefer
+  control and auditability over vendor-supported convenience.
+
 ---
 
 ## Target examined

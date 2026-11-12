@@ -10,7 +10,9 @@ instance that *you* choose. Playback always uses the CDN links the backend
 resolves.
 
 > This project is not affiliated with, endorsed by, or connected to YouTube or
-> Google. See `docs/ARCHITECTURE.md` for the learning notes and the legal note.
+> Google. It is developed clean-room, in the spirit of the Nouveau driver: the
+> official app was studied for structure, never copied. See
+> `docs/ARCHITECTURE.md` for the method and the legal note.
 
 ## Features
 
