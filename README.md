@@ -12,9 +12,9 @@ instance that *you* choose. Playback always uses the CDN links the backend
 resolves.
 
 > This project is not affiliated with, endorsed by, or connected to YouTube or
-> Google. It is developed clean-room, in the spirit of the Nouveau driver: the
-> official app was studied for structure, never copied. See
-> `docs/ARCHITECTURE.md` for the method and the legal note.
+> Google. It is a clean-room reimplementation written from scratch: no
+> proprietary code, resources or assets are used. See `docs/ARCHITECTURE.md` for
+> the design and the legal note.
 
 ## Features
 
@@ -22,14 +22,21 @@ resolves.
 - Media3/ExoPlayer, H.264/AAC for hardware decode, 1080p by default with 4K fallback
 - Separate high-quality video + audio tracks merged automatically
 - Live streams via HLS
-- Background audio via `MediaSessionService`, media notification, lock screen
+- Background audio via `MediaSessionService`, media notification, lock screen —
+  or switch background playback off so leaving the app pauses the video
 - Playback speed 0.25×–4×, audio-only mode, resume where you left off
+- **Hold the video (or a Short) for 2× playback; release to return to normal**
+- **Subtitles/CC** from the video's own tracks, with YouTube auto-translation and
+  a fallback to the original track when translation is unavailable
+- **Comments** read natively: top/newest sort, paging, likes, reply counts and
+  avatars, with the watch page in the browser as a fallback
 - Chapters detected from the description, tap to seek
 
 **Discovery**
 - Home feed by region, or your own recommendations and subscriptions when signed in
-- Dedicated **Shorts** section: swipe up for the next clip; signed in, it follows
-  your own account's Shorts shelf
+- Dedicated **Shorts** section: swipe up for the next clip, with its own progress
+  bar, tap-to-pause, 2× hold gesture, the CC menu and a comments rail. Signed in,
+  it follows your own account's Shorts shelf
 - Search with autocomplete and real continuation paging
 - Channels, related videos, like/subscriber counts, upload date
 - Local **Subscribe** on any channel, independent of any account
@@ -65,7 +72,7 @@ resolves.
 - **Credits** screen listing the people who build WeTube
 
 **Privacy**
-- No ads, ad SDKs, trackers, or telemetry — verified against the built APK
+- No ads, ad SDKs, trackers, or telemetry — the release dependency graph has none
 - No account needed; sign-in exists only for people who want their own feed
 - Only playback-related permissions
 - History, favourites and preferences never leave the device unless you export a backup
@@ -122,12 +129,12 @@ app/src/main/java/dev/wetube/app/
 ```
 
 The only contract the UI knows is `TubeBackend`. Adding a backend means adding
-one class. `docs/ARCHITECTURE.md` explains the transport choices, what was
-learned from the official app, and why the direct backend is the default.
+one class. `docs/ARCHITECTURE.md` explains the transport, playback and subtitle
+design, and why the direct backend is the default.
 
 ## Status
 
-0.1.3 — playback, feeds and accounts work on a real device against live
+0.1.4 — playback, feeds and accounts work on a real device against live
 endpoints. The playback path uses the plain Android client, which hands out
 progressive URLs that stay readable for the whole video; the Android VR client
 is the fallback for clips. Feeds are anonymous by default. Signed in, the web
@@ -136,7 +143,13 @@ and the account's own Shorts shelf, while playback stays anonymous (the native
 clients refuse a session). The player has a fullscreen mode that letterboxes
 landscape and portrait videos alike. Verified: home feed, subscriptions, search
 with paging, account-based Shorts, fullscreen (portrait and landscape), deep
-links, and video playback over `HTTP 206` from the CDN.
+links, hold-to-2×, background playback (on and off), the CC menu with caption
+loading, the comment section (top/newest sort and paging), and video playback
+over `HTTP 206` from the CDN.
+
+Known limits: the comment section is read-only — liking, replying and viewing
+replies need a signed-in Google session, which WeTube does not fake, so the sheet
+offers the watch page in the browser instead.
 
 Two network details matter on mobile and are handled in one place: DNS is
 resolved IPv4-first (many carriers advertise IPv6 they then black-hole), and

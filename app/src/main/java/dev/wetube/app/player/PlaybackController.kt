@@ -82,6 +82,10 @@ class PlaybackController(private val context: Context) {
         _controller.value?.seekTo(positionMs)
     }
 
+    fun pause() {
+        _controller.value?.pause()
+    }
+
     fun setSpeed(speed: Float) {
         _controller.value?.setPlaybackSpeed(speed)
     }

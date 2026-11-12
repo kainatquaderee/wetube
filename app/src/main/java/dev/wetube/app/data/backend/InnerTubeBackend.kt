@@ -3,10 +3,15 @@ package dev.wetube.app.data.backend
 import dev.wetube.app.BuildConfig
 import dev.wetube.app.data.auth.AuthStore
 import dev.wetube.app.data.model.ChannelInfo
+import dev.wetube.app.data.model.CaptionSet
+import dev.wetube.app.data.model.CaptionTrack
 import dev.wetube.app.data.model.Comment
+import dev.wetube.app.data.model.CommentPage
+import dev.wetube.app.data.model.CommentThreadInfo
 import dev.wetube.app.data.model.Playback
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.StreamFormat
+import dev.wetube.app.data.model.TranslationLanguage
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
 import kotlinx.serialization.json.JsonArray
@@ -542,6 +547,8 @@ class InnerTubeBackend(
             ),
             related = related,
             isLive = live,
+            captions = response.captionSet(),
+            comments = watch?.commentThreadInfo() ?: CommentThreadInfo(),
         )
     }
 
@@ -564,7 +571,92 @@ class InnerTubeBackend(
         )
     }
 
-    override suspend fun comments(id: String): List<Comment> = emptyList()
+    override suspend fun comments(id: String): List<Comment> {
+        val watch = call("next", vr, buildJsonObject { put("videoId", id) })
+        val token = watch.commentThreadInfo().continuation
+        if (token.isBlank()) return emptyList()
+        return commentsPage(token).comments
+    }
+
+    override suspend fun commentsPage(token: String): CommentPage {
+        if (token.isBlank()) return CommentPage()
+        val response = call("next", vr, buildJsonObject { put("continuation", token) })
+        val comments = response.findAll("commentThreadRenderer").mapNotNull { it.toComment() }
+        val next = response.findAll("nextContinuationData")
+            .firstOrNull()
+            ?.str("continuation")
+            ?.takeIf { it.isNotBlank() }
+        return CommentPage(comments = comments, next = next)
+    }
+
+    /**
+     * The comment entry point in a watch response. Its header carries the
+     * comment count and the sort menu, and its content holds the continuation
+     * token for the first page of the default ("Top") sort.
+     */
+    private fun JsonObject.commentThreadInfo(): CommentThreadInfo {
+        val panel = findAll("engagementPanelSectionListRenderer")
+            .firstOrNull { it.str("panelIdentifier") == "comment-item-section" }
+            ?: return CommentThreadInfo()
+
+        val header = panel["header"].obj()
+            ?.get("engagementPanelTitleHeaderRenderer").obj()
+
+        val content = panel["content"].obj()
+        val top = content?.get("sectionListRenderer").obj()
+            ?.get("continuations").objects()
+            ?.firstOrNull()
+            ?.get("reloadContinuationData").obj()
+            ?.str("continuation")
+            ?: content?.get("continuationItemRenderer").obj()
+                ?.get("continuationEndpoint").obj()
+                ?.get("continuationCommand").obj()
+                ?.str("token")
+                .orEmpty()
+
+        val newest = header?.get("menu").obj()
+            ?.get("sortFilterSubMenuRenderer").obj()
+            ?.get("subMenuItems").objects()
+            ?.firstOrNull { it["title"].text()?.equals("Newest", ignoreCase = true) == true }
+            ?.get("continuation").obj()
+            ?.get("reloadContinuationData").obj()
+            ?.str("continuation")
+            .orEmpty()
+
+        return CommentThreadInfo(
+            continuation = top,
+            newestContinuation = newest,
+            countText = header?.get("contextualInfo").text().orEmpty(),
+        )
+    }
+
+    private fun JsonObject.toComment(): Comment? {
+        val renderer = this["comment"].obj()?.get("commentRenderer").obj() ?: return null
+        val text = renderer["contentText"].text()?.trim().orEmpty()
+        if (text.isBlank()) return null
+
+        val actions = renderer["actionButtons"].obj()
+            ?.get("commentActionButtonsRenderer").obj()
+        val likeLabel = actions?.get("likeButton").obj()
+            ?.get("toggleButtonRenderer").obj()
+            ?.get("accessibilityData").obj()
+            ?.get("accessibilityData").obj()
+            ?.str("label")
+
+        return Comment(
+            author = renderer["authorText"].text().orEmpty(),
+            avatar = renderer["authorThumbnail"].thumbnailUrl().orEmpty(),
+            text = text,
+            likes = parseCount(renderer["voteCount"].text().orEmpty().ifBlank { likeLabel.orEmpty() }),
+            publishedText = renderer["publishedTimeText"].text().orEmpty(),
+            replyCount = parseCount(
+                actions?.get("replyButton").obj()
+                    ?.get("buttonRenderer").obj()
+                    ?.get("text").text().orEmpty(),
+            ).toInt(),
+            id = renderer.str("commentId").orEmpty(),
+        )
+    }
 
     override suspend fun related(id: String): List<VideoItem> = runCatching {
         call("next", vr, buildJsonObject { put("videoId", id) })
@@ -573,6 +665,40 @@ class InnerTubeBackend(
     }.getOrDefault(emptyList())
 
     // ---- JSON walking ---------------------------------------------------
+
+    /**
+     * Subtitle tracks from a player response.
+     *
+     * The Android client is asked first for playback, and it is also the client
+     * that still returns usable (non-PoToken-gated) subtitle URLs. When a video
+     * carries no translation list, the menu simply offers the original tracks.
+     */
+    private fun JsonObject.captionSet(): CaptionSet {
+        val renderer = this["captions"].obj()
+            ?.get("playerCaptionsTracklistRenderer").obj()
+            ?: return CaptionSet()
+
+        val tracks = renderer["captionTracks"].objects().mapNotNull { track ->
+            val url = track.str("baseUrl")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val code = track.str("languageCode").orEmpty().ifBlank { "und" }
+            CaptionTrack(
+                languageCode = code,
+                name = track["name"].text()?.takeIf { it.isNotBlank() } ?: code,
+                baseUrl = url,
+                autoGenerated = track.str("kind") == "asr",
+            )
+        }
+
+        val translations = renderer["translationLanguages"].objects().mapNotNull { language ->
+            val code = language.str("languageCode") ?: return@mapNotNull null
+            TranslationLanguage(
+                languageCode = code,
+                name = language["languageName"].text()?.takeIf { it.isNotBlank() } ?: code,
+            )
+        }
+
+        return CaptionSet(tracks = tracks, translations = translations)
+    }
 
     /** Progressively downloadable tracks (a URL, not a cipher) in a player response. */
     private fun JsonObject.playableUrlCount(): Int {

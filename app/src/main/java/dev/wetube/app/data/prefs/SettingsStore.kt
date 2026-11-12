@@ -23,6 +23,12 @@ data class AppSettings(
     val showDislikes: Boolean = true,
     val playbackSpeed: Float = 1f,
     val audioOnly: Boolean = false,
+    /** Keep audio alive when the app goes to the background. */
+    val backgroundPlayback: Boolean = true,
+    /** Subtitle preferences, shared by the player and Shorts. */
+    val captionsEnabled: Boolean = false,
+    val captionLanguage: String = "",
+    val captionTranslateTo: String = "",
     /** Age-gated videos are hidden from feeds while this is off. */
     val showMature: Boolean = false,
 )
@@ -40,6 +46,10 @@ class SettingsStore(private val context: Context) {
         val dislikes = booleanPreferencesKey("show_dislikes")
         val speed = stringPreferencesKey("playback_speed")
         val audioOnly = booleanPreferencesKey("audio_only")
+        val backgroundPlayback = booleanPreferencesKey("background_playback")
+        val captions = booleanPreferencesKey("captions")
+        val captionLanguage = stringPreferencesKey("caption_language")
+        val captionTranslate = stringPreferencesKey("caption_translate")
         val showMature = booleanPreferencesKey("show_mature")
     }
 
@@ -56,6 +66,10 @@ class SettingsStore(private val context: Context) {
             showDislikes = p[Keys.dislikes] ?: true,
             playbackSpeed = p[Keys.speed]?.toFloatOrNull() ?: 1f,
             audioOnly = p[Keys.audioOnly] ?: false,
+            backgroundPlayback = p[Keys.backgroundPlayback] ?: true,
+            captionsEnabled = p[Keys.captions] ?: false,
+            captionLanguage = p[Keys.captionLanguage].orEmpty(),
+            captionTranslateTo = p[Keys.captionTranslate].orEmpty(),
             showMature = p[Keys.showMature] ?: false,
         )
     }
@@ -74,6 +88,10 @@ class SettingsStore(private val context: Context) {
             p[Keys.dislikes] = next.showDislikes
             p[Keys.speed] = next.playbackSpeed.toString()
             p[Keys.audioOnly] = next.audioOnly
+            p[Keys.backgroundPlayback] = next.backgroundPlayback
+            p[Keys.captions] = next.captionsEnabled
+            p[Keys.captionLanguage] = next.captionLanguage
+            p[Keys.captionTranslate] = next.captionTranslateTo
             p[Keys.showMature] = next.showMature
         }
     }

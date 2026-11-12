@@ -15,7 +15,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,6 +37,16 @@ fun compactCount(n: Long): String = when {
     n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
     n >= 1_000 -> "%.1fK".format(n / 1_000.0)
     else -> n.toString()
+}
+
+/** 1.5 -> "1.5×", 2.0 -> "2×", matching the labels YouTube uses. */
+fun formatSpeed(speed: Float): String {
+    val value = if (speed == speed.toInt().toFloat()) {
+        speed.toInt().toString()
+    } else {
+        String.format(java.util.Locale.US, "%.2f", speed).trimEnd('0').trimEnd('.')
+    }
+    return "$value×"
 }
 
 fun formatDuration(totalSeconds: Int): String {
@@ -234,6 +247,34 @@ private fun Badge(text: String, background: Color, alignment: Alignment = Alignm
 fun LoadingBox(modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         CircularProgressIndicator()
+    }
+}
+
+/** The little "2×" pill shown while the viewer holds the screen to fast-forward. */
+@Composable
+fun CaptionSpeedBadge(
+    text: String = "2×",
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color(0xCC000000))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.FastForward,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text,
+            color = Color.White,
+            style = MaterialTheme.typography.labelLarge,
+        )
     }
 }
 

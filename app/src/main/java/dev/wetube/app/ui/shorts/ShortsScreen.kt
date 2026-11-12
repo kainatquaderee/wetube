@@ -1,5 +1,6 @@
 package dev.wetube.app.ui.shorts
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -11,22 +12,31 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -54,15 +64,25 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import dev.wetube.app.data.model.CommentThreadInfo
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.player.CaptionSession
 import dev.wetube.app.player.StreamResolver
+import dev.wetube.app.ui.CaptionSpeedBadge
 import dev.wetube.app.ui.LoadingBox
 import dev.wetube.app.ui.MessageBox
+import dev.wetube.app.ui.captions.CaptionOverlay
+import dev.wetube.app.ui.captions.CaptionSheet
+import dev.wetube.app.ui.comments.CommentsSheet
 import dev.wetube.app.ui.compactCount
 import dev.wetube.app.ui.friendlyError
-import kotlinx.coroutines.flow.first
+import dev.wetube.app.ui.holdToSpeed
+import dev.wetube.app.ui.rememberIsBuffering
+import dev.wetube.app.ui.rememberIsPlaying
+import dev.wetube.app.ui.rememberPlayerDuration
+import dev.wetube.app.ui.rememberPlayerPosition
 import kotlinx.coroutines.launch
 
 data class ShortsUiState(
@@ -82,7 +102,12 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
     var state by mutableStateOf(ShortsUiState())
         private set
 
+    val captions = CaptionSession(locator, viewModelScope)
+
     private var playing = -1
+
+    /** Guards against a slow response for an old page overwriting a newer one. */
+    private var generation = 0
 
     init {
         load()
@@ -98,6 +123,7 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
                     return@collect
                 }
                 playing = -1
+                generation++
                 state = ShortsUiState()
                 load()
             }
@@ -123,19 +149,39 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
     /** Resolves and starts the clip on [index]. Repeated calls for the same page are ignored. */
     fun play(index: Int) {
         val video = state.videos.getOrNull(index) ?: return
-        if (index == playing) return
+        // The shared player may have been taken over by the normal player (the
+        // Shorts screen is kept alive on the back stack). In that case the page
+        // index alone is not enough: check that the loaded media really is this
+        // clip, and resume it when coming back to the section.
+        if (index == playing) {
+            val player = locator.playback.controller.value ?: return
+            val loaded = player.currentMediaItem?.mediaId
+            if (loaded == video.id) {
+                if (!player.isPlaying) player.play()
+                return
+            }
+            if (loaded == null) return
+        }
         playing = index
+        val request = ++generation
         viewModelScope.launch {
-            runCatching {
+            val result = runCatching {
                 val detail = locator.backend().video(video.id)
                 val item = StreamResolver.mediaItem(detail, audioOnly = false)
                     ?: error("This clip has no playable stream.")
-                state = state.copy(detail = detail, error = null)
-                locator.playback.play(item, speed = 1f, startAtMs = 0L)
-                locator.library.addToHistory(detail.item)
-            }.onFailure {
-                state = state.copy(error = friendlyError(it))
+                detail to item
             }
+            // A newer swipe already asked for another clip; this response is
+            // stale and must not start playing over the visible page.
+            if (request != generation) return@launch
+            result
+                .onSuccess { (detail, item) ->
+                    state = state.copy(detail = detail, error = null)
+                    captions.attach(detail)
+                    locator.playback.play(item, speed = 1f, startAtMs = 0L)
+                    locator.library.addToHistory(detail.item)
+                }
+                .onFailure { state = state.copy(error = friendlyError(it)) }
         }
     }
 
@@ -174,6 +220,20 @@ fun ShortsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    var showCaptionSheet by remember { mutableStateOf(false) }
+    var showComments by remember { mutableStateOf(false) }
+    var holding by remember { mutableStateOf(false) }
+    var speedBeforeHold by remember { mutableFloatStateOf(1f) }
+    val favourites by locator.library.favourites.collectAsStateWithLifecycle(emptyList())
+
+    // These helpers keep the flags in snapshot state; reading
+    // `controller?.playbackState` during composition is not observable and was
+    // the reason the spinner used to sit on top of a playing clip forever.
+    val buffering = rememberIsBuffering(controller)
+    val playing = rememberIsPlaying(controller)
+    val positionMs = rememberPlayerPosition(controller)
+    val durationMs = rememberPlayerDuration(controller)
+
     val playerView = remember {
         PlayerView(context).apply {
             useController = false
@@ -195,7 +255,9 @@ fun ShortsScreen(
         else -> {
             val pager = rememberPagerState(pageCount = { state.videos.size })
 
-            LaunchedEffect(pager.currentPage) { viewModel.play(pager.currentPage) }
+            // settledPage, not currentPage: starting a clip halfway through a
+            // swipe would briefly play a video the viewer cannot see yet.
+            LaunchedEffect(pager.settledPage) { viewModel.play(pager.settledPage) }
 
             DisposableEffect(controller, pager.currentPage) {
                 val player = controller ?: return@DisposableEffect onDispose { }
@@ -222,7 +284,21 @@ fun ShortsScreen(
 
                 VerticalPager(
                     state = pager,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .holdToSpeed { held ->
+                            val player = locator.playback.controller.value
+                            if (held) {
+                                if (player != null && player.isPlaying) {
+                                    speedBeforeHold = player.playbackParameters.speed
+                                    player.setPlaybackSpeed(2f)
+                                    holding = true
+                                }
+                            } else if (holding) {
+                                player?.setPlaybackSpeed(speedBeforeHold)
+                                holding = false
+                            }
+                        },
                 ) { page ->
                     val pageVideo = state.videos[page]
                     // The shelf card has no channel name; once the clip is
@@ -235,8 +311,13 @@ fun ShortsScreen(
                         // neighbouring pages (revealed mid-swipe) need a still.
                         showBackdrop = page != pager.currentPage,
                         onTogglePlay = {
-                            controller?.let { player ->
-                                if (player.isPlaying) player.pause() else player.play()
+                            // A hold ends in the same event as the tap under
+                            // it; ignore that trailing click instead of also
+                            // pausing the clip the viewer just sped up.
+                            if (!holding) {
+                                controller?.let { player ->
+                                    if (player.isPlaying) player.pause() else player.play()
+                                }
                             }
                         },
                     )
@@ -245,7 +326,7 @@ fun ShortsScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -255,11 +336,54 @@ fun ShortsScreen(
                         color = Color.White,
                         modifier = Modifier
                             .weight(1f)
-                            .padding(start = 8.dp),
+                            .padding(start = 12.dp),
                     )
+                    if (viewModel.captions.tracks.isNotEmpty()) {
+                        IconButton(onClick = { showCaptionSheet = true }) {
+                            Icon(
+                                Icons.Default.Subtitles,
+                                contentDescription = "Subtitles",
+                                tint = if (viewModel.captions.enabled) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    Color.White
+                                },
+                            )
+                        }
+                    }
                     IconButton(onClick = viewModel::retry) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.White)
                     }
+                }
+
+                // Prefer the resolved detail once it arrives: the shelf card
+                // carries no channel name, so saving from the rail would
+                // otherwise store a nameless entry in the library.
+                val current = state.videos.getOrNull(pager.currentPage)
+                val subject = state.detail?.item?.takeIf { it.id == current?.id } ?: current
+                if (subject != null) {
+                    val saved = favourites.any { it.id == subject.id }
+                    val commentCount = state.detail
+                        ?.takeIf { it.item.id == subject.id }
+                        ?.comments
+                        ?.countText
+                        .orEmpty()
+                    ShortActions(
+                        saved = saved,
+                        commentCount = commentCount,
+                        onSave = { scope.launch { locator.library.toggleFavourite(subject) } },
+                        onComments = { showComments = true },
+                        onShare = {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, "https://youtu.be/${subject.id}")
+                            }
+                            context.startActivity(Intent.createChooser(send, "Share video"))
+                        },
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 4.dp),
+                    )
                 }
 
                 state.error?.let { message ->
@@ -269,26 +393,95 @@ fun ShortsScreen(
                         color = Color.White,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
-                            .padding(top = 64.dp, start = 16.dp, end = 16.dp)
+                            .padding(top = 116.dp, start = 16.dp, end = 16.dp)
                             .clip(MaterialTheme.shapes.medium)
                             .background(Color(0xCC000000))
                             .padding(12.dp),
                     )
                 }
 
-                if (controller?.playbackState == Player.STATE_BUFFERING) {
+                if (holding) {
+                    CaptionSpeedBadge(
+                        text = "2×",
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 64.dp),
+                    )
+                }
+
+                // Only the player's own buffering may draw a spinner. Gating it
+                // on page bookkeeping is what used to leave a spinner sitting
+                // on top of a clip that was already playing.
+                if (buffering) {
                     CircularProgressIndicator(
                         color = Color.White,
-                        modifier = Modifier.align(Alignment.Center).size(36.dp),
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(36.dp),
+                    )
+                } else if (!playing) {
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = "Play",
+                        tint = Color.White.copy(alpha = 0.9f),
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(Color(0x66000000))
+                            .padding(12.dp),
+                    )
+                }
+
+                CaptionOverlay(
+                    session = viewModel.captions,
+                    positionMs = positionMs,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 16.dp, end = 72.dp, bottom = 190.dp),
+                )
+
+                if (durationMs > 0) {
+                    LinearProgressIndicator(
+                        progress = { (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(2.dp),
+                        color = Color(0xFFFF0033),
+                        trackColor = Color.White.copy(alpha = 0.20f),
+                    )
+                }
+            }
+
+            if (showComments) {
+                val subject = state.videos.getOrNull(pager.settledPage)
+                if (subject != null) {
+                    CommentsSheet(
+                        locator = locator,
+                        videoId = subject.id,
+                        info = state.detail
+                            ?.takeIf { it.item.id == subject.id }
+                            ?.comments
+                            ?: CommentThreadInfo(),
+                        onDismiss = { showComments = false },
                     )
                 }
             }
         }
     }
 
-    // Leaving the section should not leave a clip playing invisibly.
+    if (showCaptionSheet) {
+        CaptionSheet(
+            session = viewModel.captions,
+            onDismiss = { showCaptionSheet = false },
+        )
+    }
+    // Leaving the section should not leave a clip playing invisibly. Read the
+    // controller at dispose time: it may well be null while this screen is
+    // first composed, and a captured value would then never pause anything.
     DisposableEffect(Unit) {
-        onDispose { controller?.pause() }
+        onDispose { locator.playback.controller.value?.pause() }
     }
 }
 
@@ -363,5 +556,69 @@ private fun ShortsPage(video: VideoItem, showBackdrop: Boolean, onTogglePlay: ()
             }
             Spacer(Modifier.height(4.dp))
         }
+    }
+}
+
+
+@Composable
+private fun ShortActions(
+    saved: Boolean,
+    commentCount: String,
+    onSave: () -> Unit,
+    onComments: () -> Unit,
+    onShare: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        RailAction(
+            icon = if (saved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+            label = if (saved) "Saved" else "Save",
+            tint = if (saved) Color(0xFFFF2D55) else Color.White,
+            onClick = onSave,
+        )
+        RailAction(
+            icon = Icons.Default.ChatBubbleOutline,
+            label = commentCount.ifBlank { "Comments" },
+            tint = Color.White,
+            onClick = onComments,
+        )
+        RailAction(
+            icon = Icons.Default.Share,
+            label = "Share",
+            tint = Color.White,
+            onClick = onShare,
+        )
+    }
+}
+
+@Composable
+private fun RailAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    tint: Color,
+    onClick: () -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        IconButton(
+            onClick = onClick,
+            modifier = Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(Color(0x66000000)),
+        ) {
+            Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(24.dp))
+        }
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 58.dp),
+        )
     }
 }

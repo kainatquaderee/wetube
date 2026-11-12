@@ -1,247 +1,190 @@
-# What the official YouTube app does (and what WeTube does instead)
+# Architecture
 
-This document records the **learning pass**: what static analysis of a shipped
-YouTube APK showed, and how each finding shaped an original design.
+WeTube is an independent, clean-room implementation written from scratch. It is
+not affiliated with, endorsed by, or connected to YouTube or Google. The UI, the
+networking layer and the player were written for this project; no code,
+resources or assets from a proprietary application are included.
 
-Nothing in this repository was copied from the APK. Decompiled output was used
-only to understand structure and trade-offs; WeTube's implementation was written
-from scratch against public, documented APIs.
+YouTube does not publish an API for third-party clients. WeTube talks to the
+same public InnerTube JSON endpoints that a signed-out or signed-in browser
+session uses. Those endpoints are not contractual, so their behaviour can change
+without notice. The interface boundary described below exists to keep that risk
+away from the UI.
 
-## Method: clean-room reimplementation
+## Modules
 
-The working model is **Nouveau**, the community NVIDIA driver: an independent
-implementation of a proprietary interface, built from observed behaviour and
-public documentation, released under an open licence, and explicit about its
-provenance.
+```
+app/src/main/java/dev/wetube/app/
+├── data/
+│   ├── backend/   TubeBackend + InnerTube (default), Invidious, Piped
+│   ├── auth/      optional Google session, multiple accounts
+│   ├── extras/    SponsorBlock, Return YouTube Dislike
+│   ├── local/     history, favourites, resume, subscriptions, backup (DataStore)
+│   ├── model/     UI-facing models (no transport DTOs leak out)
+│   └── prefs/     settings
+├── player/        MediaSessionService, stream resolver, captions, controller
+└── ui/            Compose screens, one package per feature
+```
 
-That analogy sets the expectations honestly:
+One module, packages by feature. `MainActivity` handles deep links
+(`youtu.be/ID`, `youtube.com/watch?v=ID`) and hands them to the Compose nav
+graph; the same route is used from every screen.
 
-- **Source discipline.** Study the shipped binary, never lift from it. No
-  decompiled code, resources, layouts or string tables end up in this tree.
-- **Interface-level understanding, not internals.** Nouveau talks to the GPU
-  through documented registers and firmware interfaces; WeTube talks to
-  `youtubei/v1/*` through the request/response shapes it actually returns. We do
-  not reimplement Google's server internals, DRM, or attestation.
-- **It will lag.** Nouveau arrives after new hardware does. A reverse-engineered
-  client breaks when the vendor rotates a client profile. That is a maintenance
-  property of the approach, not a bug to be argued away — which is why the
-  transport is a swappable interface with three implementations instead of one
-  hard-coded path.
-- **Legal posture.** Interoperability work, no circumvention, no redistribution
-  of vendor assets. Trademarks stay with their owners; see the note at the end.
-- **Your own risk.** Like running Nouveau, this is for people who prefer
-  control and auditability over vendor-supported convenience.
+## 1. Transport
 
----
+`TubeBackend` is the only contract the UI knows. Adding a backend means adding
+one class and selecting it in Settings.
 
-## Target examined
+The default `InnerTubeBackend` speaks plain JSON over HTTP:
 
-| | |
+- **Two client profiles.** `ANDROID_VR` is used for playback because it returns
+  direct stream URLs; `WEB` is used for search and feeds because it returns the
+  cards with duration and upload date. Profiles are values in one place so they
+  are easy to adjust when a surface changes.
+- **Generic JSON walking.** Responses are read as a JSON tree rather than being
+  bound to fixed DTOs. A field YouTube adds or removes does not break the app;
+  the parser simply finds what it needs.
+- **Continuation tokens.** Search and feeds use the token the server returns,
+  not a fabricated "load more".
+
+`InvidiousBackend` and `PipedBackend` are selectable for people who prefer to
+route metadata through an instance they choose. Playback always uses whatever
+stream URLs the active backend resolves.
+
+No attestation, PoToken or JavaScript challenge is generated or faked. When
+YouTube insists on one, the app reports the wall instead of pretending to pass
+it.
+
+## 2. Playback
+
+Media3/ExoPlayer runs inside a `MediaSessionService`, so playback survives
+activity recreation and the media notification is a real media session.
+
+The resolver picks one of three paths:
+
+- **Muxed progressive stream** when the backend offers one. One connection, no
+  independent URL expiry.
+- **Separate video + audio** merged by `MergingMediaSource` when that gives
+  better quality. The UI emits a private `wetube-merge://` URI and the service
+  expands it, so Media3 types never cross into Compose.
+- **HLS** for live streams.
+
+H.264/AAC is preferred up to 1080p: hardware decode is near-universal on phones,
+while 4K VP9/AV1 often falls back to software decode. Bandwidth adaptation is
+delegated to ExoPlayer's `AdaptiveTrackSelection`.
+
+The shared player is also used by Shorts. Every `MediaItem` carries the video id
+as its media id, so a screen can tell whether the player still holds the clip it
+expects — this is what stops the normal player's video from appearing behind
+Shorts after navigating back.
+
+**Hold to 2×.** Pressing and holding the video surface (or a Short) switches to
+2× playback; releasing restores the previous speed. In the normal player this
+is an `OnTouchListener` that does not consume the event, so the native controls
+keep working. In Shorts it is a Compose pointer-input modifier that also leaves
+the tap-to-pause and vertical pager untouched.
+
+## 3. Subtitles and auto-translation
+
+Caption tracks come from the player response of the video that is already being
+resolved, so opening the CC menu costs no extra metadata request. Each track
+carries a signed timed-text URL.
+
+- `fmt=json3` is appended (replacing the signed `fmt` value) to fetch the same
+  track as compact JSON. An XML fallback covers tracks that ignore the format
+  parameter.
+- Lines are flattened to plain text and stored as `(start, end, text)` cues; the
+  overlay finds the current line with a binary search, so it stays cheap at
+  60 fps.
+- **Auto-translate** appends `tlang=<code>` to the same signed URL. That is
+  YouTube's own machine translation, so no audio or text is sent to a third
+  party.
+- If YouTube refuses the translated request (it is rate-limited on some
+  networks), the original track is loaded instead and the sheet explains why.
+  Captions never disappear silently.
+
+Preferences for subtitles (on/off, language, translation) are persisted and
+shared by the player and Shorts, which is why the CC button behaves the same in
+both.
+
+## 4. Comments
+
+Comments ride along with the watch response. The `next` call that already fills
+in likes, subscribers and related videos also carries the comment entry point:
+its header holds the comment count and the sort menu, and its content holds the
+continuation token for the first page of the default sort. Opening the sheet
+therefore costs no extra request.
+
+- Pages are fetched from the same `next` endpoint with a `continuation` token.
+  The next token is taken from wherever the tree put it, so both
+  `sectionListContinuation` and `itemSectionContinuation` shapes work.
+- Comments are read from `commentThreadRenderer` nodes: author, avatar, body,
+  age, like count and reply count. Requests are anonymous, which matches what
+  the rest of the app does.
+- **Top/Newest** both come from tokens in the same entry point, so switching
+  sort is one call.
+- Replies, likes and reply posting need a signed-in session on a Google surface
+  the app does not impersonate. The sheet says so and offers the watch page in
+  the browser through a chooser instead of pretending to support them.
+
+## 5. State and storage
+
+Preferences live in DataStore. History, favourites, resume points and local
+subscriptions are a JSON-encoded library on disk. Signing in is optional: an
+in-app browser session is kept in private storage and used only for the web
+surfaces, so feeds and subscriptions can be personal while playback stays
+anonymous.
+
+Backup & restore writes one JSON file through the system file picker. The file
+contains the library and preferences, never cookies or accounts, and can be
+stored in Google Drive, on a USB stick, or on another phone.
+
+## 6. Background playback
+
+`PlaybackService : MediaSessionService` owns the player, so audio keeps playing
+with the screen off by default. The setting **Keep playing in the background**
+can turn this off: the root composable observes the activity lifecycle and
+pauses playback on `ON_STOP`. Both behaviours use the same media session, so the
+notification and lock-screen controls stay correct either way.
+
+## 7. Permissions
+
+Internet, network state, wake lock, foreground media playback and notifications.
+Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
+
+## 8. Feature set
+
+| Area | WeTube |
 |---|---|
-| Package | `com.google.android.youtube` |
-| Version | 21.45.82 (versionCode 1561310996) |
-| APK SHA-256 | `a18e7f723293704e2069424042a8cb1189d10726ddd6de21413c754a21827ae8` |
-| Size | 222 MB, 8 DEX files, 54,468 top-level classes |
-| minSdk / targetSdk | 29 / 37 |
+| UI | Hand-written Jetpack Compose, dark and light |
+| Transport | Direct InnerTube over JSON, plus Invidious and Piped |
+| Playback | Progressive, merged A/V, HLS live |
+| Subtitles | Tracks from the video itself, CC menu, YouTube auto-translation with fallback |
+| Gestures | Hold for 2×, tap to pause in Shorts, vertical pager |
+| Comments | Native top/newest feed with paging, likes, reply counts and avatars; browser fallback |
+| Shorts | Dedicated swipe feed, own progress bar, captions, comments, pause indicator |
+| Library | History, favourites, resume points, local subscriptions |
+| Accounts | Optional, multiple, removable; cookies excluded from backups |
+| Data portability | JSON backup through the system file picker |
+| Extras | SponsorBlock auto-skip, Return YouTube Dislike |
+| Ads / telemetry | None |
 
-Tooling: REA with the `jadx-headless-mcp` 0.7.1 engine
-(`artifact_sha256 6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75`).
-Evidence: `ev_6812c988…` (package/manifest) and `ev_32235901…` (summary view).
+## 9. Known limits
 
-> Static decompilation never establishes runtime behaviour. Everything below is
-> either an observed declaration (class exists, string exists, manifest says X)
-> or an inference clearly marked as such.
+- Age-restricted videos may require a signed-in browser session. WeTube does not
+  fake YouTube's JavaScript challenge; the player says which wall it hit.
+- Some networks present a bot check to any third-party client. Nothing is
+  bypassed.
+- Machine-translated caption tracks are rate-limited by YouTube on some
+  networks. The original captions are shown instead.
+- Comments are read-only: liking, replying and reading replies need a signed-in
+  session. The sheet offers the watch page in the browser instead.
+- Downloads, playlists and live chat are not implemented yet; see
+  `ROADMAP.md`.
 
----
+## Legal note
 
-## 1. The UI is server-driven, not hand-written per screen
-
-**Observed.** `com.google.android.libraries.elements.*` contains 170+ classes.
-The app also ships Litho (`com.facebook.litho.ComponentHost`, `ComponentTree`)
-and classic `RecyclerView`. Jetpack Compose is present only incidentally
-(`androidx.compose.ui.input.pointer.PointerInputEventHandler`) — effectively
-unused.
-
-**Inference.** Feed screens are described by protobuf "Elements" trees sent by
-the server and rendered by a generic engine. This is why YouTube can change its
-layout without an app update, and why the app is enormous.
-
-**What WeTube does.** Hand-written Jetpack Compose. It is the opposite trade-off:
-small, predictable, fast, and fully auditable. We lose server-pushed layout
-experiments — which is precisely what users of alternative clients want.
-
----
-
-## 2. Transport: Cronet + gRPC + protobuf InnerTube
-
-**Observed.**
-
-- `org.chromium.net.CronetEngine` / `ExperimentalCronetEngine` are bundled.
-- `io.grpc.*` is bundled, including a **binder transport** (`io.grpc.binder.*`).
-- Content type string `application/grpc` is present.
-- Hosts: `youtubei.googleapis.com`, plus `release-`/`test-` sandbox variants and
-  `redirector.googlevideo.com`.
-- Proto contracts under `com.google.protos.youtube.api.innertube.*`, e.g.
-  `InnertubeContext$ClientInfo`, `InnertubeContext$InnerTubeContext`, and the
-  envelope type `type.googleapis.com/youtube.api.pfiinnertube.YoutubeApiInnertube.AnyInnertubeResponse`.
-- RPC path keys such as `get_watch`, `player/ad_break`, `reel/reel_item_watch`.
-
-**Inference.** The official client no longer speaks a simple REST API. It speaks
-gRPC with protobuf envelopes to `youtubei.googleapis.com`, with the client
-identity (`ClientInfo`) embedded in every request.
-
-**What WeTube does.** A `TubeBackend` interface with three implementations.
-The default is a **direct InnerTube backend** written from scratch, over plain
-JSON HTTP:
-
-- It POSTs the same envelope shape the official client does, but with no
-  attestation, no PoToken, and no protobuf binding — responses are walked as a
-  generic JSON tree so added fields cannot break parsing.
-- It uses **two client profiles**, because they are good at different things:
-  `ANDROID_VR` for playback (returns plain, non-ciphered stream URLs) and `WEB`
-  for search (returns cards with duration and upload date). This mirrors what
-  many alternative clients do and was chosen after probing which profiles still
-  answer.
-- Search pagination is a real continuation token, not a fake "load more".
-
-`InvidiousBackend` and `PipedBackend` remain selectable for people who prefer
-routing metadata through an instance, or when a client profile gets rotated.
-
-That last point is the honest trade-off: a vendored client profile is a moving
-target. The interface boundary is what keeps that from being fatal — the UI
-depends on `TubeBackend`, never on a transport.
-
-`docs/` keeps the learning; the product does not depend on it.
-
----
-
-## 3. Playback: Media3/ExoPlayer with a custom pipeline
-
-**Observed.** `androidx.media3.exoplayer.ExoPlayer`,
-`DashMediaSource$Factory`, `media3.decoder.*`, plus Google-internal wrappers
-under `com.google.android.libraries.youtube.media.player.exo2.*` and bandwidth
-interfaces (`SharedBandwidthSampleTracker`, `OnesieBandwidthSampleProvider`).
-DRM string `widevine` is present.
-
-**Inference.** Adaptive streaming (DASH) with Widevine for protected content and
-a shared bandwidth estimator that also feeds quality selection for thumbnails
-and prefetch.
-
-**What WeTube does.** Media3, but split across three paths:
-
-- **Muxed** progressive stream when the backend offers one (simple, robust).
-- **Separate video + audio** merged into one `MergingMediaSource` when that gives
-  higher quality. The UI emits a private `wetube-merge://` URI; the playback
-  service expands it. This keeps Media3 out of the UI and works across the
-  `MediaSession` boundary, which is where most clients get stuck.
-- **HLS** for live streams, which only publish a manifest.
-
-Track preference is H.264/AAC up to 2160p: hardware decode is near-universal,
-whereas 4K VP9/AV1 often falls back to software decode on phones.
-
-Bandwidth adaptation is delegated to ExoPlayer's default `AdaptiveTrackSelection`
-— reimplementing YouTube's estimator would be guessing.
-
-Known limitation, stated plainly: on some networks `googlevideo` throttles or
-rejects URLs whose `n` parameter has not been transformed. We do not implement
-that transform yet, so playback can fail even though resolution succeeded;
-switching backend or network is the current workaround (`docs/ROADMAP.md`).
-
----
-
-## 4. App shell and modularisation
-
-**Observed.** `com.google.android.apps.youtube.app.watchwhile.MainActivity`
-(61 methods) is the real home activity, hidden behind many `activity-alias`
-entries (`Shell$HomeActivity`, `com.google.android.youtube.HomeActivity`, three
-launcher icons `Shell$Icon1..3Activity`). Feature code lives in
-`com.google.android.libraries.youtube.*` libraries: `player`, `offline`,
-`notification`, `upload`, `account`, `search`.
-
-**Inference.** A thin `:app` shell over dozens of Gradle modules, with aliases so
-that launchers, deep links and icon packs can all target the same activity.
-
-**What WeTube does.** One module, packages by feature
-(`data/`, `player/`, `ui/home`, `ui/search`, …). Deep links (`youtu.be/ID`,
-`youtube.com/watch?v=ID`) are handled in `MainActivity` and routed into the
-Compose nav graph.
-
----
-
-## 5. State, storage and configuration
-
-**Observed.**
-
-- `androidx.room.*` and two Room databases for notifications
-  (`ChimePerAccountRoomDatabase`, `GnpPerAccountRoomDatabase`).
-- Proto DataStore (`watchstorage.pb` string in DEX).
-- `com.google.android.libraries.phenotype.*` — Google's flag/experiment system,
-  with a background update receiver and a metadata holder service.
-- Glide (`com.bumptech.glide.*`) with an AVIF module.
-
-**Inference.** Watch state is protobuf on disk; server-controlled experiments
-arrive through Phenotype; images go through Glide with modern codec support.
-
-**What WeTube does.** Preferences DataStore for settings and a JSON-encoded local
-library (history, favourites, resume points, local subscriptions). Signing in is
-optional: an in-app browser session is harvested into the app's private storage
-and used only for the web surfaces, so feeds and subscriptions can be personal
-while playback stays anonymous. No experiments, no remote flags. Coil for
-images (OkHttp-backed, Coroutine-friendly).
-
----
-
-## 6. Offline and background
-
-**Observed.** `com.google.android.libraries.mdi.download.*` (MDD) with a
-`ForegroundDownloadService`, `BackgroundPlayerService` with
-`foregroundServiceType="mediaPlayback"`, `MainAppMediaBrowserService`,
-`OfflineKeepAliveService`, `SmartDownloads*` settings screens.
-
-**What WeTube does.** `PlaybackService : MediaSessionService` owns ExoPlayer, so
-audio keeps playing with the screen off and a media notification is generated by
-Media3. Downloads and smart-download scheduling are on the roadmap, not faked.
-
----
-
-## 7. Permissions worth noticing
-
-The manifest asks for far more than playback needs: camera, microphone,
-contacts, fine location, phone state, `SYSTEM_ALERT_WINDOW`, AD_ID, NFC,
-`DETECT_SCREEN_CAPTURE`, and a `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`.
-
-**What WeTube does.** Internet, network state, wake lock, foreground media
-playback, notifications. Nothing else. There is no analytics SDK and no ad SDK
-in the dependency graph.
-
----
-
-## 8. Feature matrix: what we ported and what we deliberately skipped
-
-| Official behaviour | WeTube |
-|---|---|
-| Server-driven Litho/Elements UI | Hand-written Compose (intentional) |
-| gRPC InnerTube + attestation | Direct InnerTube over JSON (VR + WEB profiles) |
-| DASH + Widevine | Media3: progressive, merged A/V, HLS for live; no DRM content |
-| Ads, ad breaks, ad personalisation | **None** |
-| Telemetry, AD_ID, experiments | **None** |
-| Smart downloads / MDD | Roadmap |
-| Live chat | Roadmap |
-| — | **SponsorBlock auto-skip** (new) |
-| — | **Return YouTube Dislike** (new) |
-| — | **Instance failover** (new) |
-| — | **Local-only library, optional account** (new) |
-| — | **Backup file to Drive/anywhere** (new) |
-| — | **Shorts section** (new) |
-| — | **Player fullscreen, letterboxed for portrait and landscape** (new) |
-
----
-
-## Legal / ethical note
-
-This was a learning exercise on a publicly downloadable package, using static
-analysis only. No DRM was bypassed, no service was scraped at scale, and no
-decompiled code, resource, or string table was copied into this repository.
-WeTube talks only to independent, documented APIs that the user configures.
-Review YouTube's Terms of Service and your local law before distributing a
-client that talks to YouTube-derived services.
+WeTube is an interoperability project. It does not bypass DRM, does not scrape
+at scale, and does not redistribute proprietary code or assets. It talks only to
+the endpoints that a normal browser session uses. Review YouTube's Terms of
+Service and your local law before distributing or using a third-party client.

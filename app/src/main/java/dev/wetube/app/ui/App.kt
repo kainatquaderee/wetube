@@ -13,10 +13,15 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -24,6 +29,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.ui.auth.SignInScreen
 import dev.wetube.app.ui.channel.ChannelScreen
 import dev.wetube.app.ui.credits.CreditsScreen
@@ -45,11 +51,29 @@ private val tabs = listOf(
 )
 
 @Composable
-fun WeTubeRoot(locator: ServiceLocator, startVideoId: String? = null) {
+fun WeTubeRoot(
+    locator: ServiceLocator,
+    startVideoId: String? = null,
+    startRequest: Int = 0,
+) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
     val showBottomBar = tabs.any { it.route == currentRoute }
+
+    // "Keep playing in the background" can be switched off; in that case
+    // leaving the app pauses audio instead of keeping the media session alive.
+    val prefs by locator.settings.settings.collectAsStateWithLifecycle(initialValue = AppSettings())
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, prefs.backgroundPlayback) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP && !prefs.backgroundPlayback) {
+                locator.playback.pause()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Scaffold(
         bottomBar = {
@@ -150,7 +174,7 @@ fun WeTubeRoot(locator: ServiceLocator, startVideoId: String? = null) {
         }
     }
 
-    LaunchedEffect(startVideoId) {
+    LaunchedEffect(startVideoId, startRequest) {
         if (!startVideoId.isNullOrBlank()) {
             navController.navigate("watch/$startVideoId") { launchSingleTop = true }
         }

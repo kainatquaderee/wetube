@@ -17,6 +17,7 @@ import dev.wetube.app.data.local.BackupStore
 import dev.wetube.app.data.local.LibraryStore
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.data.prefs.SettingsStore
+import dev.wetube.app.player.CaptionLoader
 import dev.wetube.app.player.PlaybackController
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
@@ -77,6 +78,7 @@ class ServiceLocator(context: Context) {
     val sponsorBlock = SponsorBlockClient(jsonHttp)
     val dislikes = DislikeClient(jsonHttp)
     val playback = PlaybackController(appContext)
+    val captionLoader = CaptionLoader(jsonHttp)
 
     /** Settings plus whichever account the backends were built for. */
     private data class BackendKey(val settings: AppSettings, val account: String)

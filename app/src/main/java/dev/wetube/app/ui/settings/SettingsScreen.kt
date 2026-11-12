@@ -52,6 +52,7 @@ import dev.wetube.app.data.auth.Account
 import dev.wetube.app.data.backend.BackendType
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.ui.formatSpeed
 import dev.wetube.app.ui.friendlyError
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -265,8 +266,20 @@ fun SettingsScreen(
             checked = settings.audioOnly,
             onChange = { value -> viewModel.update { it.copy(audioOnly = value) } },
         )
+        SwitchRow(
+            title = "Keep playing in the background",
+            subtitle = "When off, playback pauses as soon as you leave the app.",
+            checked = settings.backgroundPlayback,
+            onChange = { value -> viewModel.update { it.copy(backgroundPlayback = value) } },
+        )
+        SwitchRow(
+            title = "Captions on by default",
+            subtitle = "Show subtitles whenever the video has a caption track.",
+            checked = settings.captionsEnabled,
+            onChange = { value -> viewModel.update { it.copy(captionsEnabled = value) } },
+        )
         Text(
-            "Default speed: ${settings.playbackSpeed}×",
+            "Default speed: ${formatSpeed(settings.playbackSpeed)}",
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 8.dp),
         )
@@ -329,8 +342,7 @@ fun SettingsScreen(
         }
         Text("WeTube ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
         Text(
-            "Open-source client. Learnt from how the official app is structured, " +
-                "written from scratch — no decompiled code is included.",
+            "A clean-room, open-source client written from scratch.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

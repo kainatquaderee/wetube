@@ -42,6 +42,7 @@ object StreamResolver {
         p.hls?.takeIf { it.isNotBlank() }?.let { url ->
             return MediaItem.Builder()
                 .setUri(url)
+                .setMediaId(detail.item.id)
                 .setMimeType(MimeTypes.APPLICATION_M3U8)
                 .setMediaMetadata(metadata)
                 .build()
@@ -49,14 +50,14 @@ object StreamResolver {
 
         if (audioOnly) {
             val track = bestAudio ?: bestMuxed
-            return track?.let { build(it.url, it.mime, metadata) }
+            return track?.let { build(it.url, it.mime, detail.item.id, metadata) }
         }
 
         // Prefer the muxed track when a backend offers one. It needs a single
         // connection and avoids pairing URLs that can expire independently;
         // separate tracks are the main source of 403s after the first segment.
         bestMuxed?.takeIf { it.url.isNotBlank() }?.let { track ->
-            return build(track.url, track.mime, metadata)
+            return build(track.url, track.mime, detail.item.id, metadata)
         }
 
         if (bestVideo != null && bestAudio != null &&
@@ -69,16 +70,26 @@ object StreamResolver {
                 .appendQueryParameter("vmime", bestVideo.mime)
                 .appendQueryParameter("amime", bestAudio.mime)
                 .build()
-            return MediaItem.Builder().setUri(uri).setMediaMetadata(metadata).build()
+            return MediaItem.Builder()
+                .setUri(uri)
+                .setMediaId(detail.item.id)
+                .setMediaMetadata(metadata)
+                .build()
         }
 
         val fallback = bestMuxed ?: bestVideo ?: bestAudio
-        return fallback?.let { build(it.url, it.mime, metadata) }
+        return fallback?.let { build(it.url, it.mime, detail.item.id, metadata) }
     }
 
-    private fun build(url: String, mime: String, metadata: MediaMetadata): MediaItem =
+    private fun build(
+        url: String,
+        mime: String,
+        videoId: String,
+        metadata: MediaMetadata,
+    ): MediaItem =
         MediaItem.Builder()
             .setUri(url)
+            .setMediaId(videoId)
             .apply { if (mime.isNotBlank()) setMimeType(mime) }
             .setMediaMetadata(metadata)
             .build()

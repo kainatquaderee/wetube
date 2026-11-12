@@ -11,6 +11,11 @@ easy to demo.
 - [x] Local history, favourites
 - [x] SponsorBlock, Return YouTube Dislike
 - [x] Backend/instance switching (direct InnerTube default), deep links
+- [x] Subtitles/CC picker with YouTube auto-translation and original-track fallback
+- [x] Hold the video for 2× playback
+- [x] Background playback can be switched off
+- [x] Shorts: swipe feed, progress bar, tap-to-pause, CC
+- [x] Comments: native top/newest reader with paging, browser fallback
 - [x] No ads, no trackers, no account
 
 ## 0.2 — player reliability & downloads
@@ -29,7 +34,7 @@ easy to demo.
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override
-- [ ] Captions: track picker, style, download
+- [ ] Caption style (size, background), download, per-channel defaults
 - [ ] Sleep timer, "stop after this video"
 - [ ] PiP with proper enter/exit animations
 - [ ] Quality picker (manual override of adaptive selection)
@@ -38,7 +43,7 @@ easy to demo.
 - [ ] DeArrow titles/thumbnails (opt-in)
 
 ## 0.4 — social without an account
-- [ ] Comment threads with replies and paging
+- [ ] Reply threads under each comment
 - [ ] Timestamped comments that seek
 - [ ] Share sheet, copy link at timestamp
 - [ ] Local "likes" for organising favourites

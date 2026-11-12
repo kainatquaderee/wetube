@@ -8,6 +8,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -18,6 +19,9 @@ class MainActivity : ComponentActivity() {
 
     private val startVideoId = mutableStateOf<String?>(null)
 
+    /** Bumped for every launch intent so the same link can be opened twice. */
+    private val startRequest = mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -26,11 +30,15 @@ class MainActivity : ComponentActivity() {
         locator.playback.connect()
 
         requestNotificationPermission()
-        startVideoId.value = videoIdFrom(intent)
+        open(intent)
 
         setContent {
             WeTubeTheme {
-                WeTubeRoot(locator = locator, startVideoId = startVideoId.value)
+                WeTubeRoot(
+                    locator = locator,
+                    startVideoId = startVideoId.value,
+                    startRequest = startRequest.intValue,
+                )
             }
         }
     }
@@ -38,7 +46,12 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        open(intent)
+    }
+
+    private fun open(intent: Intent?) {
         startVideoId.value = videoIdFrom(intent)
+        startRequest.intValue++
     }
 
     private fun requestNotificationPermission() {

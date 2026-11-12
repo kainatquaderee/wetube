@@ -2,6 +2,7 @@ package dev.wetube.app.data.backend
 
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
+import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
@@ -28,6 +29,13 @@ interface TubeBackend {
     suspend fun channel(id: String): ChannelInfo
 
     suspend fun comments(id: String): List<Comment>
+
+    /**
+     * One page of comments, starting from a token handed out by the watch
+     * response (or by a previous page). Backends without pagination keep the
+     * default: one call to [comments] and no next page.
+     */
+    suspend fun commentsPage(token: String): CommentPage = CommentPage()
 
     suspend fun related(id: String): List<VideoItem> = emptyList()
 

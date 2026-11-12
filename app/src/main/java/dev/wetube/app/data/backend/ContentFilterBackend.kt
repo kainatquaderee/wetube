@@ -3,6 +3,7 @@ package dev.wetube.app.data.backend
 import dev.wetube.app.data.content.AgeGateStore
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
+import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
@@ -72,6 +73,8 @@ class ContentFilterBackend(
     }
 
     override suspend fun comments(id: String): List<Comment> = delegate.comments(id)
+
+    override suspend fun commentsPage(token: String): CommentPage = delegate.commentsPage(token)
 
     override suspend fun related(id: String): List<VideoItem> = visible(delegate.related(id))
 

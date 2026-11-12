@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -19,11 +21,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material3.AssistChip
@@ -40,11 +44,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.activity.compose.BackHandler
-import androidx.annotation.OptIn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,16 +70,27 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import android.os.Handler
+import android.os.Looper
+import android.view.MotionEvent
 import dev.wetube.app.data.extras.SponsorSegment
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.player.CaptionSession
 import dev.wetube.app.player.StreamResolver
+import dev.wetube.app.ui.CaptionSpeedBadge
 import dev.wetube.app.ui.CompactVideoRow
 import dev.wetube.app.ui.LoadingBox
 import dev.wetube.app.ui.MessageBox
+import dev.wetube.app.ui.captions.CaptionOverlay
+import dev.wetube.app.ui.captions.CaptionSheet
+import dev.wetube.app.ui.comments.CommentsSheet
 import dev.wetube.app.ui.compactCount
+import dev.wetube.app.ui.formatSpeed
 import dev.wetube.app.ui.friendlyError
 import dev.wetube.app.ui.parseChapters
+import dev.wetube.app.ui.rememberIsBuffering
+import dev.wetube.app.ui.rememberPlayerPosition
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -89,7 +104,30 @@ data class PlayerUiState(
     val segments: List<SponsorSegment> = emptyList(),
     val favourite: Boolean = false,
     val descriptionExpanded: Boolean = false,
+    val speed: Float = 1f,
 )
+
+/**
+ * A re-resolve (explicit retry, or playback recovery) can come back without the
+ * watch-page extras: YouTube sometimes answers the player call but not the
+ * `next` call in the same moment, which would blank out likes, related videos
+ * and the comment section. Fill those in from the detail we already had.
+ */
+private fun merge(previous: VideoDetail?, fresh: VideoDetail): VideoDetail {
+    if (previous == null || previous.item.id != fresh.item.id) return fresh
+    return fresh.copy(
+        likes = fresh.likes.takeIf { it > 0 } ?: previous.likes,
+        subscribersText = fresh.subscribersText.ifBlank { previous.subscribersText },
+        description = fresh.description.ifBlank { previous.description },
+        related = fresh.related.ifEmpty { previous.related },
+        captions = if (fresh.captions.isEmpty) previous.captions else fresh.captions,
+        comments = if (fresh.comments.continuation.isNotBlank()) {
+            fresh.comments
+        } else {
+            previous.comments
+        },
+    )
+}
 
 class PlayerViewModel(
     private val locator: ServiceLocator,
@@ -98,6 +136,9 @@ class PlayerViewModel(
 
     var state by mutableStateOf(PlayerUiState())
         private set
+
+    /** Shared with the CC sheet and the overlay. */
+    val captions = CaptionSession(locator, viewModelScope)
 
     private var lastSaved = 0L
 
@@ -133,13 +174,16 @@ class PlayerViewModel(
                 }
                 val dislikes = if (settings.showDislikes) locator.dislikes.dislikes(videoId) else null
 
+                val merged = merge(state.detail, detail)
                 state = state.copy(
                     loading = false,
-                    detail = detail,
+                    detail = merged,
                     segments = segments,
                     dislikes = dislikes,
                     favourite = favourite,
+                    speed = settings.playbackSpeed,
                 )
+                captions.attach(merged)
                 recoveries = 0
             }.onFailure {
                 if (dev.wetube.app.BuildConfig.DEBUG) {
@@ -178,6 +222,7 @@ class PlayerViewModel(
     }
 
     fun setSpeed(speed: Float) {
+        state = state.copy(speed = speed)
         viewModelScope.launch {
             locator.settings.update { it.copy(playbackSpeed = speed) }
             locator.playback.setSpeed(speed)
@@ -208,7 +253,7 @@ class PlayerViewModel(
                 val detail = locator.backend().video(videoId)
                 val item = StreamResolver.mediaItem(detail, settings.audioOnly)
                     ?: error("This video has no playable streams any more.")
-                state = state.copy(detail = detail, error = null)
+                state = state.copy(detail = merge(state.detail, detail), error = null)
                 locator.playback.play(
                     item = item,
                     speed = settings.playbackSpeed,
@@ -229,7 +274,7 @@ class PlayerViewModel(
     }
 }
 
-@OptIn(UnstableApi::class)
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun PlayerScreen(
     locator: ServiceLocator,
@@ -249,11 +294,18 @@ fun PlayerScreen(
     val view = LocalView.current
 
     var fullscreen by remember { mutableStateOf(false) }
+    var showCaptionSheet by remember { mutableStateOf(false) }
+    var showComments by remember { mutableStateOf(false) }
+    var holding by remember { mutableStateOf(false) }
+    var speedBeforeHold by remember { mutableFloatStateOf(1f) }
+
+    val buffering = rememberIsBuffering(controller)
+    val positionMs = rememberPlayerPosition(controller)
 
     val playerView = remember {
         PlayerView(context).apply {
             useController = true
-            setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+            setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
             // Fit (letterbox) rather than zoom, so portrait clips are shown
             // whole in the tall fullscreen surface instead of being cropped.
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -287,6 +339,41 @@ fun PlayerScreen(
     BackHandler(enabled = fullscreen) { fullscreen = false }
 
     LaunchedEffect(controller) { playerView.player = controller }
+
+    // Hold the video (or anywhere on the player surface) for 2×. The touch
+    // listener returns false, so the normal controller taps and the progress
+    // bar keep working unchanged.
+    DisposableEffect(controller, playerView) {
+        val player = controller ?: return@DisposableEffect onDispose { }
+        val handler = Handler(Looper.getMainLooper())
+        val startHold = Runnable {
+            if (!player.isPlaying) return@Runnable
+            speedBeforeHold = player.playbackParameters.speed
+            if (speedBeforeHold != 2f) player.setPlaybackSpeed(2f)
+            holding = true
+        }
+        playerView.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> handler.postDelayed(startHold, 300L)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacks(startHold)
+                    if (holding) {
+                        player.setPlaybackSpeed(speedBeforeHold)
+                        holding = false
+                    }
+                }
+            }
+            false
+        }
+        onDispose {
+            handler.removeCallbacks(startHold)
+            playerView.setOnTouchListener(null)
+            if (holding) {
+                player.setPlaybackSpeed(speedBeforeHold)
+                holding = false
+            }
+        }
+    }
 
     DisposableEffect(controller) {
         val player = controller ?: return@DisposableEffect onDispose { }
@@ -356,12 +443,30 @@ fun PlayerScreen(
                     tint = Color.White,
                 )
             }
-            if (controller == null) {
+            if (controller == null || buffering) {
                 CircularProgressIndicator(
                     modifier = Modifier.align(Alignment.Center),
                     color = Color.White,
                 )
             }
+
+            if (holding) {
+                CaptionSpeedBadge(
+                    text = "2×",
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp),
+                )
+            }
+
+            CaptionOverlay(
+                session = viewModel.captions,
+                positionMs = positionMs,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 56.dp),
+            )
         }
 
         if (fullscreen) return@Column
@@ -380,14 +485,36 @@ fun PlayerScreen(
                 segmentCount = state.segments.size,
                 favourite = state.favourite,
                 descriptionExpanded = state.descriptionExpanded,
+                speed = state.speed,
+                captionsEnabled = viewModel.captions.enabled,
+                captionsAvailable = viewModel.captions.tracks.isNotEmpty(),
+                commentCount = state.detail.comments.countText,
                 onToggleDescription = viewModel::toggleDescription,
                 onToggleFavourite = viewModel::toggleFavourite,
                 onSpeed = viewModel::setSpeed,
+                onCaptions = { showCaptionSheet = true },
+                onComments = { showComments = true },
                 onSeek = { controller?.seekTo(it) },
                 onVideoClick = onVideoClick,
                 onChannelClick = onChannelClick,
             )
         }
+    }
+
+    if (showCaptionSheet) {
+        CaptionSheet(
+            session = viewModel.captions,
+            onDismiss = { showCaptionSheet = false },
+        )
+    }
+
+    if (showComments && state.detail != null) {
+        CommentsSheet(
+            locator = locator,
+            videoId = videoId,
+            info = state.detail.comments,
+            onDismiss = { showComments = false },
+        )
     }
 }
 
@@ -397,6 +524,7 @@ private tailrec fun android.content.Context.findActivity(): android.app.Activity
     else -> null
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PlayerInfo(
     detail: VideoDetail,
@@ -404,9 +532,15 @@ private fun PlayerInfo(
     segmentCount: Int,
     favourite: Boolean,
     descriptionExpanded: Boolean,
+    speed: Float,
+    captionsEnabled: Boolean,
+    captionsAvailable: Boolean,
+    commentCount: String,
     onToggleDescription: () -> Unit,
     onToggleFavourite: () -> Unit,
     onSpeed: (Float) -> Unit,
+    onCaptions: () -> Unit,
+    onComments: () -> Unit,
     onSeek: (Long) -> Unit,
     onVideoClick: (String) -> Unit,
     onChannelClick: (String) -> Unit,
@@ -435,12 +569,20 @@ private fun PlayerInfo(
         )
 
         Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AssistChip(
-                onClick = {},
-                label = { Text(compactCount(detail.likes) + " likes") },
-                leadingIcon = { Icon(Icons.Default.ThumbUp, null, Modifier.size(16.dp)) },
-            )
+        // FlowRow: five chips do not fit on a phone in one line; letting them
+        // wrap keeps every label readable (the old Row squeezed "Speed" into
+        // "Spee / d" and pushed the last chip off-screen).
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (detail.likes > 0) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text(compactCount(detail.likes) + " likes") },
+                    leadingIcon = { Icon(Icons.Default.ThumbUp, null, Modifier.size(16.dp)) },
+                )
+            }
             if (dislikes != null) {
                 AssistChip(
                     onClick = {},
@@ -462,21 +604,48 @@ private fun PlayerInfo(
             Box {
                 AssistChip(
                     onClick = { speedMenu = true },
-                    label = { Text("Speed") },
+                    label = { Text(formatSpeed(speed)) },
                     leadingIcon = { Icon(Icons.Default.Speed, null, Modifier.size(16.dp)) },
                 )
                 DropdownMenu(expanded = speedMenu, onDismissRequest = { speedMenu = false }) {
-                    listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f).forEach { speed ->
+                    listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f).forEach { choice ->
                         DropdownMenuItem(
-                            text = { Text("${speed}×") },
+                            text = { Text(if (choice == speed) "${formatSpeed(choice)}  ✓" else formatSpeed(choice)) },
                             onClick = {
                                 speedMenu = false
-                                onSpeed(speed)
+                                onSpeed(choice)
                             },
                         )
                     }
                 }
             }
+            AssistChip(
+                onClick = onCaptions,
+                enabled = captionsAvailable,
+                label = { Text(if (captionsEnabled) "CC on" else "CC") },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Subtitles,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+            )
+            AssistChip(
+                onClick = onComments,
+                label = {
+                    Text(
+                        if (commentCount.isNotBlank()) "Comments $commentCount" else "Comments",
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.ChatBubbleOutline,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+            )
         }
 
         if (segmentCount > 0) {
