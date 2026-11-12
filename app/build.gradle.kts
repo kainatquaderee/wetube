@@ -1,9 +1,21 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
+
+// Signing material is never committed. Locally it comes from keystore.properties
+// (git-ignored); in CI it comes from repository secrets exported as env vars.
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use(::load)
+}
+
+fun signingValue(property: String, env: String): String? =
+    keystoreProperties.getProperty(property) ?: System.getenv(env)
 
 android {
     namespace = "dev.wetube.app"
@@ -17,10 +29,46 @@ android {
         versionName = "0.1.0"
     }
 
+    // Keep the APK free of the dependency metadata block; nothing in the app
+    // reads it and it only adds bytes to distribute.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
+    signingConfigs {
+        create("release") {
+            val storePath = signingValue("storeFile", "WETUBE_KEYSTORE_PATH")
+            if (!storePath.isNullOrBlank()) {
+                val store = rootProject.file(storePath).takeIf { it.exists() } ?: file(storePath)
+                if (store.exists()) {
+                    storeFile = store
+                    storePassword = signingValue("storePassword", "WETUBE_KEYSTORE_PASSWORD")
+                    keyAlias = signingValue("keyAlias", "WETUBE_KEY_ALIAS")
+                    keyPassword = signingValue("keyPassword", "WETUBE_KEY_PASSWORD")
+                }
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
-            isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            // Forks and pull requests have no signing key. Falling back to the
+            // debug key keeps `assembleRelease` producing something installable
+            // instead of failing; real releases use the config above.
+            signingConfig = signingConfigs.getByName("release").storeFile
+                ?.let { signingConfigs.getByName("release") }
+                ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -35,6 +83,14 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    lint {
+        abortOnError = true
+        checkDependencies = true
+        // Version bumps are handled deliberately, not on every CI run.
+        disable += setOf("GradleDependency", "AndroidGradlePluginVersion")
     }
 
     packaging {

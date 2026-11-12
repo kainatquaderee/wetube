@@ -8,3 +8,9 @@ local.properties
 captures/
 .externalNativeBuild/
 .cxx/
+
+# Signing material — never commit these.
+keystore.properties
+*.jks
+*.keystore
+.kotlin/

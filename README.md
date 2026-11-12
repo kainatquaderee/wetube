@@ -1,5 +1,7 @@
 # WeTube
 
+[![Build](https://github.com/kainatquaderee/wetube/actions/workflows/android.yml/badge.svg)](https://github.com/kainatquaderee/wetube/actions/workflows/android.yml)
+
 A small, fast, open-source YouTube client for Android.
 **No ads. No trackers. No account. No analytics.**
 
@@ -42,6 +44,20 @@ resolves.
 - Only 6 permissions, all playback-related
 - History and preferences never leave the device
 
+## Install
+
+Grab `app-release.apk` from
+[Releases](https://github.com/kainatquaderee/wetube/releases), or from the
+artifacts of any successful [CI run](https://github.com/kainatquaderee/wetube/actions),
+then:
+
+```bash
+adb install -r app-release.apk
+```
+
+The debug build carries a `.debug` application id, so it can sit next to the
+release build without replacing it.
+
 ## Build
 
 Requirements: JDK 17+, Android SDK 35, Android Studio or the Gradle CLI.
@@ -50,9 +66,15 @@ Requirements: JDK 17+, Android SDK 35, Android Studio or the Gradle CLI.
 # local.properties
 sdk.dir=/path/to/Android/Sdk
 
-./gradlew assembleDebug
-# app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleDebug     # app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
 ```
+
+Release builds are minified with R8. Without a signing key they fall back to the
+debug key so local builds still work; CI signs with the repository secrets
+(`WETUBE_KEYSTORE_BASE64`, `WETUBE_KEYSTORE_PASSWORD`, `WETUBE_KEY_ALIAS`,
+`WETUBE_KEY_PASSWORD`). Locally, put the same values in a git-ignored
+`keystore.properties`.
 
 ## Architecture
 

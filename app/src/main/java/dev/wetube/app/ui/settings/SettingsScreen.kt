@@ -33,6 +33,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import dev.wetube.app.BuildConfig
 import dev.wetube.app.data.backend.BackendType
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.di.ServiceLocator
@@ -173,7 +174,7 @@ fun SettingsScreen(
         )
 
         Section("About")
-        Text("WeTube 0.1.0", style = MaterialTheme.typography.bodyMedium)
+        Text("WeTube ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
         Text(
             "Open-source client. Learnt from how the official app is structured, " +
                 "written from scratch — no decompiled code is included.",
