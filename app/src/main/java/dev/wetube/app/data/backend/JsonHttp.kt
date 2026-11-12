@@ -38,6 +38,20 @@ class JsonHttp(
         }
     }
 
+    suspend fun getText(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+    ): String = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(url)
+            .apply { headers.forEach { (k, v) -> header(k, v) } }
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
+            response.body?.string().orEmpty()
+        }
+    }
+
     suspend fun postJson(
         url: String,
         body: JsonObject,

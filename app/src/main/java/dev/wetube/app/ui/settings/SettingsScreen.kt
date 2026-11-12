@@ -143,6 +143,15 @@ fun SettingsScreen(
             steps = 14,
         )
 
+        Section("Content")
+        SwitchRow(
+            title = "Show mature content",
+            subtitle = "Age-restricted videos stay hidden unless this is on. YouTube may still " +
+                "require a signed-in account to play them.",
+            checked = settings.showMature,
+            onChange = { value -> viewModel.update { it.copy(showMature = value) } },
+        )
+
         Section("Clean-up")
         SwitchRow(
             title = "SponsorBlock",

@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.drm.DrmSessionManagerProvider
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -20,9 +20,15 @@ import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
  * if a backend starts offering manifests.
  */
 @UnstableApi
-class StreamSourceFactory(context: Context) : MediaSource.Factory {
+class StreamSourceFactory(
+    context: Context,
+    httpClient: okhttp3.OkHttpClient,
+) : MediaSource.Factory {
 
-    private val dataSourceFactory = DefaultDataSource.Factory(context)
+    // Media3 would otherwise use HttpURLConnection, which resolves CDN hosts
+    // the same IPv6-first way the platform does. Going through OkHttp keeps
+    // stream downloads on the app's IPv4-first resolver and connection pool.
+    private val dataSourceFactory = OkHttpDataSource.Factory(httpClient)
     private val progressive = ProgressiveMediaSource.Factory(dataSourceFactory)
     private val hls = HlsMediaSource.Factory(dataSourceFactory)
     private val delegate = DefaultMediaSourceFactory(context)

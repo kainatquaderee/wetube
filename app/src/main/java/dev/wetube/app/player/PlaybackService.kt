@@ -9,6 +9,7 @@ import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import dev.wetube.app.R
+import dev.wetube.app.WeTubeApp
 
 /**
  * Owns the player. Playback survives the UI going away because the player lives
@@ -24,7 +25,9 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
 
         val exo = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(StreamSourceFactory(this))
+            .setMediaSourceFactory(
+                StreamSourceFactory(this, (application as WeTubeApp).locator.http),
+            )
             .setHandleAudioBecomingNoisy(true)
             .build()
             .apply {

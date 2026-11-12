@@ -132,7 +132,17 @@ class PlayerViewModel(
                     favourite = favourite,
                 )
             }.onFailure {
-                state = state.copy(loading = false, error = friendlyError(it))
+                if (dev.wetube.app.BuildConfig.DEBUG) {
+                    android.util.Log.d(
+                        "WeTube",
+                        "player load failed: ${it::class.java.simpleName} msg=${it.message}",
+                    )
+                }
+                val message = friendlyError(it)
+                if (dev.wetube.app.BuildConfig.DEBUG) {
+                    android.util.Log.d("WeTube", "friendlyError -> [${message.length}] $message")
+                }
+                state = state.copy(loading = false, error = message)
             }
         }
     }

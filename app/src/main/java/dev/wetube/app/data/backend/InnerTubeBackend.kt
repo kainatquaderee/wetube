@@ -1,5 +1,6 @@
 package dev.wetube.app.data.backend
 
+import dev.wetube.app.BuildConfig
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.Playback
@@ -14,8 +15,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.net.URLEncoder
 
@@ -44,20 +47,37 @@ class InnerTubeBackend(
 
     override val displayName: String = "Direct (InnerTube)"
 
-    private data class Profile(val userAgent: String, val context: JsonObject)
+    private data class Profile(
+        val userAgent: String,
+        val context: JsonObject,
+        /** Numeric id YouTube uses for this client in `X-Youtube-Client-Name`. */
+        val clientId: String,
+        val version: String,
+    )
+
+    // 1.65.10 is deliberate. Older ANDROID_VR builds (1.60.x) now get
+    // "Sign in to confirm you're not a bot" for most videos even when the
+    // request is otherwise correct, and unversioned or made-up builds are
+    // rejected. The inner `userAgent` field is part of the identity too.
+    private val vrUa = "com.google.android.apps.youtube.vr.oculus/1.65.10 " +
+        "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
 
     private val vr = Profile(
-        userAgent = "com.google.android.apps.youtube.vr.oculus/1.60.19 " +
-            "(Linux; U; Android 12; en_US; Quest 3 Build/SQ3A.220605.009.A1) gzip",
+        userAgent = vrUa,
+        clientId = "28",
+        version = "1.65.10",
         context = clientContext(
             name = "ANDROID_VR",
-            version = "1.60.19",
+            version = "1.65.10",
             extra = mapOf(
                 "androidSdkVersion" to 32,
                 "deviceMake" to "Oculus",
                 "deviceModel" to "Quest 3",
+                "userAgent" to vrUa,
                 "osName" to "Android",
-                "osVersion" to "12",
+                "osVersion" to "12L",
+                "timeZone" to "UTC",
+                "utcOffsetMinutes" to 0,
             ),
         ),
     )
@@ -65,12 +85,44 @@ class InnerTubeBackend(
     private val web = Profile(
         userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        clientId = "1",
+        version = "2.20240101.00.00",
         context = clientContext(
             name = "WEB",
             version = "2.20240101.00.00",
             extra = emptyMap(),
         ),
     )
+
+    /**
+     * YouTube binds freshness to a visitor id. Without one, most player calls
+     * are answered with a bot challenge no matter how correct the rest of the
+     * request is. We cache whatever the last response handed us and fall back
+     * to the homepage when a deep link opens the player before any browse call.
+     */
+    @Volatile
+    private var visitorCache: String = ""
+
+    private val visitorLock = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun visitor(): String {
+        visitorCache.takeIf { it.isNotBlank() }?.let { return it }
+        return visitorLock.withLock {
+            visitorCache.takeIf { it.isNotBlank() } ?: run {
+                runCatching {
+                    val html = http.getText(
+                        "https://www.youtube.com/",
+                        mapOf("User-Agent" to web.userAgent, "Accept-Language" to "en-US,en;q=0.9"),
+                    )
+                    Regex("\"visitorData\":\"([^\"]+)\"")
+                        .find(html)
+                        ?.groupValues
+                        ?.get(1)
+                        ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                }.getOrNull().orEmpty().also { visitorCache = it }
+            }
+        }
+    }
 
     private fun clientContext(
         name: String,
@@ -96,18 +148,30 @@ class InnerTubeBackend(
         profile: Profile,
         extra: JsonObject,
     ): JsonObject {
+        val visitor = visitor()
+        val client = profile.context["client"]!!.jsonObject.toMutableMap().apply {
+            if (visitor.isNotBlank()) put("visitorData", JsonPrimitive(visitor))
+        }
         val payload = buildJsonObject {
-            put("context", profile.context)
+            put("context", buildJsonObject { put("client", JsonObject(client)) })
             extra.forEach { (key, value) -> put(key, value) }
         }
-        return http.postJson(
-            "$endpoint/$path?key=$apiKey",
+        val response = http.postJson(
+            "$endpoint/$path?prettyPrint=false",
             payload,
-            mapOf(
-                "User-Agent" to profile.userAgent,
-                "X-Goog-Api-Format-Version" to "2",
-            ),
+            buildMap {
+                put("User-Agent", profile.userAgent)
+                put("X-Goog-Api-Format-Version", "2")
+                put("X-Youtube-Client-Name", profile.clientId)
+                put("X-Youtube-Client-Version", profile.version)
+                put("Origin", "https://www.youtube.com")
+                if (visitor.isNotBlank()) put("X-Goog-Visitor-Id", visitor)
+            },
         )
+        response["responseContext"].obj()?.str("visitorData")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { visitorCache = it }
+        return response
     }
 
     // ---- TubeBackend ----------------------------------------------------
@@ -147,17 +211,32 @@ class InnerTubeBackend(
             put("videoId", id)
             put("contentCheckOk", true)
             put("racyCheckOk", true)
+            put("playbackContext", buildJsonObject {
+                put("contentPlaybackContext", buildJsonObject {
+                    put("html5Preference", "HTML5_PREF_WANTS")
+                })
+            })
         })
 
         val status = response["playabilityStatus"].obj()?.str("status")
         if (status != "OK") {
             val reason = response["playabilityStatus"].obj()?.str("reason")
+            if (BuildConfig.DEBUG) {
+                android.util.Log.w("WeTube", "video $id playability=$status reason=$reason")
+            }
             throw IOException(reason ?: "This video is not playable ($status).")
         }
 
         val details = response["videoDetails"].obj()
         val streaming = response["streamingData"].obj()
 
+        if (BuildConfig.DEBUG) {
+            android.util.Log.d(
+                "WeTube",
+                "video $id: ${streaming?.get("formats").objects().size ?: 0} muxed, " +
+                    "${streaming?.get("adaptiveFormats").objects().size ?: 0} adaptive",
+            )
+        }
         val muxed = streaming?.get("formats").objects().mapNotNull { it.toFormat(audio = false) }
             .toMutableList()
         streaming?.str("hlsManifestUrl")?.takeIf { it.isNotBlank() }?.let { url ->

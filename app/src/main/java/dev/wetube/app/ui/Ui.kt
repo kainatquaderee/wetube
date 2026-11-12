@@ -47,6 +47,16 @@ fun formatDuration(totalSeconds: Int): String {
 fun friendlyError(t: Throwable): String {
     val raw = t.message.orEmpty()
     return when {
+        // YouTube answers 200 with this reason instead of streams when it wants
+        // an attestation token. It is per video and often clears by itself.
+        raw.contains("confirm your age", ignoreCase = true) ||
+            raw.contains("inappropriate for some users", ignoreCase = true) ->
+            "This video is age-restricted. YouTube requires a signed-in account to play it; " +
+                "WeTube does not sign in, so it cannot be played here."
+        raw.contains("not a bot", ignoreCase = true) ->
+            "YouTube asked this network to sign in before playing this video. " +
+                "It usually clears in a few minutes; try again, pick another video, " +
+                "or switch to Invidious in Settings."
         raw.contains("HTTP 404") -> "Not found on this instance."
         raw.contains("HTTP 5") -> "The instance is having trouble. Try another one in Settings."
         raw.contains("Unable to resolve host") || raw.contains("UnknownHost") ->

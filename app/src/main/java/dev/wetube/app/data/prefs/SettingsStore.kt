@@ -23,6 +23,8 @@ data class AppSettings(
     val showDislikes: Boolean = true,
     val playbackSpeed: Float = 1f,
     val audioOnly: Boolean = false,
+    /** Age-gated videos are hidden from feeds while this is off. */
+    val showMature: Boolean = false,
 )
 
 class SettingsStore(private val context: Context) {
@@ -38,6 +40,7 @@ class SettingsStore(private val context: Context) {
         val dislikes = booleanPreferencesKey("show_dislikes")
         val speed = stringPreferencesKey("playback_speed")
         val audioOnly = booleanPreferencesKey("audio_only")
+        val showMature = booleanPreferencesKey("show_mature")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -53,6 +56,7 @@ class SettingsStore(private val context: Context) {
             showDislikes = p[Keys.dislikes] ?: true,
             playbackSpeed = p[Keys.speed]?.toFloatOrNull() ?: 1f,
             audioOnly = p[Keys.audioOnly] ?: false,
+            showMature = p[Keys.showMature] ?: false,
         )
     }
 
@@ -70,6 +74,7 @@ class SettingsStore(private val context: Context) {
             p[Keys.dislikes] = next.showDislikes
             p[Keys.speed] = next.playbackSpeed.toString()
             p[Keys.audioOnly] = next.audioOnly
+            p[Keys.showMature] = next.showMature
         }
     }
 }

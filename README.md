@@ -37,6 +37,11 @@ resolves.
 - Local history, favourites, resume points — stored on device only
 - Deep links: `youtu.be/ID`, `youtube.com/watch?v=ID`
 - Choose backend and instance at runtime
+- **Show mature content** switch: age-restricted videos are hidden from feeds and search
+  until you turn it on. YouTube does not label them in listings, so WeTube learns an id the
+  first time playback hits the age wall and remembers it locally. WeTube never signs in, so
+  turning the switch on does not bypass YouTube's account requirement — it just stops the
+  app from hiding the video, and the player says plainly when an account is needed.
 
 **Privacy**
 - No ads, ad SDKs, trackers, or telemetry — verified against the built APK
@@ -99,12 +104,21 @@ learned from the official app, and why the direct backend is the default.
 
 ## Status
 
-0.1.0 — core client is implemented, builds, and was verified end to end against
-live endpoints: home feed, search paging with non-overlapping pages,
-autocomplete, player formats, related videos, and channel pages. Resolved 1080p
-video and AAC audio URLs were fetched directly and answered `HTTP 206` with
-`ftypdash`, i.e. real fragmented MP4 that ExoPlayer can play. Downloads,
-playlists, live chat and comments are tracked in `docs/ROADMAP.md`.
+0.1.1 — playback works on a real device against live endpoints. The InnerTube
+transport uses the Android VR client profile with a visitor identity, which is
+what YouTube currently accepts without an account; older client versions are
+answered with "Sign in to confirm you're not a bot". Verified: home feed with
+thumbnails, search with paging, deep links, and video playback over `HTTP 206`
+from the CDN.
+
+Two network details matter on mobile and are handled in one place: DNS is
+resolved IPv4-first (many carriers advertise IPv6 they then black-hole), and
+ExoPlayer and Coil are given the app's OkHttp client instead of their defaults,
+so streams and thumbnails use the same resolver and connection pool.
+
+Known limits: some videos are age-restricted, and some networks get a bot check
+regardless of client. Neither is bypassed — the player reports which wall it hit.
+Downloads, playlists, live chat and comments are tracked in `docs/ROADMAP.md`.
 
 ## Licence
 
