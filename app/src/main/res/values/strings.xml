@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">WeTube</string>
+    <string name="notification_channel_name">Playback</string>
+</resources>
