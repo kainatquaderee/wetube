@@ -75,8 +75,9 @@ fun SettingsScreen(
 
         Section("Backend")
         Text(
-            "WeTube reads public metadata from an independent instance you choose. " +
-                "If one is slow or blocked, switch to another.",
+            "WeTube talks to YouTube directly by default, with no account and no " +
+                "attestation. If you would rather route metadata through an independent " +
+                "instance, pick Invidious or Piped below.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -164,8 +165,9 @@ fun SettingsScreen(
         Section("Privacy")
         Text(
             "No ads. No trackers. No account. No analytics.\n\n" +
-                "WeTube stores history, favourites and resume points only on this device. " +
-                "The only network requests are the ones you trigger to the instance you picked.",
+                "History, favourites and resume points stay on this device and are excluded " +
+                "from cloud backup and device transfer. Requests go to YouTube in direct " +
+                "mode, or to the instance you choose — nothing else.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
