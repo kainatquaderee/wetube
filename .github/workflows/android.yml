@@ -27,11 +27,23 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK packages
-        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0" > /dev/null
+      # GitHub's Ubuntu images ship the SDK. We only install what is missing,
+      # and we call sdkmanager directly: android-actions/setup-android still
+      # asks for the legacy "tools" package, which current cmdline-tools no
+      # longer provide, and that fails the job before anything is built.
+      - name: Android SDK
+        run: |
+          sdk_root="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          test -n "$sdk_root" && test -d "$sdk_root" || {
+            echo "::error::No Android SDK on this runner"; exit 1; }
+          sdkmanager_bin="$(command -v sdkmanager || true)"
+          if [ -z "$sdkmanager_bin" ]; then
+            sdkmanager_bin="$(find "$sdk_root/cmdline-tools" -maxdepth 3 -name sdkmanager -type f | sort | tail -1)"
+          fi
+          if [ ! -d "$sdk_root/platforms/android-35" ] || [ ! -d "$sdk_root/build-tools/35.0.0" ]; then
+            yes | "$sdkmanager_bin" --licenses > /dev/null || true
+            yes | "$sdkmanager_bin" "platforms;android-35" "build-tools;35.0.0" "platform-tools" > /dev/null
+          fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
