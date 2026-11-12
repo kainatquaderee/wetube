@@ -28,7 +28,8 @@ resolves.
 
 **Discovery**
 - Home feed by region, or your own recommendations and subscriptions when signed in
-- Dedicated **Shorts** section: full-screen, swipe up for the next clip
+- Dedicated **Shorts** section: swipe up for the next clip; signed in, it follows
+  your own account's Shorts shelf
 - Search with autocomplete and real continuation paging
 - Channels, related videos, like/subscriber counts, upload date
 - Local **Subscribe** on any channel, independent of any account
@@ -48,6 +49,8 @@ resolves.
   back the same way. Cookies and accounts are never in the file.
 
 **Quality of life**
+- **Fullscreen** button on the player that hides the system bars; landscape and
+  portrait videos both letterbox correctly
 - **SponsorBlock** auto-skip (sponsor / self-promo / interaction)
 - **Return YouTube Dislike** counts
 - Local history, favourites, resume points, local subscriptions — stored on device only
@@ -124,14 +127,16 @@ learned from the official app, and why the direct backend is the default.
 
 ## Status
 
-0.1.2 — playback, feeds and accounts work on a real device against live
+0.1.3 — playback, feeds and accounts work on a real device against live
 endpoints. The playback path uses the plain Android client, which hands out
 progressive URLs that stay readable for the whole video; the Android VR client
 is the fallback for clips. Feeds are anonymous by default. Signed in, the web
-surface serves the personal recommendations and the account's subscription
-feed, while playback stays anonymous (the native clients refuse a session).
-Verified: home feed, subscriptions, search with paging, Shorts, deep links, and
-video playback over `HTTP 206` from the CDN.
+surface serves the personal recommendations, the account's subscription feed
+and the account's own Shorts shelf, while playback stays anonymous (the native
+clients refuse a session). The player has a fullscreen mode that letterboxes
+landscape and portrait videos alike. Verified: home feed, subscriptions, search
+with paging, account-based Shorts, fullscreen (portrait and landscape), deep
+links, and video playback over `HTTP 206` from the CDN.
 
 Two network details matter on mobile and are handled in one place: DNS is
 resolved IPv4-first (many carriers advertise IPv6 they then black-hole), and

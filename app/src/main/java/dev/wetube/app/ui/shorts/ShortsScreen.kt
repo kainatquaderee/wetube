@@ -86,6 +86,22 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     init {
         load()
+
+        // The feed belongs to whoever is signed in: when the active account is
+        // added, switched or removed, drop the old clips (which also resets the
+        // pager) and fetch the new account's shelf.
+        viewModelScope.launch {
+            var seeded = false
+            locator.auth.account.collect {
+                if (!seeded) {
+                    seeded = true
+                    return@collect
+                }
+                playing = -1
+                state = ShortsUiState()
+                load()
+            }
+        }
     }
 
     fun load() {
@@ -208,8 +224,12 @@ fun ShortsScreen(
                     state = pager,
                     modifier = Modifier.fillMaxSize(),
                 ) { page ->
+                    val pageVideo = state.videos[page]
+                    // The shelf card has no channel name; once the clip is
+                    // resolved, show the full details for the visible page.
+                    val shown = state.detail?.item?.takeIf { it.id == pageVideo.id } ?: pageVideo
                     ShortsPage(
-                        video = state.videos[page],
+                        video = shown,
                         // The player sits *behind* the pager, so a backdrop on
                         // the visible page would paint over the video. Only the
                         // neighbouring pages (revealed mid-swipe) need a still.
@@ -316,14 +336,16 @@ private fun ShortsPage(video: VideoItem, showBackdrop: Boolean, onTogglePlay: ()
                     )
                     Spacer(Modifier.width(8.dp))
                 }
-                Text(
-                    video.channelName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                if (video.channelName.isNotBlank()) {
+                    Text(
+                        video.channelName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             Text(
                 video.title,

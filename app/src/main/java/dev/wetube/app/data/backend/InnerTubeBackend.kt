@@ -303,24 +303,45 @@ class InnerTubeBackend(
     /**
      * A Shorts feed for the dedicated section.
      *
-     * YouTube exposes no anonymous Shorts shelf in the responses we read, so we
-     * search for the hashtag creators put in their titles and keep clips of a
-     * minute or less. When a search comes back with only long videos (some
-     * regions do that), the regular feed is filtered instead.
+     * Signed in, the account's own Shorts shelf sits inside its personalised
+     * home feed (`FEwhat_to_watch`), so that shelf is what the section follows;
+     * the anonymous surface has no such shelf. Either way we also search the
+     * `#shorts` hashtag, whose real clips arrive as `shortsLockupViewModel`
+     * cards, and finally fall back to filtering the regular video feed.
      */
     override suspend fun shorts(): List<VideoItem> {
-        val candidates = runCatching {
-            call("search", web, buildJsonObject { put("query", "#shorts") }).videos()
+        val personal = if (auth.headers().isNotEmpty()) {
+            runCatching {
+                call("browse", web, buildJsonObject { put("browseId", "FEwhat_to_watch") })
+                    .shortsLockups()
+            }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+
+        val search = runCatching {
+            call("search", web, buildJsonObject { put("query", "#shorts") })
+        }.getOrNull()
+        val searched = buildList {
+            search?.shortsLockups()?.let(::addAll)
+            search?.videos()?.filterTo(this) { it.durationSeconds in 1..61 }
+        }
+
+        val merged = (personal + searched).distinctBy { it.id }
+        if (BuildConfig.DEBUG) {
+            android.util.Log.d(
+                "WeTube",
+                "shorts: signed=${auth.headers().isNotEmpty()} personal=${personal.size} " +
+                    "searched=${searched.size} merged=${merged.size}",
+            )
+        }
+        if (merged.isNotEmpty()) return merged.take(40)
+
+        return runCatching {
+            call("browse", vr, buildJsonObject { put("browseId", "FEwhat_to_watch") })
+                .videos()
+                .filter { it.durationSeconds in 1..61 }
         }.getOrDefault(emptyList())
-        val short = candidates.filter { it.durationSeconds in 1..61 }
-        return (short.ifEmpty { candidates.filter { it.durationSeconds in 1..90 } })
-            .ifEmpty {
-                runCatching {
-                    call("browse", vr, buildJsonObject { put("browseId", "FEwhat_to_watch") })
-                        .videos()
-                        .filter { it.durationSeconds in 1..61 }
-                }.getOrDefault(emptyList())
-            }
             .distinctBy { it.id }
             .take(40)
     }
@@ -593,6 +614,64 @@ class InnerTubeBackend(
 
         walk(this)
         return found.distinctBy { it.id }
+    }
+
+    /** Web Shorts shelf cards (`shortsLockupViewModel`), in page order. */
+    private fun JsonObject.shortsLockups(): List<VideoItem> {
+        val found = ArrayList<VideoItem>()
+
+        fun walk(element: JsonElement) {
+            when (element) {
+                is JsonObject -> element.forEach { (key, value) ->
+                    if (key == "shortsLockupViewModel") {
+                        (value as? JsonObject)?.toShortsLockupItem()?.let(found::add)
+                    }
+                    walk(value)
+                }
+
+                is JsonArray -> element.forEach(::walk)
+                else -> Unit
+            }
+        }
+
+        walk(this)
+        return found.distinctBy { it.id }
+    }
+
+    /**
+     * A Shorts card. The clip id lives in the reel endpoint, the title and view
+     * count in the overlay, and the poster frame in the thumbnail view model.
+     * The card carries no channel name or length, so the Shorts screen fills the
+     * channel in from the player response once the clip starts.
+     */
+    private fun JsonObject.toShortsLockupItem(): VideoItem? {
+        val reel = this["onTap"].obj()
+            ?.get("innertubeCommand").obj()
+            ?.get("reelWatchEndpoint").obj()
+        val videoId = reel?.str("videoId")
+            ?: str("entityId")?.removePrefix("shorts-shelf-item-")?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        val overlay = this["overlayMetadata"].obj()
+        val title = overlay?.get("primaryText").obj()?.str("content")
+            ?.takeIf { it.isNotBlank() }
+            ?: str("accessibilityText")?.substringBefore(" - play Short").orEmpty()
+        val thumbnail = this["thumbnailViewModel"].obj()
+            ?.get("thumbnailViewModel").obj()
+            ?.get("image").thumbnailUrl()
+            ?: reel?.get("thumbnail").thumbnailUrl()
+
+        return VideoItem(
+            id = videoId,
+            title = title,
+            channelName = "",
+            channelId = "",
+            thumbnail = thumbnail ?: "https://i.ytimg.com/vi/$videoId/frame0.jpg",
+            durationSeconds = 0,
+            views = parseCount(overlay?.get("secondaryText").obj()?.str("content").orEmpty()),
+            publishedText = "",
+            live = false,
+        )
     }
 
     /**

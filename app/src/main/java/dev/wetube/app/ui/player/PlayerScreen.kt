@@ -21,6 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
@@ -41,14 +43,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -58,6 +64,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import dev.wetube.app.data.extras.SponsorSegment
 import dev.wetube.app.data.model.VideoDetail
@@ -239,13 +246,45 @@ fun PlayerScreen(
     val state = viewModel.state
     val controller by locator.playback.controller.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val view = LocalView.current
+
+    var fullscreen by remember { mutableStateOf(false) }
 
     val playerView = remember {
         PlayerView(context).apply {
             useController = true
             setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+            // Fit (letterbox) rather than zoom, so portrait clips are shown
+            // whole in the tall fullscreen surface instead of being cropped.
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
         }
     }
+
+    // Immersive playback: hide the status/navigation bars while fullscreen and
+    // restore them on exit (and if the screen leaves composition mid-way).
+    LaunchedEffect(fullscreen) {
+        val window = view.context.findActivity()?.window ?: return@LaunchedEffect
+        val bars = WindowInsetsControllerCompat(window, view)
+        if (fullscreen) {
+            bars.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            bars.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            bars.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            val window = view.context.findActivity()?.window
+            if (window != null) {
+                WindowInsetsControllerCompat(window, view)
+                    .show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
+
+    // Back leaves fullscreen first, then the screen.
+    BackHandler(enabled = fullscreen) { fullscreen = false }
 
     LaunchedEffect(controller) { playerView.player = controller }
 
@@ -282,19 +321,38 @@ fun PlayerScreen(
 
     Column(modifier.fillMaxSize()) {
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f)
-                .background(Color.Black),
+            modifier = if (fullscreen) {
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+            } else {
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .background(Color.Black)
+            },
         ) {
             androidx.compose.ui.viewinterop.AndroidView(
                 factory = { playerView },
                 modifier = Modifier.fillMaxSize(),
             )
-            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart)) {
+            IconButton(
+                onClick = { if (fullscreen) fullscreen = false else onBack() },
+                modifier = Modifier.align(Alignment.TopStart),
+            ) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
+                    tint = Color.White,
+                )
+            }
+            IconButton(
+                onClick = { fullscreen = !fullscreen },
+                modifier = Modifier.align(Alignment.TopEnd),
+            ) {
+                Icon(
+                    if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                    contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
                     tint = Color.White,
                 )
             }
@@ -305,6 +363,8 @@ fun PlayerScreen(
                 )
             }
         }
+
+        if (fullscreen) return@Column
 
         when {
             state.loading -> LoadingBox()
@@ -329,6 +389,12 @@ fun PlayerScreen(
             )
         }
     }
+}
+
+private tailrec fun android.content.Context.findActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 @Composable

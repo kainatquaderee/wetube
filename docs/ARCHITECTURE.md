@@ -233,6 +233,7 @@ in the dependency graph.
 | — | **Local-only library, optional account** (new) |
 | — | **Backup file to Drive/anywhere** (new) |
 | — | **Shorts section** (new) |
+| — | **Player fullscreen, letterboxed for portrait and landscape** (new) |
 
 ---
 
