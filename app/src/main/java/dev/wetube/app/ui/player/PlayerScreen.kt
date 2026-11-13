@@ -110,6 +110,12 @@ data class PlayerUiState(
     val videoQuality: Int = 0,
     /** The resolution Auto/the request actually resolved to, or 0 if unknown. */
     val effectiveHeight: Int = 0,
+    /** Play the audio track only. */
+    val audioOnly: Boolean = false,
+    /** Keep the media session alive while the app is in the background. */
+    val backgroundPlayback: Boolean = true,
+    val sponsorBlockEnabled: Boolean = true,
+    val showDislikes: Boolean = true,
 )
 
 /**
@@ -193,6 +199,10 @@ class PlayerViewModel(
                         settings.audioOnly,
                         settings.videoQuality,
                     ),
+                    audioOnly = settings.audioOnly,
+                    backgroundPlayback = settings.backgroundPlayback,
+                    sponsorBlockEnabled = settings.sponsorBlockEnabled,
+                    showDislikes = settings.showDislikes,
                 )
                 captions.attach(merged)
                 recoveries = 0
@@ -279,27 +289,89 @@ class PlayerViewModel(
     private var recoveries = 0
 
     /**
-     * Switches the current video to [height] (0 = Auto) without a network call:
-     * the streams are already in the detail, so we only rebuild the MediaItem
-     * and resume at the same position. The choice is remembered as the default
-     * for every later video too.
+     * Rebuilds the current stream from the detail and settings already in hand
+     * and resumes at the same position. No network call, so both quality and
+     * audio-only go through here.
      */
-    fun setQuality(height: Int) {
+    private fun applySettings() {
         val detail = state.detail ?: return
-        state = state.copy(videoQuality = height)
         viewModelScope.launch {
-            locator.settings.update { it.copy(videoQuality = height) }
             val settings = locator.settings.settings.first()
             state = state.copy(
-                effectiveHeight = StreamResolver.effectiveHeight(detail, settings.audioOnly, height),
+                speed = settings.playbackSpeed,
+                videoQuality = settings.videoQuality,
+                audioOnly = settings.audioOnly,
+                backgroundPlayback = settings.backgroundPlayback,
+                sponsorBlockEnabled = settings.sponsorBlockEnabled,
+                showDislikes = settings.showDislikes,
+                effectiveHeight = StreamResolver.effectiveHeight(
+                    detail,
+                    settings.audioOnly,
+                    settings.videoQuality,
+                ),
             )
-            val item = StreamResolver.mediaItem(detail, settings.audioOnly, height) ?: return@launch
+            val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
+                ?: return@launch
             val position = locator.playback.controller.value?.currentPosition ?: 0L
             locator.playback.play(
                 item = item,
                 speed = settings.playbackSpeed,
                 startAtMs = position,
             )
+        }
+    }
+
+    /**
+     * Switches the current video to [height] (0 = Auto) without a network call:
+     * the streams are already in the detail, so we only rebuild the MediaItem
+     * and resume at the same position. The choice is remembered as the default
+     * for every later video too.
+     */
+    fun setQuality(height: Int) {
+        state = state.copy(videoQuality = height)
+        viewModelScope.launch {
+            locator.settings.update { it.copy(videoQuality = height) }
+            applySettings()
+        }
+    }
+
+    /** Drops the picture and plays the audio track only, or brings it back. */
+    fun setAudioOnly(value: Boolean) {
+        state = state.copy(audioOnly = value)
+        viewModelScope.launch {
+            locator.settings.update { it.copy(audioOnly = value) }
+            applySettings()
+        }
+    }
+
+    /** Whether the media session outlives the app being backgrounded. */
+    fun setBackgroundPlayback(value: Boolean) {
+        state = state.copy(backgroundPlayback = value)
+        viewModelScope.launch { locator.settings.update { it.copy(backgroundPlayback = value) } }
+    }
+
+    /** Toggles segment skipping, fetching the segments when switched on. */
+    fun setSponsorBlock(value: Boolean) {
+        state = state.copy(sponsorBlockEnabled = value)
+        viewModelScope.launch {
+            locator.settings.update { it.copy(sponsorBlockEnabled = value) }
+            val settings = locator.settings.settings.first()
+            state = state.copy(
+                segments = if (value) {
+                    locator.sponsorBlock.segments(videoId, settings.sponsorCategories)
+                } else {
+                    emptyList()
+                },
+            )
+        }
+    }
+
+    /** Toggles the dislikes chip, loading the count the first time it is on. */
+    fun setShowDislikes(value: Boolean) {
+        state = state.copy(showDislikes = value)
+        viewModelScope.launch {
+            locator.settings.update { it.copy(showDislikes = value) }
+            state = state.copy(dislikes = if (value) locator.dislikes.dislikes(videoId) else null)
         }
     }
 
@@ -318,6 +390,7 @@ fun PlayerScreen(
     onBack: () -> Unit,
     onVideoClick: (String) -> Unit,
     onChannelClick: (String) -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: PlayerViewModel = viewModel(
@@ -332,6 +405,7 @@ fun PlayerScreen(
     var fullscreen by remember { mutableStateOf(false) }
     var showCaptionSheet by remember { mutableStateOf(false) }
     var showComments by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     var holding by remember { mutableStateOf(false) }
     var speedBeforeHold by remember { mutableFloatStateOf(1f) }
 
@@ -375,6 +449,16 @@ fun PlayerScreen(
     BackHandler(enabled = fullscreen) { fullscreen = false }
 
     LaunchedEffect(controller) { playerView.player = controller }
+
+    // The control bar's gear opens our own settings sheet. Media3 builds its
+    // controller together with the PlayerView, so the button is already there;
+    // taking over its click replaces the bare speed/audio dialog with the full
+    // panel.
+    LaunchedEffect(playerView) {
+        playerView
+            .findViewById<android.view.View>(androidx.media3.ui.R.id.exo_settings)
+            ?.setOnClickListener { showSettings = true }
+    }
 
     // Hold the video (or anywhere on the player surface) for 2×. The touch
     // listener returns false, so the normal controller taps and the progress
@@ -554,6 +638,36 @@ fun PlayerScreen(
             videoId = videoId,
             info = state.detail.comments,
             onDismiss = { showComments = false },
+        )
+    }
+
+    if (showSettings && state.detail != null) {
+        PlayerSettingsSheet(
+            quality = state.videoQuality,
+            qualities = state.detail.playback.videoQualities,
+            effectiveHeight = state.effectiveHeight,
+            speed = state.speed,
+            captionsAvailable = viewModel.captions.tracks.isNotEmpty(),
+            captionsEnabled = viewModel.captions.enabled,
+            audioOnly = state.audioOnly,
+            backgroundPlayback = state.backgroundPlayback,
+            sponsorBlock = state.sponsorBlockEnabled,
+            showDislikes = state.showDislikes,
+            onQuality = viewModel::setQuality,
+            onSpeed = viewModel::setSpeed,
+            onOpenCaptions = {
+                showSettings = false
+                showCaptionSheet = true
+            },
+            onAudioOnly = viewModel::setAudioOnly,
+            onBackgroundPlayback = viewModel::setBackgroundPlayback,
+            onSponsorBlock = viewModel::setSponsorBlock,
+            onShowDislikes = viewModel::setShowDislikes,
+            onOpenAllSettings = {
+                showSettings = false
+                onOpenSettings()
+            },
+            onDismiss = { showSettings = false },
         )
     }
 }

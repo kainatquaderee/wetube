@@ -112,7 +112,10 @@ fun WeTubeRoot(
                 )
             }
             composable("shorts") {
-                ShortsScreen(locator = locator)
+                ShortsScreen(
+                    locator = locator,
+                    onOpenChannel = { id -> navController.navigate("channel/$id") },
+                )
             }
             composable("search") {
                 SearchScreen(
@@ -156,6 +159,7 @@ fun WeTubeRoot(
                         navController.navigate("watch/$id") { launchSingleTop = true }
                     },
                     onChannelClick = { id -> navController.navigate("channel/$id") },
+                    onOpenSettings = { navController.navigate("settings") },
                 )
             }
             composable(

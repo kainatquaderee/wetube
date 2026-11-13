@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Favorite
@@ -26,6 +27,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.ThumbDown
+import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -90,6 +93,7 @@ data class ShortsUiState(
     val loading: Boolean = true,
     val videos: List<VideoItem> = emptyList(),
     val detail: VideoDetail? = null,
+    val dislikes: Long? = null,
     val error: String? = null,
 )
 
@@ -174,14 +178,19 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
                     audioOnly = false,
                     preferredHeight = settings.videoQuality,
                 ) ?: error("This clip has no playable stream.")
-                detail to item
+                val dislikes = if (settings.showDislikes) {
+                    locator.dislikes.dislikes(video.id)
+                } else {
+                    null
+                }
+                Triple(detail, item, dislikes)
             }
             // A newer swipe already asked for another clip; this response is
             // stale and must not start playing over the visible page.
             if (request != generation) return@launch
             result
-                .onSuccess { (detail, item) ->
-                    state = state.copy(detail = detail, error = null)
+                .onSuccess { (detail, item, dislikes) ->
+                    state = state.copy(detail = detail, dislikes = dislikes, error = null)
                     captions.attach(detail)
                     locator.playback.play(item, speed = 1f, startAtMs = 0L)
                     locator.library.addToHistory(detail.item)
@@ -217,6 +226,7 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
 @Composable
 fun ShortsScreen(
     locator: ServiceLocator,
+    onOpenChannel: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: ShortsViewModel = viewModel(factory = ShortsViewModel.factory(locator))
@@ -325,6 +335,7 @@ fun ShortsScreen(
                                 }
                             }
                         },
+                        onVisitChannel = onOpenChannel,
                     )
                 }
 
@@ -365,15 +376,14 @@ fun ShortsScreen(
                 // carries no channel name, so saving from the rail would
                 // otherwise store a nameless entry in the library.
                 val current = state.videos.getOrNull(pager.currentPage)
-                val subject = state.detail?.item?.takeIf { it.id == current?.id } ?: current
+                val currentDetail = state.detail?.takeIf { it.item.id == current?.id }
+                val subject = currentDetail?.item ?: current
                 if (subject != null) {
                     val saved = favourites.any { it.id == subject.id }
-                    val commentCount = state.detail
-                        ?.takeIf { it.item.id == subject.id }
-                        ?.comments
-                        ?.countText
-                        .orEmpty()
+                    val commentCount = currentDetail?.comments?.countText.orEmpty()
                     ShortActions(
+                        likes = currentDetail?.likes ?: 0L,
+                        dislikes = if (currentDetail != null) state.dislikes else null,
                         saved = saved,
                         commentCount = commentCount,
                         onSave = { scope.launch { locator.library.toggleFavourite(subject) } },
@@ -491,7 +501,12 @@ fun ShortsScreen(
 }
 
 @Composable
-private fun ShortsPage(video: VideoItem, showBackdrop: Boolean, onTogglePlay: () -> Unit) {
+private fun ShortsPage(
+    video: VideoItem,
+    showBackdrop: Boolean,
+    onTogglePlay: () -> Unit,
+    onVisitChannel: (String) -> Unit,
+) {
     Box(
         Modifier
             .fillMaxSize()
@@ -523,7 +538,19 @@ private fun ShortsPage(video: VideoItem, showBackdrop: Boolean, onTogglePlay: ()
                 .padding(16.dp, 24.dp, 72.dp, 24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // The channel line is its own tap target: without it the whole
+            // clip's play/pause clickable swallowed the touch. It is only
+            // enabled once the resolved detail supplies the channel id.
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable(
+                        enabled = video.channelId.isNotBlank(),
+                        onClick = { onVisitChannel(video.channelId) },
+                    )
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 if (video.thumbnail.isNotBlank()) {
                     AsyncImage(
                         model = video.thumbnail,
@@ -567,6 +594,8 @@ private fun ShortsPage(video: VideoItem, showBackdrop: Boolean, onTogglePlay: ()
 
 @Composable
 private fun ShortActions(
+    likes: Long,
+    dislikes: Long?,
     saved: Boolean,
     commentCount: String,
     onSave: () -> Unit,
@@ -579,12 +608,23 @@ private fun ShortActions(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        // Like and dislike are read-only: anonymous InnerTube clients may not
+        // rate a video, so the rail shows YouTube's counts without pretending
+        // to change them.
         RailAction(
-            icon = if (saved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-            label = if (saved) "Saved" else "Save",
-            tint = if (saved) Color(0xFFFF2D55) else Color.White,
-            onClick = onSave,
+            icon = Icons.Default.ThumbUp,
+            label = if (likes > 0) compactCount(likes) else "Like",
+            tint = Color.White,
+            onClick = {},
         )
+        if (dislikes != null) {
+            RailAction(
+                icon = Icons.Default.ThumbDown,
+                label = if (dislikes > 0) compactCount(dislikes) else "Dislike",
+                tint = Color.White,
+                onClick = {},
+            )
+        }
         RailAction(
             icon = Icons.Default.ChatBubbleOutline,
             label = commentCount.ifBlank { "Comments" },
@@ -596,6 +636,12 @@ private fun ShortActions(
             label = "Share",
             tint = Color.White,
             onClick = onShare,
+        )
+        RailAction(
+            icon = if (saved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+            label = if (saved) "Saved" else "Save",
+            tint = if (saved) Color(0xFFFF2D55) else Color.White,
+            onClick = onSave,
         )
     }
 }
