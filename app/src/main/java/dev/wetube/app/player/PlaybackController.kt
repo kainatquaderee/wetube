@@ -37,6 +37,8 @@ class PlaybackController(private val context: Context) {
         val item: MediaItem,
         val speed: Float,
         val startAtMs: Long?,
+        /** True only for an explicit user request to start playback. */
+        val play: Boolean,
     )
 
     fun connect() {
@@ -59,8 +61,24 @@ class PlaybackController(private val context: Context) {
         )
     }
 
+    /** Starts [item] and explicitly begins playback. Used when the viewer opens a video. */
     fun play(item: MediaItem, speed: Float = 1f, startAtMs: Long? = null) {
-        val request = Pending(item, speed, startAtMs)
+        enqueue(Pending(item, speed, startAtMs, play = true))
+    }
+
+    /**
+     * Replaces the current media *without* forcing playback to start.
+     *
+     * Quality and audio-only changes rebuild the same video, so they must keep
+     * the viewer's play/pause state. Leaving the controller's play-when-ready
+     * intent untouched does that: a playing video keeps playing and a paused
+     * one stays paused.
+     */
+    fun load(item: MediaItem, speed: Float = 1f, startAtMs: Long? = null) {
+        enqueue(Pending(item, speed, startAtMs, play = false))
+    }
+
+    private fun enqueue(request: Pending) {
         val controller = _controller.value
         if (controller == null) {
             pending = request
@@ -75,7 +93,7 @@ class PlaybackController(private val context: Context) {
         controller.prepare()
         controller.setPlaybackSpeed(request.speed)
         request.startAtMs?.takeIf { it > 0 }?.let(controller::seekTo)
-        controller.play()
+        if (request.play) controller.play()
     }
 
     fun seekTo(positionMs: Long) {

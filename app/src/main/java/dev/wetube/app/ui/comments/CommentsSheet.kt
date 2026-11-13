@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -38,6 +39,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -80,6 +82,7 @@ fun CommentsSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val listState = rememberLazyListState()
 
     var comments by remember(videoId) { mutableStateOf<List<Comment>>(emptyList()) }
     var next by remember(videoId) { mutableStateOf<String?>(null) }
@@ -108,7 +111,7 @@ fun CommentsSheet(
             }
         }
             .onSuccess { page ->
-                comments = page.comments
+                comments = page.comments.dedupeById()
                 next = page.next
             }
             .onFailure { error = friendlyError(it) }
@@ -123,13 +126,26 @@ fun CommentsSheet(
         scope.launch {
             runCatching { locator.backend().commentsPage(token) }
                 .onSuccess { page ->
-                    val known = comments.mapTo(HashSet()) { it.id to it.text }
-                    comments = comments + page.comments.filter { (it.id to it.text) !in known }
+                    comments = (comments + page.comments).dedupeById()
                     next = page.next
                 }
                 .onFailure { error = friendlyError(it) }
             appending = false
         }
+    }
+
+    // Fetch the next page once the footer is actually on screen. The previous
+    // implementation launched from inside the sentinel item, so every page
+    // that scrolled into view fetched another one whether or not it was seen.
+    val footerVisible by remember {
+        derivedStateOf {
+            val layout = listState.layoutInfo
+            val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index
+            lastVisible != null && lastVisible >= layout.totalItemsCount - 1
+        }
+    }
+    LaunchedEffect(next, footerVisible) {
+        if (next != null && footerVisible) loadMore()
     }
 
     fun openInBrowser() {
@@ -144,6 +160,7 @@ fun CommentsSheet(
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.92f),
@@ -232,7 +249,6 @@ fun CommentsSheet(
 
             if (next != null && !loading) {
                 item {
-                    LaunchedEffect(next) { loadMore() }
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -267,6 +283,19 @@ fun CommentsSheet(
             }
         }
     }
+}
+
+/**
+ * Keeps the first occurrence of each non-blank comment id.
+ *
+ * The same comment can be offered again by a later continuation token (or by
+ * a backend that merges "top comments" into the first page). Comments without
+ * an id cannot be compared, so they are all kept and fall back to the index
+ * key used by the list.
+ */
+private fun List<Comment>.dedupeById(): List<Comment> {
+    val seen = HashSet<String>()
+    return filter { comment -> comment.id.isBlank() || seen.add(comment.id) }
 }
 
 @Composable

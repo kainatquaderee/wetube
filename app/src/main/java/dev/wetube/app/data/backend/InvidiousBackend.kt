@@ -1,5 +1,11 @@
 package dev.wetube.app.data.backend
 
+import dev.wetube.app.core.DEFAULT_INVIDIOUS_HOST
+import dev.wetube.app.core.decodeEntities
+import dev.wetube.app.core.encodeUrlValue
+import dev.wetube.app.core.isValidVideoId
+import dev.wetube.app.core.sanitizeBackendHost
+import dev.wetube.app.core.subscriberLabel
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.Playback
@@ -26,16 +32,24 @@ class InvidiousBackend(
 
     override val displayName: String = "Invidious"
 
-    private val base = baseUrl.trimEnd('/').let { if (it.endsWith("/api/v1")) it else "$it/api/v1" }
+    /**
+     * The instance origin, validated here as a last line of defence: the value
+     * can come from a restored backup or a preference written by an older
+     * build, so it is never trusted just because it reached the constructor.
+     */
+    private val base = "${sanitizeBackendHost(baseUrl) ?: DEFAULT_INVIDIOUS_HOST}/api/v1"
 
     override suspend fun trending(region: String): List<VideoItem> =
-        http.get("$base/trending?region=$region&type=Default", ListSerializer(IvVideo.serializer()))
+        http.get(
+            "$base/trending?region=${encodeUrlValue(region)}&type=Default",
+            ListSerializer(IvVideo.serializer()),
+        )
             .filter { it.videoId.isNotBlank() }
             .map { it.toItem() }
 
     override suspend fun search(query: String, nextPage: String?): SearchResult {
         val page = nextPage?.toIntOrNull() ?: 1
-        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+        val encoded = encodeUrlValue(query)
         val items = http.get("$base/search?q=$encoded&page=$page&type=video", ListSerializer(IvVideo.serializer()))
         return SearchResult(
             videos = items.filter { it.videoId.isNotBlank() }.map { it.toItem() },
@@ -45,7 +59,7 @@ class InvidiousBackend(
 
     override suspend fun video(id: String): VideoDetail {
         val local = if (proxyStreams) "?local=true" else ""
-        val v = http.get("$base/videos/$id$local", IvVideo.serializer())
+        val v = http.get("$base/videos/${encodeVideoId(id)}$local", IvVideo.serializer())
 
         val videoTracks = v.adaptiveFormats
             .filter { it.type.startsWith("video/") }
@@ -56,9 +70,9 @@ class InvidiousBackend(
 
         return VideoDetail(
             item = v.toItem(),
-            description = v.description,
+            description = decodeEntities(v.description),
             likes = v.likeCount,
-            subscribersText = v.subCountText,
+            subscribersText = subscriberLabel(v.subCountText),
             playback = Playback(
                 muxed = v.formatStreams.map { it.toFormat(audio = false) },
                 videoOnly = videoTracks,
@@ -71,27 +85,27 @@ class InvidiousBackend(
     }
 
     override suspend fun channel(id: String): ChannelInfo {
-        val c = http.get("$base/channels/$id", IvChannel.serializer())
+        val c = http.get("$base/channels/${encodeUrlValue(id)}", IvChannel.serializer())
         return ChannelInfo(
             id = c.authorId.ifBlank { id },
-            name = c.author,
+            name = decodeEntities(c.author),
             avatar = c.authorThumbnails.maxByOrNull { it.width }?.url.orEmpty(),
             banner = c.authorBanners.maxByOrNull { it.width }?.url.orEmpty(),
-            description = c.description,
-            subscribersText = formatCount(c.subCount),
+            description = decodeEntities(c.description),
+            subscribersText = subscriberLabel(c.subCount),
             videos = c.latestVideos.filter { it.videoId.isNotBlank() }.map { it.toItem() },
         )
     }
 
     override suspend fun comments(id: String): List<Comment> {
-        val page = http.get("$base/comments/$id", IvComments.serializer())
+        val page = http.get("$base/comments/${encodeVideoId(id)}", IvComments.serializer())
         return page.comments.map {
             Comment(
-                author = it.author,
+                author = decodeEntities(it.author),
                 avatar = it.authorThumbnails.firstOrNull()?.url.orEmpty(),
-                text = it.content,
+                text = decodeEntities(it.content),
                 likes = it.likeCount,
-                publishedText = it.publishedText,
+                publishedText = decodeEntities(it.publishedText),
                 replyCount = it.replies?.replyCount ?: 0,
             )
         }
@@ -100,10 +114,22 @@ class InvidiousBackend(
     override suspend fun related(id: String): List<VideoItem> = video(id).related
 
     override suspend fun suggestions(query: String): List<String> = try {
-        val q = java.net.URLEncoder.encode(query, "UTF-8")
-        http.get("$base/search/suggestions?q=$q", IvSuggestions.serializer()).suggestions
+        val q = encodeUrlValue(query)
+        http.get("$base/search/suggestions?q=$q", IvSuggestions.serializer())
+            .suggestions
+            .map { decodeEntities(it) }
     } catch (_: Exception) {
         emptyList()
+    }
+
+    /**
+     * Validates and encodes a video id before it is placed in a path. The id is
+     * always the 11-character YouTube form; anything else is rejected rather
+     * than silently smuggled into the request line.
+     */
+    private fun encodeVideoId(id: String): String {
+        require(isValidVideoId(id)) { "Not a valid video id." }
+        return encodeUrlValue(id)
     }
 
     // ---- DTOs / mapping -------------------------------------------------
@@ -185,25 +211,15 @@ class InvidiousBackend(
     ) {
         fun toItem() = VideoItem(
             id = videoId,
-            title = title,
-            channelName = author,
+            title = decodeEntities(title),
+            channelName = decodeEntities(author),
             channelId = authorId,
             thumbnail = videoThumbnails.maxByOrNull { it.width }?.url
-                ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
+                ?: "https://i.ytimg.com/vi/${encodeUrlValue(videoId)}/hqdefault.jpg",
             durationSeconds = lengthSeconds,
             views = viewCount,
-            publishedText = publishedText,
+            publishedText = decodeEntities(publishedText),
             live = liveNow,
         )
-    }
-
-    companion object {
-        /** 1.2M / 34K style formatting, matching what feeds usually show. */
-        fun formatCount(n: Long): String = when {
-            n >= 1_000_000_000 -> "%.1fB".format(n / 1_000_000_000.0)
-            n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
-            n >= 1_000 -> "%.1fK".format(n / 1_000.0)
-            else -> n.toString()
-        }
     }
 }

@@ -22,6 +22,34 @@ easy to demo.
       SponsorBlock, dislikes
 - [x] No ads, no trackers, no account
 
+## 0.1.7 — quality & polish (shipped in this tree)
+- [x] Preferences written inside the DataStore transaction, so a concurrent
+      change can no longer be lost
+- [x] Every paged list de-duplicates by id, so a repeated item cannot collide
+      with a Compose key
+- [x] Changing quality or audio-only mid-video keeps the play/pause state
+- [x] Deep links: host allow-list, id validation and one-shot consumption
+- [x] Null-safe player position and duration
+- [x] Sign-in WebView remembered and destroyed; navigation allow-listed
+- [x] Comments paginate only once the list footer is visible
+- [x] Age-gate ids capped FIFO at 500
+- [x] Backup schema v2 with version validation and size/count caps
+- [x] Player dislike count (read-only, gated by "Show dislikes")
+- [x] Share from the player
+- [x] Subscribe/Subscribed on the player channel row, wired to the local library
+- [x] End screen with the next related video
+- [x] Playback errors keep the video metadata visible below
+- [x] Shared text/count/speed helpers, with entities decoded at the backend
+      boundary
+- [x] Search dismisses the keyboard and paginates on scroll
+- [x] Hardening: https-only host validation, cleartext traffic disabled,
+      percent-encoded URL parameters
+
+## 0.1.8 — polish follow-ups
+- [ ] Mini-player: keep the current video docked while browsing the rest of the app
+- [ ] Comment composer: post and reply from the app when signed in
+- [ ] Fullscreen auto-rotate for landscape video, with a portrait lock option
+
 ## 0.2 — player reliability & downloads
 - [ ] `n`-parameter transform for the fallback clients, so strictly throttled
       networks stop 403ing their URLs (IOS-first already avoids this for

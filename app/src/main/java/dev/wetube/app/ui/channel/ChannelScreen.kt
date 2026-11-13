@@ -72,7 +72,13 @@ class ChannelViewModel(
             runCatching {
                 val channel = locator.backend().channel(channelId)
                 val subscribed = locator.library.subscriptions.first().any { it.id == channel.id }
-                state = state.copy(loading = false, channel = channel, subscribed = subscribed)
+                state = state.copy(
+                    loading = false,
+                    // Some backends repeat an item across the header rail and
+                    // the uploads list; the lazy list keys on id.
+                    channel = channel.copy(videos = channel.videos.distinctBy { it.id }),
+                    subscribed = subscribed,
+                )
             }.onFailure {
                 state = state.copy(loading = false, error = friendlyError(it))
             }

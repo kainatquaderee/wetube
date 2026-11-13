@@ -3,6 +3,8 @@ package dev.wetube.app.ui.auth
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Arrangement
@@ -26,16 +28,20 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import dev.wetube.app.core.isAllowedSignInUrl
 import dev.wetube.app.di.ServiceLocator
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -63,6 +69,10 @@ fun SignInScreen(
     var showPaste by remember { mutableStateOf(false) }
     var ready by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    // The WebView outlives recompositions; keep the latest callback reachable
+    // from the client we build once.
+    val currentOnDone by rememberUpdatedState(onDone)
 
     // Adding a second account needs a clean WebView jar, otherwise Google
     // redirects straight back to the account that is already signed in and we
@@ -80,7 +90,7 @@ fun SignInScreen(
         if (cookies.isNullOrBlank() || !cookies.contains("SAPISID")) return
         scope.launch {
             runCatching { locator.auth.signIn(cookies) }
-                .onSuccess { onDone() }
+                .onSuccess { currentOnDone() }
                 .onFailure { error = it.message ?: "Could not read that session." }
         }
     }
@@ -96,18 +106,37 @@ fun SignInScreen(
         )
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
 
-        if (ready) AndroidView(
-            modifier = Modifier.weight(1f),
-            factory = { context ->
+        if (ready) {
+            val webView = remember {
                 WebView(context).apply {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.databaseEnabled = true
                     settings.userAgentString = CHROME_UA
+                    // The login page is the only thing this WebView should ever
+                    // touch: no local files, no content-provider streams, no
+                    // mixed content, and no file:// pages reaching the network.
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    settings.setAllowFileAccessFromFileURLs(false)
+                    settings.setAllowUniversalAccessFromFileURLs(false)
+                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                     CookieManager.getInstance().setAcceptCookie(true)
                     CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
                     webViewClient = object : WebViewClient() {
+                        /**
+                         * Restricts navigation to the Google/YouTube https pages
+                         * the login flow uses. Anything else — other hosts,
+                         * `file:`, `content:`, `intent:` or any custom scheme —
+                         * is blocked by returning `true`, so a hostile redirect
+                         * or injected link cannot drive the WebView elsewhere.
+                         */
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                        ): Boolean = !isAllowedSignInUrl(request?.url?.toString())
+
                         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                             loading = true
                         }
@@ -121,9 +150,19 @@ fun SignInScreen(
                     }
                     loadUrl(LOGIN_URL)
                 }
-            },
-            update = {},
-        )
+            }
+            // AndroidView only detaches the view; a WebView also holds its
+            // creating Activity, so it must be destroyed explicitly or the
+            // account screen leaks the whole activity after it is popped.
+            DisposableEffect(webView) {
+                onDispose { webView.destroy() }
+            }
+            AndroidView(
+                modifier = Modifier.weight(1f),
+                factory = { webView },
+                update = {},
+            )
+        }
 
         error?.let {
             Text(

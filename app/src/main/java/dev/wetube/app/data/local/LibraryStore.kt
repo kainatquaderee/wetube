@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import dev.wetube.app.core.decodeEntities
 import dev.wetube.app.data.model.VideoItem
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -49,11 +50,11 @@ class LibraryStore(private val context: Context, private val json: Json) {
     private val resumeList = ListSerializer(ResumeEntry.serializer())
 
     val history: Flow<List<VideoItem>> = context.libraryStore.data.map { p ->
-        p[historyKey]?.let { runCatching { json.decodeFromString(videoList, it) }.getOrNull() }.orEmpty()
+        decodeVideos(p[historyKey]).map(::displayDecoded)
     }
 
     val favourites: Flow<List<VideoItem>> = context.libraryStore.data.map { p ->
-        p[favouritesKey]?.let { runCatching { json.decodeFromString(videoList, it) }.getOrNull() }.orEmpty()
+        decodeVideos(p[favouritesKey]).map(::displayDecoded)
     }
 
     val resumePoints: Flow<Map<String, ResumeEntry>> = context.libraryStore.data.map { p ->
@@ -63,7 +64,7 @@ class LibraryStore(private val context: Context, private val json: Json) {
 
     /** Locally subscribed channels, newest first. */
     val subscriptions: Flow<List<VideoItem>> = context.libraryStore.data.map { p ->
-        p[subscriptionsKey]?.let { runCatching { json.decodeFromString(videoList, it) }.getOrNull() }.orEmpty()
+        decodeVideos(p[subscriptionsKey]).map(::displayDecoded)
     }
 
     suspend fun addToHistory(video: VideoItem) {
@@ -133,16 +134,44 @@ class LibraryStore(private val context: Context, private val json: Json) {
     /**
      * Replaces the library with a backup. The backup wins for every list it
      * carries, so restoring the same file twice is harmless.
+     *
+     * Every list is capped: a backup is untrusted input, and without a bound a
+     * crafted file could write an arbitrarily large list into DataStore, which
+     * is then re-read and decoded on every launch. The caps match (or exceed)
+     * what the app itself can produce.
      */
     suspend fun restore(snapshot: LibrarySnapshot) {
         context.libraryStore.edit { p ->
-            p[historyKey] = json.encodeToString(videoList, snapshot.history.take(200))
-            p[favouritesKey] = json.encodeToString(videoList, snapshot.favourites)
-            p[resumeKey] = json.encodeToString(resumeList, snapshot.resume.take(100))
-            p[subscriptionsKey] = json.encodeToString(videoList, snapshot.subscriptions)
+            p[historyKey] = json.encodeToString(videoList, snapshot.history.take(MAX_HISTORY))
+            p[favouritesKey] = json.encodeToString(videoList, snapshot.favourites.take(MAX_FAVOURITES))
+            p[resumeKey] = json.encodeToString(resumeList, snapshot.resume.take(MAX_RESUME))
+            p[subscriptionsKey] = json.encodeToString(videoList, snapshot.subscriptions.take(MAX_SUBSCRIPTIONS))
         }
     }
 
     private fun decodeVideos(raw: String?): List<VideoItem> =
         raw?.let { runCatching { json.decodeFromString(videoList, it) }.getOrNull() }.orEmpty()
+
+    /**
+     * Decodes the display-only fields of an item read back from storage.
+     *
+     * Newly stored items are already decoded by the backend, but history,
+     * favourites and subscriptions written by an older build can still carry a
+     * literal `&#128293;`. Decoding at the display boundary repairs those
+     * records on read without rewriting them, while [snapshot] (backup output)
+     * and [resumePoints] keep the stored bytes exactly as they are. The decode
+     * is idempotent, so an already-clean value is returned unchanged.
+     */
+    private fun displayDecoded(video: VideoItem): VideoItem = video.copy(
+        title = decodeEntities(video.title),
+        channelName = decodeEntities(video.channelName),
+        publishedText = decodeEntities(video.publishedText),
+    )
+
+    private companion object {
+        const val MAX_HISTORY = 200
+        const val MAX_FAVOURITES = 500
+        const val MAX_RESUME = 100
+        const val MAX_SUBSCRIPTIONS = 500
+    }
 }

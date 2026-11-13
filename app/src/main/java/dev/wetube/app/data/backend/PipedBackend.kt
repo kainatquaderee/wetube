@@ -1,5 +1,11 @@
 package dev.wetube.app.data.backend
 
+import dev.wetube.app.core.DEFAULT_PIPED_HOST
+import dev.wetube.app.core.decodeEntities
+import dev.wetube.app.core.encodeUrlValue
+import dev.wetube.app.core.isValidVideoId
+import dev.wetube.app.core.sanitizeBackendHost
+import dev.wetube.app.core.subscriberLabel
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.Playback
@@ -18,18 +24,26 @@ class PipedBackend(
 
     override val displayName: String = "Piped"
 
-    private val base = baseUrl.trimEnd('/').let { if (it.endsWith("/api")) it else "$it/api" }
+    /**
+     * The instance origin, validated here as a last line of defence: the value
+     * can come from a restored backup or a preference written by an older
+     * build, so it is never trusted just because it reached the constructor.
+     */
+    private val base = "${sanitizeBackendHost(baseUrl) ?: DEFAULT_PIPED_HOST}/api"
 
     override suspend fun trending(region: String): List<VideoItem> =
-        http.get("$base/trending?region=$region", kotlinx.serialization.builtins.ListSerializer(PipedVideo.serializer()))
+        http.get(
+            "$base/trending?region=${encodeUrlValue(region)}",
+            kotlinx.serialization.builtins.ListSerializer(PipedVideo.serializer()),
+        )
             .map { it.toItem() }
 
     override suspend fun search(query: String, nextPage: String?): SearchResult {
-        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+        val encoded = encodeUrlValue(query)
         val url = if (nextPage.isNullOrBlank()) {
             "$base/search?q=$encoded&filter=videos"
         } else {
-            "$base/nextpage/search?nextpage=${java.net.URLEncoder.encode(nextPage, "UTF-8")}&q=$encoded&filter=videos"
+            "$base/nextpage/search?nextpage=${encodeUrlValue(nextPage)}&q=$encoded&filter=videos"
         }
         val page = http.get(url, PipedSearch.serializer())
         return SearchResult(
@@ -39,7 +53,7 @@ class PipedBackend(
     }
 
     override suspend fun video(id: String): VideoDetail {
-        val s = http.get("$base/streams/$id", PipedStreams.serializer())
+        val s = http.get("$base/streams/${encodeVideoId(id)}", PipedStreams.serializer())
 
         val muxed = s.videoStreams
             .filter { !it.videoOnly }
@@ -75,19 +89,19 @@ class PipedBackend(
 
         val item = VideoItem(
             id = id,
-            title = s.title,
-            channelName = s.uploader,
+            title = decodeEntities(s.title),
+            channelName = decodeEntities(s.uploader),
             channelId = s.uploaderUrl.substringAfterLast('/'),
-            thumbnail = "https://i.ytimg.com/vi/$id/hqdefault.jpg",
+            thumbnail = "https://i.ytimg.com/vi/${encodeUrlValue(id)}/hqdefault.jpg",
             durationSeconds = s.duration,
             views = s.views,
-            publishedText = s.uploadDate,
+            publishedText = decodeEntities(s.uploadDate),
             live = s.live,
         )
 
         return VideoDetail(
             item = item,
-            description = s.description,
+            description = decodeEntities(s.description),
             likes = s.likes,
             subscribersText = "",
             playback = Playback(
@@ -102,27 +116,27 @@ class PipedBackend(
     }
 
     override suspend fun channel(id: String): ChannelInfo {
-        val c = http.get("$base/channel/$id", PipedChannel.serializer())
+        val c = http.get("$base/channel/${encodeUrlValue(id)}", PipedChannel.serializer())
         return ChannelInfo(
             id = id,
-            name = c.name,
+            name = decodeEntities(c.name),
             avatar = c.avatarUrl,
             banner = c.bannerUrl,
-            description = c.description,
-            subscribersText = fmt(c.subscriberCount),
+            description = decodeEntities(c.description),
+            subscribersText = subscriberLabel(c.subscriberCount),
             videos = c.relatedStreams.map { it.toItem() },
         )
     }
 
     override suspend fun comments(id: String): List<Comment> {
-        val c = http.get("$base/comments/$id", PipedComments.serializer())
+        val c = http.get("$base/comments/${encodeVideoId(id)}", PipedComments.serializer())
         return c.comments.map {
             Comment(
-                author = it.author,
+                author = decodeEntities(it.author),
                 avatar = it.thumbnail,
-                text = it.commentText,
+                text = decodeEntities(it.commentText),
                 likes = it.likeCount,
-                publishedText = it.commentedTime,
+                publishedText = decodeEntities(it.commentedTime),
                 replyCount = it.replyCount,
             )
         }
@@ -131,10 +145,21 @@ class PipedBackend(
     override suspend fun related(id: String): List<VideoItem> = video(id).related
 
     override suspend fun suggestions(query: String): List<String> = try {
-        val q = java.net.URLEncoder.encode(query, "UTF-8")
+        val q = encodeUrlValue(query)
         http.get("$base/suggestions?query=$q", kotlinx.serialization.builtins.ListSerializer(String.serializer()))
+            .map { decodeEntities(it) }
     } catch (_: Exception) {
         emptyList()
+    }
+
+    /**
+     * Validates and encodes a video id before it is placed in a path. The id is
+     * always the 11-character YouTube form; anything else is rejected rather
+     * than silently smuggled into the request line.
+     */
+    private fun encodeVideoId(id: String): String {
+        require(isValidVideoId(id)) { "Not a valid video id." }
+        return encodeUrlValue(id)
     }
 
     // ---- DTOs -----------------------------------------------------------
@@ -155,13 +180,13 @@ class PipedBackend(
             val vid = url.substringAfter("v=", "").substringBefore('&').ifBlank { url.substringAfterLast('/') }
             return VideoItem(
                 id = vid,
-                title = title,
-                channelName = uploaderName,
+                title = decodeEntities(title),
+                channelName = decodeEntities(uploaderName),
                 channelId = uploaderUrl.substringAfterLast('/'),
-                thumbnail = thumbnail.ifBlank { "https://i.ytimg.com/vi/$vid/hqdefault.jpg" },
+                thumbnail = thumbnail.ifBlank { "https://i.ytimg.com/vi/${encodeUrlValue(vid)}/hqdefault.jpg" },
                 durationSeconds = duration,
                 views = views,
-                publishedText = uploadedDate,
+                publishedText = decodeEntities(uploadedDate),
             )
         }
     }
@@ -237,6 +262,4 @@ class PipedBackend(
     private data class PipedComments(
         val comments: List<PipedComment> = emptyList(),
     )
-
-    private fun fmt(n: Long) = InvidiousBackend.formatCount(n)
 }

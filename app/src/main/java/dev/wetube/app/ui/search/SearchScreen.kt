@@ -2,19 +2,23 @@ package dev.wetube.app.ui.search
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -23,10 +27,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -83,6 +93,7 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
             state = state.copy(
                 query = query,
                 loading = true,
+                loadingMore = false,
                 error = null,
                 suggestions = emptyList(),
                 searched = true,
@@ -91,7 +102,7 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
                 val page = locator.backend().search(query)
                 state = state.copy(
                     loading = false,
-                    results = page.videos,
+                    results = page.videos.distinctBy { it.id },
                     nextPage = page.nextPage,
                 )
             }.onFailure {
@@ -102,16 +113,26 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     fun loadMore() {
         val next = state.nextPage ?: return
+        // Flip the guard before launching. Checking it inside the coroutine
+        // left a window where two taps (or a tap plus a scroll) both passed
+        // the check and fetched the same page twice.
         if (state.loadingMore) return
+        state = state.copy(loadingMore = true, error = null)
+        val query = state.query
         viewModelScope.launch {
-            state = state.copy(loadingMore = true)
             runCatching {
-                val page = locator.backend().search(state.query, next)
-                state = state.copy(
-                    loadingMore = false,
-                    results = state.results + page.videos,
-                    nextPage = page.nextPage,
-                )
+                val page = locator.backend().search(query, next)
+                // A new search may have landed while this request was in
+                // flight; its results must not be appended to the new list.
+                if (state.query == query) {
+                    state = state.copy(
+                        loadingMore = false,
+                        results = (state.results + page.videos).distinctBy { it.id },
+                        nextPage = page.nextPage,
+                    )
+                } else {
+                    state = state.copy(loadingMore = false)
+                }
             }.onFailure {
                 state = state.copy(loadingMore = false, error = friendlyError(it))
             }
@@ -139,35 +160,62 @@ fun SearchScreen(
 ) {
     val viewModel: SearchViewModel = viewModel(factory = SearchViewModel.factory(locator))
     val state = viewModel.state
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val listState = rememberLazyListState()
+
+    // A search is submitted from the keyboard action or a suggestion; either
+    // way the keyboard and focus go away so the results are not half-covered.
+    fun submit(block: () -> Unit = { viewModel.search() }) {
+        block()
+        keyboard?.hide()
+        focusManager.clearFocus()
+    }
+
+    // Fetch the next page once the last result is on screen. Checking the
+    // footer's visibility (rather than listening to the list size) means the
+    // next page is only requested when the viewer actually reaches it.
+    val footerVisible by remember {
+        derivedStateOf {
+            val layout = listState.layoutInfo
+            val last = layout.visibleItemsInfo.lastOrNull()?.index ?: return@derivedStateOf false
+            layout.totalItemsCount > 0 && last >= layout.totalItemsCount - 1
+        }
+    }
+    LaunchedEffect(footerVisible, state.nextPage, state.loading, state.suggestions.isEmpty()) {
+        if (footerVisible && !state.loading && state.suggestions.isEmpty()) viewModel.loadMore()
+    }
+
+    // Scrolling the results is a deliberate move away from the field, so drop
+    // the keyboard and focus rather than leave the list half-hidden behind it.
+    val resultsScrolling by remember { derivedStateOf { listState.isScrollInProgress } }
+    LaunchedEffect(resultsScrolling) {
+        if (resultsScrolling) {
+            keyboard?.hide()
+            focusManager.clearFocus()
+        }
+    }
 
     Column(modifier.fillMaxSize()) {
-        Row(
+        OutlinedTextField(
+            value = state.query,
+            onValueChange = viewModel::onQueryChange,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-        ) {
-            OutlinedTextField(
-                value = state.query,
-                onValueChange = viewModel::onQueryChange,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Search WeTube") },
-                singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (state.query.isNotEmpty()) {
-                        IconButton(onClick = viewModel::clear) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear")
-                        }
+            placeholder = { Text("Search WeTube") },
+            singleLine = true,
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            trailingIcon = {
+                if (state.query.isNotEmpty()) {
+                    IconButton(onClick = viewModel::clear) {
+                        Icon(Icons.Default.Close, contentDescription = "Clear")
                     }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { viewModel.search() }),
-            )
-            Button(
-                onClick = { viewModel.search() },
-                modifier = Modifier.padding(start = 8.dp),
-            ) { Text("Go") }
-        }
+                }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { submit() }),
+        )
 
         if (state.suggestions.isNotEmpty() && !state.loading) {
             LazyColumn(modifier = Modifier.fillMaxWidth()) {
@@ -175,7 +223,7 @@ fun SearchScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { viewModel.search(suggestion) }
+                            .clickable { submit { viewModel.search(suggestion) } }
                             .padding(horizontal = 20.dp, vertical = 12.dp),
                     ) {
                         Text(
@@ -207,7 +255,10 @@ fun SearchScreen(
                 title = "No results",
                 body = "Nothing matched \"${state.query}\".",
             )
-            else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+            else -> LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+            ) {
                 items(state.results, key = { it.id }) { video ->
                     VideoCard(
                         video = video,
@@ -217,12 +268,26 @@ fun SearchScreen(
                         },
                     )
                 }
-                if (state.nextPage != null) {
+                // The next page is requested by the visibility effect above;
+                // this footer only reports progress and offers a retry if the
+                // request failed without emptying the list.
+                if (state.nextPage != null && (state.loadingMore || state.error != null)) {
                     item {
-                        TextButton(
-                            onClick = viewModel::loadMore,
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        ) { Text(if (state.loadingMore) "Loading…" else "Load more") }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (state.loadingMore) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                TextButton(onClick = viewModel::loadMore) { Text("Try again") }
+                            }
+                        }
                     }
                 }
             }

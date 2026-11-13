@@ -32,22 +32,11 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import dev.wetube.app.data.model.VideoItem
 
-fun compactCount(n: Long): String = when {
-    n >= 1_000_000_000 -> "%.1fB".format(n / 1_000_000_000.0)
-    n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
-    n >= 1_000 -> "%.1fK".format(n / 1_000.0)
-    else -> n.toString()
-}
+/** View-friendly count, e.g. `222000 -> "222K"`. Thin alias for the shared helper. */
+fun compactCount(n: Long): String = dev.wetube.app.core.compactCount(n)
 
-/** 1.5 -> "1.5×", 2.0 -> "2×", matching the labels YouTube uses. */
-fun formatSpeed(speed: Float): String {
-    val value = if (speed == speed.toInt().toFloat()) {
-        speed.toInt().toString()
-    } else {
-        String.format(java.util.Locale.US, "%.2f", speed).trimEnd('0').trimEnd('.')
-    }
-    return "$value×"
-}
+/** Canonical speed label, e.g. `1.25f -> "1.25×"`. Thin alias for the shared helper. */
+fun formatSpeed(speed: Float): String = dev.wetube.app.core.formatSpeed(speed)
 
 fun formatDuration(totalSeconds: Int): String {
     if (totalSeconds <= 0) return ""

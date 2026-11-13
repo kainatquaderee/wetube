@@ -15,6 +15,7 @@ away from the UI.
 
 ```
 app/src/main/java/dev/wetube/app/
+├── core/          text, URL and video-id helpers shared by every layer
 ├── data/
 │   ├── backend/   TubeBackend + InnerTube (default), Invidious, Piped
 │   ├── auth/      optional Google session, multiple accounts
@@ -29,6 +30,23 @@ app/src/main/java/dev/wetube/app/
 One module, packages by feature. `MainActivity` handles deep links
 (`youtu.be/ID`, `youtube.com/watch?v=ID`) and hands them to the Compose nav
 graph; the same route is used from every screen.
+
+## Shared helpers (`core/`)
+
+A handful of rules are used from more than one layer, so they live in `core/`
+rather than being re-derived at each call site:
+
+- `core/Text.kt` — `decodeEntities` turns the HTML entities YouTube leaves in
+  JSON titles and descriptions into plain text; `compactCount` and `parseCount`
+  are the one way a count is printed and read back (`222.0K` becomes `222K`, and
+  a localised label like `1.2M` parses to `1200000`); `formatSpeed` is the one
+  source of the `1×` / `1.25×` / `1.75×` labels the player and Settings share.
+- `core/Urls.kt` — `sanitizeBackendHost` canonicalises a free-text backend host,
+  `isAllowedSignInUrl` is the sign-in navigation allow-list, and `encodeUrlValue`
+  percent-encodes a dynamic value before it is placed in a path or query.
+- `core/VideoIds.kt` — `isValidVideoId` checks an 11-character YouTube id with an
+  anchored pattern, so a value that will be concatenated into a route or a URL
+  cannot smuggle a path (`..`, `/`) through it.
 
 ## 1. Transport
 
@@ -90,6 +108,20 @@ full speed; the `ANDROID` and `ANDROID_VR` fallbacks expose fewer, sometimes
 muxed-only, options. Live streams keep the HLS path, since a manifest is what the
 live surface returns.
 
+**In-place reloads.** Re-resolving the same video — after a quality or audio-only
+change, or on retry — replaces the `MediaItem` without forcing playback to start
+(`PlaybackController.load()` rather than `play()`). A paused video stays paused
+and a playing one keeps playing, resuming at the same position.
+
+**Player extras.** The info area carries an honest, read-only dislike count (the
+independent Return YouTube Dislike figure, shown only while "Show dislikes" is
+on) and a Share chip that sends the canonical watch URL. The channel row's
+Subscribe/Subscribed button writes to the same local library the Library screen
+reads. When a video finishes, its next related video appears over the final frame
+and one tap swaps the media in the same player and back-stack entry. A failed
+load or re-resolve is shown over the player rather than instead of the page, so
+the title, channel, chips and comments stay usable below with a single retry.
+
 **The player settings panel.** The control bar's gear opens a sheet modelled on
 the official player: Quality and Playback speed open second-level lists, Captions
 hands off to the CC sheet, and the remaining rows are switches (audio-only,
@@ -141,7 +173,9 @@ therefore costs no extra request.
 
 - Pages are fetched from the same `next` endpoint with a `continuation` token.
   The next token is taken from wherever the tree put it, so both
-  `sectionListContinuation` and `itemSectionContinuation` shapes work.
+  `sectionListContinuation` and `itemSectionContinuation` shapes work. The next
+  page is requested only once the list's footer is actually on screen, so a
+  continuation is not fetched until the viewer reaches it.
 - Comments are read from `commentThreadRenderer` nodes: author, avatar, body,
   age, like count and reply count. Requests are anonymous, which matches what
   the rest of the app does.
@@ -159,9 +193,29 @@ in-app browser session is kept in private storage and used only for the web
 surfaces, so feeds and subscriptions can be personal while playback stays
 anonymous.
 
+**One writer, one transaction.** A preference change goes through
+`SettingsStore.update { … }`, which runs the read-modify-write *inside* the
+DataStore `edit` transaction rather than snapshotting a value first and writing
+it back. Two overlapping updates therefore serialise instead of each resnapshotting
+the same state and clobbering the other, so every distinct change survives.
+
+**Dedupe at the edge.** Each paged list (search, home, channel, comments) reduces
+to one entry per id before it reaches Compose. YouTube can repeat an item across
+continuations, and a duplicate id would give two list items the same key.
+
 Backup & restore writes one JSON file through the system file picker. The file
 contains the library and preferences, never cookies or accounts, and can be
 stored in Google Drive, on a USB stick, or on another phone.
+
+The file is a versioned schema — **v2** adds the backend, the Invidious/Piped
+hosts, the proxy-streams flag and the SponsorBlock categories, alongside the
+playback preferences that v1 already carried. A restore validates the format and
+accepts only versions `1..2` (a file from a newer build is rejected rather than
+guessed at), refuses a file above 5 MB before parsing it, and caps the restored
+sponsor-category set. Because a backup can be written on one device and opened on
+another — including through Drive — its free-text host fields are re-validated
+when they are restored, and anything that fails the check falls back to the
+built-in default.
 
 ## 6. Background playback
 
@@ -184,17 +238,49 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | Transport | Direct InnerTube over JSON, plus Invidious and Piped |
 | Playback | Progressive, merged A/V, HLS live |
 | Player panel | In-player gear: quality, speed, captions, audio-only, background, SponsorBlock, dislikes |
+| Player extras | Read-only dislike count, Share, Subscribe/Subscribed on the channel row, end screen with the next related video |
+| Search | Autocomplete and continuation paging; keyboard dismissed on submit, next page loaded at the end of the list |
 | Subtitles | Tracks from the video itself, CC menu, YouTube auto-translation with fallback |
 | Gestures | Hold for 2×, tap to pause in Shorts, vertical pager |
 | Comments | Native top/newest feed with paging, likes, reply counts and avatars; browser fallback |
 | Shorts | Dedicated swipe feed, own progress bar, captions, like/dislike/comment counts, tappable channel, pause indicator |
 | Library | History, favourites, resume points, local subscriptions |
 | Accounts | Optional, multiple, removable; cookies excluded from backups |
-| Data portability | JSON backup through the system file picker |
+| Data portability | Versioned JSON backup through the system file picker |
 | Extras | SponsorBlock auto-skip, Return YouTube Dislike |
 | Ads / telemetry | None |
 
-## 9. Known limits
+## 9. Input validation and hardening
+
+- **Backend hosts.** A host typed in Settings, or restored from a backup, is run
+  through `sanitizeBackendHost` before it is ever concatenated into a request URL.
+  It must be `https`, must not carry userinfo, must not be `localhost`/`.localhost`,
+  and must not be a loopback, private, link-local, carrier-grade-NAT, benchmarking
+  or otherwise reserved IP literal (a hostname is not resolved, so nothing here
+  triggers a lookup). Anything else is dropped and the caller falls back to the
+  built-in default. The function also returns the bare origin, so a caller cannot
+  smuggle a path, query or fragment in front of the `/api/v1` suffix the backends
+  append.
+- **Cleartext off.** `network_security_config.xml` sets
+  `cleartextTrafficPermitted="false"` with no per-domain exemptions, so a mistyped
+  or tampered host cannot silently downgrade a request to `http://`; `sanitizeBackendHost`
+  enforces the same rule at the URL layer.
+- **Dynamic URL values.** Video ids, search queries and region codes are
+  percent-encoded with `encodeUrlValue` before they are placed in a path or query.
+- **Deep links.** `MainActivity` accepts only the declared hosts (`youtu.be`,
+  `www.youtube.com`, `m.youtube.com`) and validates the id with `isValidVideoId`
+  (`^[A-Za-z0-9_-]{11}$`) before it becomes a navigation route. A cold launch
+  consumes the link once, and a recreation replays the original intent without
+  reopening the video.
+- **The sign-in WebView.** Navigation is allow-listed to the Google/YouTube https
+  apexes and their subdomains (`isAllowedSignInUrl`); every other host and every
+  non-https scheme is refused. The view runs with file and content access off, no
+  file-URL universal access and mixed content never allowed, and it is destroyed
+  explicitly when the screen is popped so it cannot outlive its Activity.
+- **Age-gate hint.** The locally remembered set of age-restricted ids is capped
+  FIFO at 500, so the best-effort hint cannot grow without bound.
+
+## 10. Known limits
 
 - Age-restricted videos may require a signed-in browser session. WeTube does not
   fake YouTube's JavaScript challenge; the player says which wall it hit.

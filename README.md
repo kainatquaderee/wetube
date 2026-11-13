@@ -37,6 +37,13 @@ resolves.
 - **Comments** read natively: top/newest sort, paging, likes, reply counts and
   avatars, with the watch page in the browser as a fallback
 - Chapters detected from the description, tap to seek
+- **Share** the video from the player as its canonical watch link
+- **Dislike count** on the player: one honest, read-only figure from Return YouTube
+  Dislike, shown only when the "Show dislikes" switch is on
+- **End screen**: when a video finishes, its next related video appears over the
+  final frame; one tap plays it in the same player
+- A playback failure keeps the title, channel, chips and comments usable below,
+  with a retry on the player
 
 **Discovery**
 - Home feed by region, or your own recommendations and subscriptions when signed in
@@ -44,9 +51,11 @@ resolves.
   bar, tap-to-pause, 2× hold gesture, the CC menu, and a rail with like, dislike
   and comment counts whose channel line opens the channel. Signed in, it follows
   your own account's Shorts shelf
-- Search with autocomplete and real continuation paging
+- Search with autocomplete and real continuation paging; the keyboard is
+  dismissed on submit and the next page loads as the list is scrolled to the end
 - Channels, related videos, like/subscriber counts, upload date
-- Local **Subscribe** on any channel, independent of any account
+- Local **Subscribe** on any channel, independent of any account — also on the
+  player's channel row, where the button reads **Subscribed** once you follow it
 
 **Accounts (optional)**
 - Google sign-in in an in-app browser session; WeTube never asks for your password
@@ -84,6 +93,10 @@ resolves.
 - Only playback-related permissions
 - History, favourites and preferences never leave the device unless you export a backup
 - Account cookies live in the app's private storage and are excluded from backups
+- Backend hosts are validated — https only, no loopback, private, link-local or
+  credential-bearing URLs — and cleartext traffic is refused app-wide
+- The optional sign-in WebView is restricted to the Google/YouTube https pages the
+  login flow needs, runs without file/content access, and is destroyed when closed
 
 ## Install
 
@@ -114,16 +127,19 @@ sdk.dir=/path/to/Android/Sdk
 ./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
 ```
 
-Release builds are minified with R8. Without a signing key they fall back to the
-debug key so local builds still work; CI signs with the repository secrets
-(`WETUBE_KEYSTORE_BASE64`, `WETUBE_KEYSTORE_PASSWORD`, `WETUBE_KEY_ALIAS`,
-`WETUBE_KEY_PASSWORD`). Locally, put the same values in a git-ignored
-`keystore.properties`.
+Release builds are minified with R8 and will not package without a real signing
+key, so a debug-signed artifact can never be mistaken for a release. CI signs
+with the repository secrets (`WETUBE_KEYSTORE_BASE64`,
+`WETUBE_KEYSTORE_PASSWORD`, `WETUBE_KEY_ALIAS`, `WETUBE_KEY_PASSWORD`).
+Locally, put the same values in a git-ignored `keystore.properties`. For a
+throwaway test build on a key-less checkout, pass `-PallowDebugSigning=true` to
+sign with the debug key explicitly.
 
 ## Architecture
 
 ```
 app/src/main/java/dev/wetube/app/
+├── core/          shared text, URL and video-id helpers
 ├── data/
 │   ├── backend/   TubeBackend + InnerTube (default), Invidious, Piped
 │   ├── auth/      optional Google session, multiple accounts
@@ -141,7 +157,7 @@ design, and why the direct backend is the default.
 
 ## Status
 
-0.1.6 — playback, feeds and accounts work on a real device against live
+0.1.7 — playback, feeds and accounts work on a real device against live
 endpoints. The playback path prefers the plain IOS client, whose adaptive links
 are not throttled and cover every resolution up to 2160p; the Android and Android
 VR clients are fallbacks, with the VR client's signed payload built only when it
@@ -152,11 +168,35 @@ session). The player has a fullscreen mode that letterboxes landscape and
 portrait videos alike, a settings panel behind the control-bar gear (quality,
 speed, captions, audio-only, background playback, SponsorBlock, dislike counts),
 and a video-quality picker (Auto or any height the video offers, remembered as
-the default). Verified: home feed, subscriptions, search with paging,
-account-based Shorts (with like/dislike/comment counts and channel navigation),
-fullscreen (portrait and landscape), deep links, hold-to-2×, background playback
-(on and off), the CC menu with caption loading, the comment section (top/newest
-sort and paging), and video playback over `HTTP 206` from the CDN.
+the default).
+
+0.1.7 is the quality-and-polish pass:
+
+- The player now carries an honest, read-only **dislike count** (shown when "Show
+  dislikes" is on), a **Share** chip, and a channel row whose **Subscribe /
+  Subscribed** button is wired to the local library. A finished video shows its
+  next related video over the final frame and plays it in the same player, and a
+  playback error keeps the title, channel, chips and comments usable below with a
+  retry on the player.
+- Search dismisses the keyboard when a search is submitted and pages in as the
+  list reaches its end. Every paged list (search, home, channel, comments)
+  de-duplicates by id, so a repeated item can no longer collide with a Compose key.
+- Deep links are host allow-listed, the video id is validated and a link is
+  consumed once. Changing quality or audio-only mid-video no longer forces
+  playback to start: a paused video stays paused and a playing one keeps playing.
+  Preferences are written inside the DataStore transaction, so one update can no
+  longer clobber another. Player position and duration are read null-safely.
+- Backups are a validated **schema v2** (backend, hosts, proxy flag, sponsor
+  categories and the playback preferences) with an explicit version check and
+  size/count caps; hosts restored from a file are re-validated. Age-gate ids are
+  capped FIFO at 500.
+
+Verified: home feed, subscriptions, search with paging, account-based Shorts
+(with like/dislike/comment counts and channel navigation), fullscreen (portrait
+and landscape), deep links, hold-to-2×, background playback (on and off), the CC
+menu with caption loading, the comment section (top/newest sort and paging), the
+dislike count and Share chips on the player, Subscribe/Subscribed from the
+player, the end screen, and video playback over `HTTP 206` from the CDN.
 
 Known limits: the comment section is read-only — liking, replying and viewing
 replies need a signed-in Google session, which WeTube does not fake, so the sheet

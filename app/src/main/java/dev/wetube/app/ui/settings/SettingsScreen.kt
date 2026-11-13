@@ -8,12 +8,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
@@ -51,8 +55,12 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
 import dev.wetube.app.BuildConfig
+import dev.wetube.app.core.DEFAULT_INVIDIOUS_HOST
+import dev.wetube.app.core.DEFAULT_PIPED_HOST
+import dev.wetube.app.core.sanitizeBackendHost
 import dev.wetube.app.data.auth.Account
 import dev.wetube.app.data.backend.BackendType
+import dev.wetube.app.data.local.MAX_BACKUP_BYTES
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.ui.formatSpeed
@@ -159,6 +167,15 @@ fun SettingsScreen(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
+        // Reject an oversized file before it is read into memory. Providers may
+        // not report a length, in which case BackupStore still guards on parse.
+        val declaredSize = runCatching {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
+        }.getOrNull()
+        if (declaredSize != null && declaredSize > MAX_BACKUP_BYTES.toLong()) {
+            viewModel.message = "That backup is too large to import."
+            return@rememberLauncherForActivityResult
+        }
         val text = runCatching {
             context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
         }.getOrNull()
@@ -172,6 +189,10 @@ fun SettingsScreen(
     Column(
         modifier
             .fillMaxSize()
+            // Keep the last row (and the host fields while editing) clear of
+            // the system navigation bar and the on-screen keyboard.
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .imePadding()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
@@ -245,23 +266,73 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.height(8.dp))
+
+        // Direct mode never reads the instance hosts, so their fields are
+        // disabled (not merely de-emphasised) while it is selected. They stay
+        // editable in Invidious/Piped mode so a host can be checked before
+        // switching over.
+        val customHostsEnabled = settings.backend != BackendType.INNERTUBE
+
+        // One draft per field; the single Save below commits all three together,
+        // so a half-typed host can never be applied on its own the way the three
+        // separate Apply buttons allowed.
+        var invidiousDraft by remember(settings.invidiousHost) { mutableStateOf(settings.invidiousHost) }
+        var pipedDraft by remember(settings.pipedHost) { mutableStateOf(settings.pipedHost) }
+        var regionDraft by remember(settings.region) { mutableStateOf(settings.region) }
+
         HostEditor(
             label = "Invidious host",
-            value = settings.invidiousHost,
-            onApply = { host -> viewModel.update { it.copy(invidiousHost = host, backend = BackendType.INVIDIOUS) } },
+            value = invidiousDraft,
+            onValueChange = { invidiousDraft = it },
+            enabled = customHostsEnabled,
         )
         Spacer(Modifier.height(8.dp))
         HostEditor(
             label = "Piped host",
-            value = settings.pipedHost,
-            onApply = { host -> viewModel.update { it.copy(pipedHost = host, backend = BackendType.PIPED) } },
+            value = pipedDraft,
+            onValueChange = { pipedDraft = it },
+            enabled = customHostsEnabled,
         )
         Spacer(Modifier.height(8.dp))
         HostEditor(
             label = "Trending region",
-            value = settings.region,
-            onApply = { region -> viewModel.update { it.copy(region = region.uppercase()) } },
+            value = regionDraft,
+            onValueChange = { regionDraft = it },
         )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = {
+                    val invidious = sanitizeBackendHost(invidiousDraft)
+                    val piped = sanitizeBackendHost(pipedDraft)
+                    val invalid = buildList {
+                        if (invidious == null) add("Invidious")
+                        if (piped == null) add("Piped")
+                    }
+                    viewModel.message = when (invalid.size) {
+                        0 -> "Backend settings saved."
+                        1 -> "That ${invalid.first()} host isn't a valid https address; using the default."
+                        else -> "Those hosts aren't valid https addresses; using the defaults."
+                    }
+                    val region = regionDraft.trim().uppercase()
+                    viewModel.update {
+                        it.copy(
+                            invidiousHost = invidious ?: DEFAULT_INVIDIOUS_HOST,
+                            pipedHost = piped ?: DEFAULT_PIPED_HOST,
+                            region = region.ifBlank { it.region },
+                        )
+                    }
+                },
+            ) { Text("Save backend settings") }
+            if (!customHostsEnabled) {
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "Direct mode ignores these hosts.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
 
         Section("Playback")
         SwitchRow(
@@ -318,14 +389,15 @@ fun SettingsScreen(
             onChange = { value -> viewModel.update { it.copy(sponsorBlockEnabled = value) } },
         )
         SwitchRow(
-            title = "Return YouTube Dislike",
-            subtitle = "Show the community dislike count.",
+            title = "Show likes and dislikes",
+            subtitle = "Show the community like and dislike counts.",
             checked = settings.showDislikes,
             onChange = { value -> viewModel.update { it.copy(showDislikes = value) } },
         )
         SwitchRow(
             title = "Proxy streams through the instance",
-            subtitle = "Fixes throttled or 403 media links on some networks. Uses more instance bandwidth.",
+            subtitle = "Send media links through your Invidious instance instead of YouTube. " +
+                "Uses more instance bandwidth and can be slower.",
             checked = settings.proxyStreams,
             onChange = { value -> viewModel.update { it.copy(proxyStreams = value) } },
         )
@@ -514,19 +586,18 @@ private fun SwitchRow(
 }
 
 @Composable
-private fun HostEditor(label: String, value: String, onApply: (String) -> Unit) {
-    var text by remember(value) { mutableStateOf(value) }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlinedTextField(
-            value = text,
-            onValueChange = { text = it },
-            label = { Text(label) },
-            singleLine = true,
-            modifier = Modifier.weight(1f),
-        )
-        Button(
-            onClick = { onApply(text.trim()) },
-            modifier = Modifier.padding(start = 8.dp),
-        ) { Text("Apply") }
-    }
+private fun HostEditor(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean = true,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        singleLine = true,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }

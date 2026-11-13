@@ -1,6 +1,11 @@
 package dev.wetube.app.data.backend
 
 import dev.wetube.app.BuildConfig
+import dev.wetube.app.core.compactCount
+import dev.wetube.app.core.decodeEntities
+import dev.wetube.app.core.encodeUrlValue
+import dev.wetube.app.core.parseCount
+import dev.wetube.app.core.subscriberLabel
 import dev.wetube.app.data.auth.AuthStore
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.CaptionSet
@@ -203,7 +208,7 @@ class InnerTubeBackend(
         if (stsCache > 0 && age < 60 * 60 * 1000L) return stsCache
         return runCatching {
             val html = http.getText(
-                "https://www.youtube.com/watch?v=$id",
+                "https://www.youtube.com/watch?v=${encodeUrlValue(id)}",
                 buildMap {
                     put("User-Agent", web.userAgent)
                     put("Accept-Language", "en-US,en;q=0.9")
@@ -605,7 +610,7 @@ class InnerTubeBackend(
             item = item.copy(publishedText = publishText.orEmpty()),
             description = description,
             likes = likes,
-            subscribersText = subscribers,
+            subscribersText = subscriberLabel(subscribers),
             playback = Playback(
                 muxed = muxed,
                 videoOnly = videoOnly,
@@ -633,7 +638,9 @@ class InnerTubeBackend(
             avatar = (meta?.get("avatar") ?: header?.get("avatar")).thumbnailUrl().orEmpty(),
             banner = (meta?.get("banner") ?: header?.get("banner")).thumbnailUrl().orEmpty(),
             description = meta?.str("description").orEmpty(),
-            subscribersText = response.findAll("subscriberCountText").firstOrNull()?.text().orEmpty(),
+            subscribersText = subscriberLabel(
+                response.findAll("subscriberCountText").firstOrNull()?.text().orEmpty(),
+            ),
             videos = response.videos(),
         )
     }
@@ -693,7 +700,10 @@ class InnerTubeBackend(
         return CommentThreadInfo(
             continuation = top,
             newestContinuation = newest,
-            countText = header?.get("contextualInfo").text().orEmpty(),
+            // The header prints a localised label ("1,234", "222.0K"); compact
+            // it here so every surface (player chip, comments sheet, Shorts
+            // rail) shows the same "1.2K"/"222K" style.
+            countText = compactCountLabel(header?.get("contextualInfo").text().orEmpty()),
         )
     }
 
@@ -989,17 +999,9 @@ class InnerTubeBackend(
         }
     }
 
-    private fun parseCount(text: String): Long {
-        if (text.isBlank()) return 0
-        val match = Regex("([\\d.,]+)\\s*([KMB])?", RegexOption.IGNORE_CASE).find(text) ?: return 0
-        val number = match.groupValues[1].replace(",", "").toDoubleOrNull() ?: return 0
-        return when (match.groupValues[2].uppercase()) {
-            "K" -> (number * 1_000).toLong()
-            "M" -> (number * 1_000_000).toLong()
-            "B" -> (number * 1_000_000_000).toLong()
-            else -> number.toLong()
-        }
-    }
+    /** Leaves non-numeric labels ("Comments are turned off") untouched. */
+    private fun compactCountLabel(text: String): String =
+        if (text.any { it.isDigit() }) compactCount(parseCount(text)) else text
 
     private companion object {
         const val endpoint = "https://www.youtube.com/youtubei/v1"
@@ -1013,13 +1015,25 @@ private fun JsonElement?.obj(): JsonObject? = this as? JsonObject
 
 private fun JsonObject?.str(key: String): String? = this?.get(key).text()
 
-private fun JsonElement?.text(): String? = when (this) {
+/**
+ * Human-readable text, decoded at the JSON→model boundary.
+ *
+ * The walker below deliberately reads through [rawText], so a run array is
+ * joined before its entities are decoded. Decoding inside the recursion would
+ * run [decodeEntities] on each fragment separately, which can split a
+ * multi-character reference across runs and leave it half-decoded; joining
+ * first keeps whole references intact.
+ */
+private fun JsonElement?.text(): String? = rawText()?.let(::decodeEntities)
+
+/** The structural walker behind [text]: joins runs and arrays without decoding. */
+private fun JsonElement?.rawText(): String? = when (this) {
     is JsonPrimitive -> contentOrNull
-    is JsonObject -> this["simpleText"].text()
-        ?: this["runs"].text()
-        ?: this["content"].text()
-        ?: this["text"].text()
-    is JsonArray -> joinToString("") { it.text().orEmpty() }.ifBlank { null }
+    is JsonObject -> this["simpleText"].rawText()
+        ?: this["runs"].rawText()
+        ?: this["content"].rawText()
+        ?: this["text"].rawText()
+    is JsonArray -> joinToString("") { it.rawText().orEmpty() }.ifBlank { null }
     else -> null
 }
 

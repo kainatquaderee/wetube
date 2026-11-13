@@ -25,8 +25,8 @@ android {
         applicationId = "dev.wetube.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.1.6"
+        versionCode = 8
+        versionName = "0.1.7"
     }
 
     // Keep the APK free of the dependency metadata block; nothing in the app
@@ -63,12 +63,36 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Forks and pull requests have no signing key. Falling back to the
-            // debug key keeps `assembleRelease` producing something installable
-            // instead of failing; real releases use the config above.
-            signingConfig = signingConfigs.getByName("release").storeFile
-                ?.let { signingConfigs.getByName("release") }
-                ?: signingConfigs.getByName("debug")
+
+            // Signing is never silently downgraded. With no release key the
+            // release build fails, so a debug-signed artifact can never be
+            // mistaken for a real one. `-PallowDebugSigning=true` is the
+            // explicit opt-in for a local test build on a key-less checkout.
+            //
+            // The failure is raised when the release is packaged, not while
+            // this block is configured, so `assembleDebug` and the unit tests
+            // keep working without signing material.
+            val releaseSigning = signingConfigs.getByName("release")
+            val debugSigningAllowed = providers.gradleProperty("allowDebugSigning")
+                .map { it.equals("true", ignoreCase = true) }
+                .getOrElse(false)
+
+            when {
+                releaseSigning.storeFile != null -> signingConfig = releaseSigning
+                debugSigningAllowed -> signingConfig = signingConfigs.getByName("debug")
+                else -> tasks
+                    .matching { it.name == "packageRelease" || it.name == "packageReleaseBundle" }
+                    .configureEach {
+                        doFirst {
+                            throw GradleException(
+                                "No release signing key was found. Add keystore.properties " +
+                                    "(storeFile, storePassword, keyAlias, keyPassword) or set the " +
+                                    "WETUBE_KEYSTORE_* environment variables. To sign a local test " +
+                                    "release with the debug key instead, pass -PallowDebugSigning=true.",
+                            )
+                        }
+                    }
+            }
         }
     }
 
@@ -134,4 +158,6 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    testImplementation("junit:junit:4.13.2")
 }

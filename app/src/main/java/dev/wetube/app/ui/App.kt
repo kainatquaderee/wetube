@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.Lifecycle
@@ -28,6 +29,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import dev.wetube.app.core.isValidVideoId
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.ui.auth.SignInScreen
@@ -55,6 +57,7 @@ fun WeTubeRoot(
     locator: ServiceLocator,
     startVideoId: String? = null,
     startRequest: Int = 0,
+    onStartConsumed: () -> Unit = {},
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -178,9 +181,16 @@ fun WeTubeRoot(
         }
     }
 
+    val consumeStart = rememberUpdatedState(onStartConsumed)
+
+    // `startVideoId` is a one-shot delivery from the launch intent. The
+    // activity clears it once this effect has navigated, so a recomposition
+    // (or the effect restarting for any other reason) cannot replay the link.
     LaunchedEffect(startVideoId, startRequest) {
-        if (!startVideoId.isNullOrBlank()) {
-            navController.navigate("watch/$startVideoId") { launchSingleTop = true }
+        val id = startVideoId ?: return@LaunchedEffect
+        if (isValidVideoId(id)) {
+            navController.navigate("watch/$id") { launchSingleTop = true }
         }
+        consumeStart.value()
     }
 }

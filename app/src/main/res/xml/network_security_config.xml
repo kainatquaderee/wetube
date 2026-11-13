@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Every endpoint WeTube talks to is HTTPS. Cleartext is refused outright so a
+    mistyped or tampered backend URL cannot silently downgrade a request to
+    http://, and there are no per-domain exemptions to keep in sync.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

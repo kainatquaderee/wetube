@@ -114,7 +114,7 @@ object StreamResolver {
             .setMediaMetadata(metadata)
             .build()
 
-    private data class VideoPick(val format: StreamFormat, val muxed: Boolean)
+    internal data class VideoPick(val format: StreamFormat, val muxed: Boolean)
 
     /**
      * Chooses one video track.
@@ -130,7 +130,7 @@ object StreamResolver {
      * the single-file muxed one wins, because its audio cannot expire out from
      * under the video.
      */
-    private fun pickVideo(p: Playback, preferredHeight: Int): VideoPick? {
+    internal fun pickVideo(p: Playback, preferredHeight: Int): VideoPick? {
         val all = p.muxed.filter { it.url.isNotBlank() }.map { VideoPick(it, true) } +
             p.videoOnly.filter { it.url.isNotBlank() }.map { VideoPick(it, false) }
         if (all.isEmpty()) return null

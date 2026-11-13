@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import dev.wetube.app.core.isValidVideoId
 import dev.wetube.app.ui.WeTubeRoot
 import dev.wetube.app.ui.theme.WeTubeTheme
 
@@ -30,7 +31,10 @@ class MainActivity : ComponentActivity() {
         locator.playback.connect()
 
         requestNotificationPermission()
-        open(intent)
+        // Only a cold launch carries a new link. On recreation Android replays
+        // the original intent, which would otherwise reopen the same video
+        // every time the activity is restored (rotation, process death).
+        if (savedInstanceState == null) open(intent)
 
         setContent {
             WeTubeTheme {
@@ -38,6 +42,7 @@ class MainActivity : ComponentActivity() {
                     locator = locator,
                     startVideoId = startVideoId.value,
                     startRequest = startRequest.intValue,
+                    onStartConsumed = { startVideoId.value = null },
                 )
             }
         }
@@ -67,14 +72,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** youtube.com/watch?v=ID, youtu.be/ID */
+    /**
+     * youtube.com/watch?v=ID, youtu.be/ID.
+     *
+     * The host list is exact — `contains("youtu.be")` also matched
+     * `evil-youtu.be.example` — and the id itself must be a YouTube-shaped id,
+     * because it is concatenated into a navigation route.
+     */
     private fun videoIdFrom(intent: Intent?): String? {
         val data = intent?.data ?: return null
-        val host = data.host.orEmpty()
-        return when {
-            host.contains("youtu.be") -> data.pathSegments.firstOrNull()
-            data.getQueryParameter("v") != null -> data.getQueryParameter("v")
+        val host = data.host?.lowercase() ?: return null
+        val candidate = when (host) {
+            "youtu.be" -> data.pathSegments.firstOrNull()
+            "www.youtube.com", "m.youtube.com" -> data.getQueryParameter("v")
             else -> null
         }
+        return candidate?.takeIf(::isValidVideoId)
     }
 }

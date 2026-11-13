@@ -1,6 +1,14 @@
 package dev.wetube.app.data.backend
 
-/** Which transport the app uses. */
+import kotlinx.serialization.Serializable
+
+/**
+ * Which transport the app uses.
+ *
+ * `@Serializable` lets the chosen backend travel in a backup file; only the
+ * enum constant name is written, not the constructor arguments.
+ */
+@Serializable
 enum class BackendType(val label: String, val defaultHost: String) {
     /** Works out of the box; may break when YouTube changes the client profile. */
     INNERTUBE("Direct (InnerTube)", ""),

@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.wetube.app.BuildConfig
+import dev.wetube.app.core.decodeEntities
 import dev.wetube.app.data.backend.JsonHttp
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -218,7 +219,10 @@ class AuthStore(
                 "Origin" to "https://www.youtube.com",
             ),
         )
-        val name = firstText(response, "accountName").orEmpty()
+        // The account name comes out of YouTube's renderer tree, so it can hold
+        // `&amp;` or a numeric reference like any other title; decode it here so
+        // Settings shows the real characters.
+        val name = decodeEntities(firstText(response, "accountName").orEmpty())
         val avatar = firstThumbnail(response, "accountPhoto").orEmpty()
         if (BuildConfig.DEBUG) {
             android.util.Log.d("WeTube", "auth: account loaded=${name.isNotBlank()}")

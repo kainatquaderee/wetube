@@ -2,11 +2,10 @@ package dev.wetube.app.ui.player
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -27,11 +27,17 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -39,6 +45,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -53,10 +60,14 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -71,11 +82,15 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
+import android.view.ViewGroup
+import coil.compose.AsyncImage
 import dev.wetube.app.data.extras.SponsorSegment
 import dev.wetube.app.data.model.VideoDetail
+import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.player.CaptionSession
 import dev.wetube.app.player.StreamResolver
@@ -91,6 +106,7 @@ import dev.wetube.app.ui.formatSpeed
 import dev.wetube.app.ui.friendlyError
 import dev.wetube.app.ui.parseChapters
 import dev.wetube.app.ui.rememberIsBuffering
+import dev.wetube.app.ui.rememberPlaybackEnded
 import dev.wetube.app.ui.rememberPlayerPosition
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -142,8 +158,12 @@ private fun merge(previous: VideoDetail?, fresh: VideoDetail): VideoDetail {
 
 class PlayerViewModel(
     private val locator: ServiceLocator,
-    private val videoId: String,
+    videoId: String,
 ) : ViewModel() {
+
+    /** The video in the player. The end screen can move this without a route. */
+    var currentVideoId by mutableStateOf(videoId)
+        private set
 
     var state by mutableStateOf(PlayerUiState())
         private set
@@ -158,16 +178,20 @@ class PlayerViewModel(
     }
 
     fun load() {
+        val id = currentVideoId
         viewModelScope.launch {
             state = state.copy(loading = true, error = null)
             runCatching {
                 val settings = locator.settings.settings.first()
-                val detail = locator.backend().video(videoId)
+                val detail = locator.backend().video(id)
+                // A "play next" tap can land while this request is in flight;
+                // the stale answer must not replace the newer video.
+                if (id != currentVideoId) return@runCatching
                 val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
                     ?: error("This instance returned no playable streams.")
 
                 val resumeAt = runCatching {
-                    locator.library.resumePoints.first()[videoId]?.positionMs
+                    locator.library.resumePoints.first()[id]?.positionMs
                 }.getOrNull()
 
                 locator.playback.play(
@@ -179,11 +203,11 @@ class PlayerViewModel(
 
                 val favourite = locator.library.favourites.first().any { it.id == detail.item.id }
                 val segments = if (settings.sponsorBlockEnabled) {
-                    locator.sponsorBlock.segments(videoId, settings.sponsorCategories)
+                    locator.sponsorBlock.segments(id, settings.sponsorCategories)
                 } else {
                     emptyList()
                 }
-                val dislikes = if (settings.showDislikes) locator.dislikes.dislikes(videoId) else null
+                val dislikes = if (settings.showDislikes) locator.dislikes.dislikes(id) else null
 
                 val merged = merge(state.detail, detail)
                 state = state.copy(
@@ -268,10 +292,12 @@ class PlayerViewModel(
             return
         }
         recoveries += 1
+        val id = currentVideoId
         viewModelScope.launch {
             runCatching {
                 val settings = locator.settings.settings.first()
-                val detail = locator.backend().video(videoId)
+                val detail = locator.backend().video(id)
+                if (id != currentVideoId) return@runCatching
                 val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
                     ?: error("This video has no playable streams any more.")
                 state = state.copy(detail = merge(state.detail, detail), error = null)
@@ -313,7 +339,9 @@ class PlayerViewModel(
             val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
                 ?: return@launch
             val position = locator.playback.controller.value?.currentPosition ?: 0L
-            locator.playback.play(
+            // Non-resuming: changing quality/audio-only must not un-pause a
+            // video the viewer deliberately paused.
+            locator.playback.load(
                 item = item,
                 speed = settings.playbackSpeed,
                 startAtMs = position,
@@ -358,7 +386,7 @@ class PlayerViewModel(
             val settings = locator.settings.settings.first()
             state = state.copy(
                 segments = if (value) {
-                    locator.sponsorBlock.segments(videoId, settings.sponsorCategories)
+                    locator.sponsorBlock.segments(currentVideoId, settings.sponsorCategories)
                 } else {
                     emptyList()
                 },
@@ -371,7 +399,43 @@ class PlayerViewModel(
         state = state.copy(showDislikes = value)
         viewModelScope.launch {
             locator.settings.update { it.copy(showDislikes = value) }
-            state = state.copy(dislikes = if (value) locator.dislikes.dislikes(videoId) else null)
+            state = state.copy(
+                dislikes = if (value) locator.dislikes.dislikes(currentVideoId) else null,
+            )
+        }
+    }
+
+    /**
+     * Plays an "up next" item in this same player and screen. No navigation
+     * entry is pushed: Back still leaves the player the viewer opened.
+     */
+    fun playRelated(video: VideoItem) {
+        if (video.id.isBlank() || video.id == currentVideoId) return
+        currentVideoId = video.id
+        load()
+    }
+
+    /**
+     * Adds or removes this video's channel in the local subscription list.
+     * The Library screen and the player both observe the same flow, so the
+     * button's label follows the store rather than a private copy of state.
+     */
+    fun toggleSubscription() {
+        val item = state.detail?.item ?: return
+        val channelId = item.channelId
+        if (channelId.isBlank()) return
+        viewModelScope.launch {
+            locator.library.toggleSubscription(
+                VideoItem(
+                    id = channelId,
+                    title = item.channelName,
+                    channelName = item.channelName,
+                    channelId = channelId,
+                    // The watch response does not carry the channel avatar,
+                    // so the library falls back to its placeholder circle.
+                    thumbnail = "",
+                ),
+            )
         }
     }
 
@@ -399,6 +463,11 @@ fun PlayerScreen(
     )
     val state = viewModel.state
     val controller by locator.playback.controller.collectAsStateWithLifecycle()
+    // Same flow the Library reads, so Subscribe here and the Library list can
+    // never disagree.
+    val subscriptions by locator.library.subscriptions.collectAsStateWithLifecycle(
+        initialValue = emptyList(),
+    )
     val context = LocalContext.current
     val view = LocalView.current
 
@@ -411,6 +480,8 @@ fun PlayerScreen(
 
     val buffering = rememberIsBuffering(controller)
     val positionMs = rememberPlayerPosition(controller)
+    val playbackEnded = rememberPlaybackEnded(controller)
+    val nextVideo = state.detail?.related?.firstOrNull()
 
     val playerView = remember {
         PlayerView(context).apply {
@@ -450,14 +521,14 @@ fun PlayerScreen(
 
     LaunchedEffect(controller) { playerView.player = controller }
 
-    // The control bar's gear opens our own settings sheet. Media3 builds its
-    // controller together with the PlayerView, so the button is already there;
-    // taking over its click replaces the bare speed/audio dialog with the full
-    // panel.
+    // Media3 puts its own gear in the control bar and, depending on which
+    // commands the session exposes, hides it again — so it is neither a
+    // dependable entry point nor consistent with our panel. Retire it and keep
+    // the always-visible gear in the top bar as the single settings entry.
     LaunchedEffect(playerView) {
-        playerView
+        val media3Settings = playerView
             .findViewById<android.view.View>(androidx.media3.ui.R.id.exo_settings)
-            ?.setOnClickListener { showSettings = true }
+        (media3Settings?.parent as? ViewGroup)?.removeView(media3Settings)
     }
 
     // Hold the video (or anywhere on the player surface) for 2×. The touch
@@ -543,6 +614,19 @@ fun PlayerScreen(
                 factory = { playerView },
                 modifier = Modifier.fillMaxSize(),
             )
+            // A subtle scrim keeps the always-visible top bar legible over a
+            // bright frame; Media3's own gradient only appears with its controls.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(72.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color(0xB3000000), Color.Transparent),
+                        ),
+                    ),
+            )
             IconButton(
                 onClick = { if (fullscreen) fullscreen = false else onBack() },
                 modifier = Modifier.align(Alignment.TopStart),
@@ -553,15 +637,26 @@ fun PlayerScreen(
                     tint = Color.White,
                 )
             }
-            IconButton(
-                onClick = { fullscreen = !fullscreen },
+            Row(
                 modifier = Modifier.align(Alignment.TopEnd),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                    contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
-                    tint = Color.White,
-                )
+                // Media3's own gear lives in a control row it hides in portrait,
+                // so the player exposes its own always-reachable settings entry.
+                IconButton(onClick = { showSettings = true }) {
+                    Icon(
+                        Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        tint = Color.White,
+                    )
+                }
+                IconButton(onClick = { fullscreen = !fullscreen }) {
+                    Icon(
+                        if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                        contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
+                        tint = Color.White,
+                    )
+                }
             }
             if (controller == null || buffering) {
                 CircularProgressIndicator(
@@ -587,33 +682,53 @@ fun PlayerScreen(
                     .padding(horizontal = 24.dp)
                     .padding(bottom = 56.dp),
             )
+
+            // A failed load or a failed re-resolve belongs to the player, not
+            // to the page: keep the title, channel, chips and comments below.
+            val error = state.error
+            if (error != null && state.detail != null) {
+                PlaybackErrorCard(
+                    message = error,
+                    onRetry = viewModel::load,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
+
+            // The finished video stays on screen while the viewer decides;
+            // playing "up next" swaps the media in this same player.
+            if (playbackEnded && nextVideo != null) {
+                PlaybackEndedOverlay(
+                    video = nextVideo,
+                    onPlay = { viewModel.playRelated(nextVideo) },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
 
         if (fullscreen) return@Column
 
+        val detail = state.detail
         when {
-            state.loading -> LoadingBox()
-            state.error != null -> MessageBox(
-                title = "Couldn't start playback",
-                body = state.error,
-            ) {
-                TextButton(onClick = { viewModel.load() }) { Text("Retry") }
-            }
-            state.detail != null -> PlayerInfo(
-                detail = state.detail,
+            detail != null -> PlayerInfo(
+                detail = detail,
                 dislikes = state.dislikes,
+                showDislikes = state.showDislikes,
+                subscribed = detail.item.channelId.isNotBlank() &&
+                    subscriptions.any { it.id == detail.item.channelId },
                 segmentCount = state.segments.size,
                 favourite = state.favourite,
                 descriptionExpanded = state.descriptionExpanded,
                 speed = state.speed,
                 captionsEnabled = viewModel.captions.enabled,
                 captionsAvailable = viewModel.captions.tracks.isNotEmpty(),
-                commentCount = state.detail.comments.countText,
-                qualities = state.detail.playback.videoQualities,
+                commentCount = detail.comments.countText,
+                qualities = detail.playback.videoQualities,
                 videoQuality = state.videoQuality,
                 effectiveHeight = state.effectiveHeight,
                 onToggleDescription = viewModel::toggleDescription,
                 onToggleFavourite = viewModel::toggleFavourite,
+                onToggleSubscription = viewModel::toggleSubscription,
+                onShare = { shareVideo(context, detail.item.id) },
                 onSpeed = viewModel::setSpeed,
                 onQuality = viewModel::setQuality,
                 onCaptions = { showCaptionSheet = true },
@@ -622,6 +737,13 @@ fun PlayerScreen(
                 onVideoClick = onVideoClick,
                 onChannelClick = onChannelClick,
             )
+            state.loading -> LoadingBox()
+            else -> MessageBox(
+                title = "Couldn't start playback",
+                body = state.error ?: "Something went wrong.",
+            ) {
+                TextButton(onClick = { viewModel.load() }) { Text("Retry") }
+            }
         }
     }
 
@@ -635,7 +757,9 @@ fun PlayerScreen(
     if (showComments && state.detail != null) {
         CommentsSheet(
             locator = locator,
-            videoId = videoId,
+            // The end screen can swap the media without a route change, so the
+            // sheet must follow the player's current id, not the nav argument.
+            videoId = viewModel.currentVideoId,
             info = state.detail.comments,
             onDismiss = { showComments = false },
         )
@@ -678,11 +802,12 @@ private tailrec fun android.content.Context.findActivity(): android.app.Activity
     else -> null
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PlayerInfo(
     detail: VideoDetail,
     dislikes: Long?,
+    showDislikes: Boolean,
+    subscribed: Boolean,
     segmentCount: Int,
     favourite: Boolean,
     descriptionExpanded: Boolean,
@@ -695,6 +820,8 @@ private fun PlayerInfo(
     effectiveHeight: Int,
     onToggleDescription: () -> Unit,
     onToggleFavourite: () -> Unit,
+    onToggleSubscription: () -> Unit,
+    onShare: () -> Unit,
     onSpeed: (Float) -> Unit,
     onQuality: (Int) -> Unit,
     onCaptions: () -> Unit,
@@ -705,6 +832,7 @@ private fun PlayerInfo(
 ) {
     var speedMenu by remember { mutableStateOf(false) }
     var qualityMenu by remember { mutableStateOf(false) }
+    var moreMenu by remember { mutableStateOf(false) }
     val qualityChip = when {
         videoQuality == 0 && effectiveHeight > 0 -> "Auto · ${effectiveHeight}p"
         videoQuality == 0 -> "Auto"
@@ -712,6 +840,7 @@ private fun PlayerInfo(
     }
     val chapters = remember(detail.item.id) { parseChapters(detail.description) }
     val scroll = rememberScrollState()
+    val chipsScroll = rememberScrollState()
 
     Column(
         modifier = Modifier
@@ -733,46 +862,105 @@ private fun PlayerInfo(
         )
 
         Spacer(Modifier.height(10.dp))
-        // FlowRow: the chips do not fit on one phone line; letting them wrap
-        // keeps every label readable (a plain Row squeezed "Speed" into
-        // "Spee / d" and pushed the last chip off-screen).
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+        // One line, always. The primary actions scroll horizontally when a
+        // narrow screen cannot fit them, and the secondary actions (speed,
+        // quality, captions, comments) live in the overflow menu — so the row
+        // can never wrap onto a second and third line the way FlowRow did.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (detail.likes > 0) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text(compactCount(detail.likes) + " likes") },
-                    leadingIcon = { Icon(Icons.Default.ThumbUp, null, Modifier.size(16.dp)) },
-                )
-            }
-            if (dislikes != null) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text(compactCount(dislikes)) },
-                    leadingIcon = { Icon(Icons.Default.ThumbDown, null, Modifier.size(16.dp)) },
-                )
-            }
-            AssistChip(
-                onClick = onToggleFavourite,
-                label = { Text("Save") },
-                leadingIcon = {
-                    Icon(
-                        if (favourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        null,
-                        Modifier.size(16.dp),
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(chipsScroll),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (detail.likes > 0) {
+                    // Number-only, matching the dislike chip: the thumbs-up icon
+                    // already says what the count is, and the label stays short.
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(compactCount(detail.likes)) },
+                        leadingIcon = { Icon(Icons.Default.ThumbUp, null, Modifier.size(16.dp)) },
                     )
-                },
-            )
+                }
+                // Read-only: a tap here is not a dislike vote, so the chip carries
+                // no selected/filled state that would imply the tap registered.
+                if (showDislikes && dislikes != null) {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(compactCount(dislikes)) },
+                        leadingIcon = { Icon(Icons.Default.ThumbDown, null, Modifier.size(16.dp)) },
+                    )
+                }
+                AssistChip(
+                    onClick = onToggleFavourite,
+                    label = { Text("Save") },
+                    leadingIcon = {
+                        Icon(
+                            if (favourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            null,
+                            Modifier.size(16.dp),
+                        )
+                    },
+                )
+                // Sharing is a plain ACTION_SEND of the canonical watch URL; it is
+                // available before the video is even playable.
+                AssistChip(
+                    onClick = onShare,
+                    label = { Text("Share") },
+                    leadingIcon = { Icon(Icons.Default.Share, null, Modifier.size(16.dp)) },
+                )
+            }
             Box {
                 AssistChip(
-                    onClick = { speedMenu = true },
-                    label = { Text(formatSpeed(speed)) },
-                    leadingIcon = { Icon(Icons.Default.Speed, null, Modifier.size(16.dp)) },
+                    onClick = { moreMenu = true },
+                    label = { Text("More") },
+                    leadingIcon = { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) },
                 )
+                DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Playback speed: ${formatSpeed(speed)}") },
+                        leadingIcon = { Icon(Icons.Default.Speed, null) },
+                        onClick = {
+                            moreMenu = false
+                            speedMenu = true
+                        },
+                    )
+                    if (qualities.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Quality: $qualityChip") },
+                            leadingIcon = { Icon(Icons.Default.HighQuality, null) },
+                            onClick = {
+                                moreMenu = false
+                                qualityMenu = true
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text(if (captionsEnabled) "Captions: On" else "Captions: Off") },
+                        leadingIcon = { Icon(Icons.Default.Subtitles, null) },
+                        enabled = captionsAvailable,
+                        onClick = {
+                            moreMenu = false
+                            onCaptions()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(if (commentCount.isNotBlank()) "Comments ($commentCount)" else "Comments")
+                        },
+                        leadingIcon = { Icon(Icons.Default.ChatBubbleOutline, null) },
+                        onClick = {
+                            moreMenu = false
+                            onComments()
+                        },
+                    )
+                }
                 DropdownMenu(expanded = speedMenu, onDismissRequest = { speedMenu = false }) {
-                    listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f).forEach { choice ->
+                    listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 3f, 4f).forEach { choice ->
                         DropdownMenuItem(
                             text = { Text(if (choice == speed) "${formatSpeed(choice)}  ✓" else formatSpeed(choice)) },
                             onClick = {
@@ -782,16 +970,7 @@ private fun PlayerInfo(
                         )
                     }
                 }
-            }
-            if (qualities.isNotEmpty()) {
-                Box {
-                    AssistChip(
-                        onClick = { qualityMenu = true },
-                        label = { Text(qualityChip) },
-                        leadingIcon = {
-                            Icon(Icons.Default.HighQuality, null, Modifier.size(16.dp))
-                        },
-                    )
+                if (qualities.isNotEmpty()) {
                     DropdownMenu(expanded = qualityMenu, onDismissRequest = { qualityMenu = false }) {
                         DropdownMenuItem(
                             text = {
@@ -816,33 +995,6 @@ private fun PlayerInfo(
                     }
                 }
             }
-            AssistChip(
-                onClick = onCaptions,
-                enabled = captionsAvailable,
-                label = { Text(if (captionsEnabled) "CC on" else "CC") },
-                leadingIcon = {
-                    Icon(
-                        Icons.Default.Subtitles,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-            )
-            AssistChip(
-                onClick = onComments,
-                label = {
-                    Text(
-                        if (commentCount.isNotBlank()) "Comments $commentCount" else "Comments",
-                    )
-                },
-                leadingIcon = {
-                    Icon(
-                        Icons.Default.ChatBubbleOutline,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-            )
         }
 
         if (segmentCount > 0) {
@@ -859,32 +1011,63 @@ private fun PlayerInfo(
         Spacer(Modifier.height(12.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
+            // Tapping the avatar or the name opens the channel, matching the
+            // convention on every other row; Subscribe stays a separate tap so
+            // it cannot be triggered by accident.
+            Row(
                 modifier = Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center,
+                    .weight(1f)
+                    .clickable(enabled = detail.item.channelId.isNotBlank()) {
+                        onChannelClick(detail.item.channelId)
+                    },
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = detail.item.channelName.take(1).uppercase().ifBlank { "?" },
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(detail.item.channelName, fontWeight = FontWeight.SemiBold)
-                if (detail.subscribersText.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Text(
-                        detail.subscribersText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = detail.item.channelName.take(1).uppercase().ifBlank { "?" },
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontWeight = FontWeight.Bold,
                     )
+                }
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(detail.item.channelName, fontWeight = FontWeight.SemiBold)
+                    if (detail.subscribersText.isNotBlank()) {
+                        Text(
+                            detail.subscribersText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
             if (detail.item.channelId.isNotBlank()) {
-                TextButton(onClick = { onChannelClick(detail.item.channelId) }) { Text("Visit") }
+                // Already subscribed is a state, not a call to action: it uses
+                // the muted container instead of the brand accent.
+                val colors = if (subscribed) {
+                    ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    ButtonDefaults.buttonColors()
+                }
+                Button(
+                    onClick = onToggleSubscription,
+                    colors = colors,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = 16.dp,
+                        vertical = 6.dp,
+                    ),
+                ) {
+                    Text(if (subscribed) "Subscribed" else "Subscribe")
+                }
             }
         }
 
@@ -940,4 +1123,134 @@ private fun formatChapterTime(ms: Long): String {
     val m = (total % 3600) / 60
     val s = total % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+}
+
+/** The one link that works everywhere: the canonical watch URL, not a short one. */
+private fun shareVideo(context: android.content.Context, videoId: String) {
+    if (videoId.isBlank()) return
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, "https://www.youtube.com/watch?v=$videoId")
+    }
+    context.startActivity(Intent.createChooser(send, "Share video"))
+}
+
+/**
+ * A failed load or re-resolve is shown over the player, not instead of the
+ * page: the title, channel, chips and comments below stay usable, so a single
+ * retry does not cost the viewer the whole screen.
+ */
+@Composable
+private fun PlaybackErrorCard(
+    message: String,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.padding(24.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xCC000000),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = message,
+                color = Color.White,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onRetry,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color.Black,
+                ),
+            ) {
+                Text("Retry")
+            }
+        }
+    }
+}
+
+/**
+ * The end screen, kept inside this player and this back-stack entry. The whole
+ * panel is the tap target (not just the play glyph) so it is easy to hit on the
+ * finished frame; [onPlay] swaps the media in place rather than navigating.
+ */
+@Composable
+private fun PlaybackEndedOverlay(
+    video: VideoItem,
+    onPlay: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .background(Color(0xE6000000))
+            .clickable(onClick = onPlay)
+            .padding(20.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(150.dp)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black),
+            ) {
+                AsyncImage(
+                    model = video.thumbnail,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(36.dp),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Up next",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White.copy(alpha = 0.7f),
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    video.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color.White,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (video.channelName.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        video.channelName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Play now",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Color.White,
+                )
+            }
+        }
+    }
 }

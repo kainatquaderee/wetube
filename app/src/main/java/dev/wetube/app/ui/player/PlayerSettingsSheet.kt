@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -39,6 +40,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.wetube.app.ui.formatSpeed
@@ -47,10 +54,7 @@ import dev.wetube.app.ui.qualityHeights
 /** Which level of the settings sheet is showing. */
 private enum class SettingsPage { Main, Quality, Speed }
 
-private val speedChoices = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f)
-
-/** "1.0", as the official panel prints it, rather than "1×". */
-private fun speedValue(speed: Float): String = if (speed == 1f) "1.0" else formatSpeed(speed)
+private val speedChoices = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 3f, 4f)
 
 /** "Auto (1080p)" when the automatic pick is known, otherwise "720p"/"Auto". */
 private fun qualityValue(quality: Int, effectiveHeight: Int): String = when {
@@ -124,7 +128,7 @@ fun PlayerSettingsSheet(
                     NavRow(
                         icon = Icons.Default.Speed,
                         title = "Playback speed",
-                        value = speedValue(speed),
+                        value = formatSpeed(speed),
                         onClick = { page = SettingsPage.Speed },
                     )
                     NavRow(
@@ -174,14 +178,20 @@ fun PlayerSettingsSheet(
                         title = "Auto",
                         subtitle = if (effectiveHeight > 0) "Currently ${effectiveHeight}p" else null,
                         selected = quality <= 0,
-                        onClick = { onQuality(0) },
+                        onClick = {
+                            onQuality(0)
+                            onDismiss()
+                        },
                     )
                     heights.forEach { height ->
                         ChoiceRow(
                             title = "${height}p",
                             subtitle = null,
                             selected = quality == height,
-                            onClick = { onQuality(height) },
+                            onClick = {
+                                onQuality(height)
+                                onDismiss()
+                            },
                         )
                     }
                 }
@@ -190,10 +200,13 @@ fun PlayerSettingsSheet(
                     SubHeader(title = "Playback speed", onBack = { page = SettingsPage.Main })
                     speedChoices.forEach { choice ->
                         ChoiceRow(
-                            title = speedValue(choice),
+                            title = formatSpeed(choice),
                             subtitle = null,
                             selected = choice == speed,
-                            onClick = { onSpeed(choice) },
+                            onClick = {
+                                onSpeed(choice)
+                                onDismiss()
+                            },
                         )
                     }
                 }
@@ -231,7 +244,24 @@ private fun SwitchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onChange(!checked) }
+            // Toggleable carries the switch semantics (checked state and
+            // Role.Switch) for the whole row, so screen readers announce one
+            // control instead of a label next to an unnamed switch.
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onChange,
+            )
+            // Collapse the icon, the label and the display-only switch into
+            // that one node. Merging descendants alone still left the title as
+            // a separate child node, so the checkable node read as unlabelled;
+            // replacing the children's semantics puts the title in this node's
+            // description and the checked state on the same node.
+            .clearAndSetSemantics {
+                contentDescription = title
+                role = Role.Switch
+                toggleableState = if (checked) ToggleableState.On else ToggleableState.Off
+            }
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -75,7 +75,9 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
                 state = state.copy(
                     loading = false,
                     refreshing = false,
-                    videos = videos,
+                    // Backends that do not de-duplicate (Invidious, Piped) can
+                    // repeat an item between the first page and its next one.
+                    videos = videos.distinctBy { it.id },
                     region = settings.region,
                     feed = feed,
                     signedIn = signedIn,
