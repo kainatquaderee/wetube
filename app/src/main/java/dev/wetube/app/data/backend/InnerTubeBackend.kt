@@ -115,11 +115,11 @@ class InnerTubeBackend(
     /**
      * The plain Android client.
      *
-     * It is the workhorse for playback: it hands out un-ciphered progressive
-     * URLs, and those URLs stay readable for the whole video here (a two-hour
-     * 360p file downloaded end to end). Other clients either answer with
-     * sign-in challenges, SABR-only responses, or URLs that stop working after
-     * 64 MB.
+     * The safety net for playback: it always seems to hand out one un-ciphered
+     * progressive URL (360p) that stays readable for the whole video, so
+     * whatever else fails there is something to play. What it does not give is
+     * choice — its adaptive tracks are SABR-only (no URL at all), which is why
+     * [iosClient] leads.
      *
      * It cannot be combined with cookies: YouTube rejects ANDROID requests that
      * carry a session ("invalid argument"), so [call] skips the auth headers
@@ -138,6 +138,39 @@ class InnerTubeBackend(
                 "userAgent" to "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip",
                 "osName" to "Android",
                 "osVersion" to "11",
+            ),
+        ),
+    )
+
+    /**
+     * The iOS client, and the source of high-resolution playback.
+     *
+     * The Android clients now hide their adaptive tracks behind SABR — the
+     * player response lists 29 of them and not one carries a URL — and the VR
+     * client's URLs are throttled by YouTube's JavaScript `n` challenge after a
+     * few tens of megabytes. IOS still answers with plain, un-ciphered adaptive
+     * URLs for every quality up to 2160p, and those URLs download at full speed
+     * because their `n` is already applied. Its identity is fixed (a made-up
+     * build is rejected), and like the other native clients it refuses a
+     * session, so playback stays anonymous while signed in.
+     */
+    private val iosUa = "com.google.ios.youtube/20.10.4 " +
+        "(iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X)"
+
+    private val iosClient = Profile(
+        userAgent = iosUa,
+        clientId = "5",
+        version = "20.10.4",
+        acceptsAuth = false,
+        context = clientContext(
+            name = "IOS",
+            version = "20.10.4",
+            extra = mapOf(
+                "deviceMake" to "Apple",
+                "deviceModel" to "iPhone16,2",
+                "osName" to "iPhone",
+                "osVersion" to "18.3.1.22D72",
+                "userAgent" to iosUa,
             ),
         ),
     )
@@ -390,12 +423,15 @@ class InnerTubeBackend(
     /**
      * Asks YouTube for stream URLs.
      *
-     * Client choice is deliberately narrow. `ANDROID` returns un-ciphered
-     * progressive URLs (no `n` throttling token) that keep working for the whole
-     * video even when the carrier rotates the egress address between
-     * connections. `ANDROID_VR` is the fallback for the rare video the plain
-     * client will not serve; its URLs are capped at 64 MB, so it only helps
-     * clips.
+     * Client choice is deliberately narrow, and ordered by quality.
+     *
+     * `IOS` is the source of real resolution: it answers with un-ciphered
+     * adaptive URLs for every quality up to 2160p, and those URLs download at
+     * full speed (a 77 MB 1080p file end to end) because they carry no
+     * throttling token. `ANDROID` is the safety net: it hands out one
+     * progressive 360p file that always plays, even on a strict network.
+     * `ANDROID_VR` is the last resort for the rare video the other two refuse;
+     * its URLs stop working partway through, so it only helps clips.
      *
      * Mobile web and desktop web are not used here: they answer with URLs that
      * need a JavaScript `n` challenge solved, which WeTube does not fake.
@@ -411,21 +447,26 @@ class InnerTubeBackend(
             put("racyCheckOk", true)
         }
 
-        val withSignature = buildJsonObject {
-            progressive.forEach { (key, value) -> put(key, value) }
-            put("playbackContext", buildJsonObject {
-                put("contentPlaybackContext", buildJsonObject {
-                    put("html5Preference", "HTML5_PREF_WANTS")
-                    val sts = signatureTimestamp(id)
-                    if (sts > 0) put("signatureTimestamp", sts)
-                })
-            })
-        }
-
         // Native clients reject a request that carries a session ("invalid
         // argument"), so playback is anonymous even while signed in. The
         // session is still used for feeds and subscriptions.
-        val androidPlain = runCatching {
+        //
+        // IOS answers with the resolution ladder; Android is the unbreakable
+        // 360p fallback. Only the VR client wants the desktop signature, and
+        // reading the watch page for it is not free, so that payload is built
+        // only once both of the others come back empty.
+        val ios = runCatching {
+            call("player", iosClient, progressive, withAuth = false)
+        }
+            .onFailure {
+                if (BuildConfig.DEBUG) {
+                    android.util.Log.w("WeTube", "player (ios) failed: ${it.javaClass.simpleName}")
+                }
+            }
+            .getOrNull()
+            ?.takeIf { it.playableUrlCount() > 0 }
+
+        val androidPlain = ios ?: runCatching {
             call("player", androidClient, progressive, withAuth = false)
         }
             .onFailure {
@@ -437,7 +478,7 @@ class InnerTubeBackend(
             ?.takeIf { it.playableUrlCount() > 0 }
 
         val response = androidPlain ?: runCatching {
-            call("player", vr, withSignature, withAuth = false)
+            call("player", vr, signedPlayerPayload(id), withAuth = false)
         }
             .onFailure {
                 if (BuildConfig.DEBUG) {
@@ -451,6 +492,26 @@ class InnerTubeBackend(
         playerMemoAt = SystemClock.elapsedRealtime()
         playerMemo = response
         response
+    }
+
+    /**
+     * The payload the VR client wants: the base player body plus the watch
+     * page's signature timestamp. Reading the watch page is expensive, so this
+     * is built only for the last-resort client, never on the happy path.
+     */
+    private suspend fun signedPlayerPayload(id: String): JsonObject {
+        val sts = signatureTimestamp(id)
+        return buildJsonObject {
+            put("videoId", id)
+            put("contentCheckOk", true)
+            put("racyCheckOk", true)
+            put("playbackContext", buildJsonObject {
+                put("contentPlaybackContext", buildJsonObject {
+                    put("html5Preference", "HTML5_PREF_WANTS")
+                    if (sts > 0) put("signatureTimestamp", sts)
+                })
+            })
+        }
     }
 
     override suspend fun video(id: String): VideoDetail {
@@ -476,7 +537,6 @@ class InnerTubeBackend(
             )
         }
         val muxed = streaming?.get("formats").objects().mapNotNull { it.toFormat(audio = false) }
-        val hls = streaming?.str("hlsManifestUrl")?.takeIf { it.isNotBlank() }
 
         val adaptive = streaming?.get("adaptiveFormats").objects()
         val videoOnly = adaptive
@@ -488,6 +548,13 @@ class InnerTubeBackend(
 
         val lengthSeconds = details?.str("lengthSeconds")?.toIntOrNull() ?: 0
         val live = details?.str("isLiveContent")?.toBoolean() == true
+
+        // A live stream only exists as an adaptive manifest, so it keeps its
+        // HLS URL. A recorded video keeps its per-quality streams instead —
+        // that is what the quality picker drives — so its manifest is dropped.
+        val hls = streaming?.str("hlsManifestUrl")
+            ?.takeIf { it.isNotBlank() && (live || videoOnly.isEmpty()) }
+
         val item = VideoItem(
             id = id,
             title = details?.str("title").orEmpty(),
