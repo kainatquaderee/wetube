@@ -15,13 +15,17 @@ easy to demo.
 - [x] Hold the video for 2× playback
 - [x] Background playback can be switched off
 - [x] Shorts: swipe feed, progress bar, tap-to-pause, CC
+- [x] Shorts rail: like/dislike/comment counts and a tappable channel
 - [x] Comments: native top/newest reader with paging, browser fallback
 - [x] Video quality picker: Auto or a pinned height, from the player or Settings
+- [x] In-player settings panel: quality, speed, captions, audio-only, background,
+      SponsorBlock, dislikes
 - [x] No ads, no trackers, no account
 
 ## 0.2 — player reliability & downloads
-- [ ] `n`-parameter transform so `googlevideo` stops throttling/403ing URLs on
-      strict networks (the single biggest playback complaint for clients like this)
+- [ ] `n`-parameter transform for the fallback clients, so strictly throttled
+      networks stop 403ing their URLs (IOS-first already avoids this for
+      recorded video)
 - [ ] Automatic backend failover: if the player URL fails, retry through another
       client profile or instance rather than showing an error
 - [ ] Offline downloads (video + audio merge, or muxed), resumable, with a
@@ -29,6 +33,8 @@ easy to demo.
 - [ ] Playlists: create, reorder, play all
 - [ ] Watch Later
 - [ ] Queue: add to queue, drag to reorder, autoplay from related
+- [ ] YouTube playlist sync (both-way if feasible, otherwise one-way pull)
+- [ ] YouTube subscription sync (both-way if feasible, otherwise one-way pull)
 - [ ] Import subscriptions from Google Takeout CSV / OPML
 - [ ] Subscription feed (local, newest-first)
 
@@ -49,7 +55,8 @@ easy to demo.
 - [ ] Local "likes" for organising favourites
 
 ## 0.5 — reach
-- [ ] Cast (Chromecast) — requires a Cast receiver app id
+- [ ] Listen on an external device: cast to Chromecast/DLNA and route audio to a
+      picked output (the Cast receiver needs an app id)
 - [ ] Android TV / leanback UI
 - [ ] Tablet two-pane layout
 - [ ] Wear OS media controls

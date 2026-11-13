@@ -37,9 +37,12 @@ one class and selecting it in Settings.
 
 The default `InnerTubeBackend` speaks plain JSON over HTTP:
 
-- **Two client profiles.** `ANDROID_VR` is used for playback because it returns
-  direct stream URLs; `WEB` is used for search and feeds because it returns the
-  cards with duration and upload date. Profiles are values in one place so they
+- **Client profiles by surface.** Text surfaces (search and feeds) use `WEB`
+  because it returns the cards with duration and upload date. Playback prefers
+  the `IOS` client, which hands back adaptive video and audio URLs for every
+  resolution without a throttling parameter; `ANDROID` and `ANDROID_VR` are
+  fallbacks, and the signed `ANDROID_VR` payload is built lazily only when the
+  others come back without usable URLs. Profiles are values in one place, so they
   are easy to adjust when a surface changes.
 - **Generic JSON walking.** Responses are read as a JSON tree rather than being
   bound to fixed DTOs. A field YouTube adds or removes does not break the app;
@@ -80,6 +83,19 @@ audio cannot expire out from under its video. Switching quality rebuilds the
 it costs no network call; the choice is stored as the default and can also be set
 in Settings. Bandwidth adaptation inside a single stream stays with ExoPlayer's
 `AdaptiveTrackSelection`.
+
+The picker can offer every height because playback URLs are resolved through the
+`IOS` client, whose adaptive links carry no throttling parameter and download at
+full speed; the `ANDROID` and `ANDROID_VR` fallbacks expose fewer, sometimes
+muxed-only, options. Live streams keep the HLS path, since a manifest is what the
+live surface returns.
+
+**The player settings panel.** The control bar's gear opens a sheet modelled on
+the official player: Quality and Playback speed open second-level lists, Captions
+hands off to the CC sheet, and the remaining rows are switches (audio-only,
+background playback, SponsorBlock, dislike counts) with a door into the full
+Settings screen. It reads and writes the same preferences the player and Shorts
+already use, so a change made mid-video takes effect immediately.
 
 The shared player is also used by Shorts. Every `MediaItem` carries the video id
 as its media id, so a screen can tell whether the player still holds the clip it
@@ -167,10 +183,11 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | UI | Hand-written Jetpack Compose, dark and light |
 | Transport | Direct InnerTube over JSON, plus Invidious and Piped |
 | Playback | Progressive, merged A/V, HLS live |
+| Player panel | In-player gear: quality, speed, captions, audio-only, background, SponsorBlock, dislikes |
 | Subtitles | Tracks from the video itself, CC menu, YouTube auto-translation with fallback |
 | Gestures | Hold for 2×, tap to pause in Shorts, vertical pager |
 | Comments | Native top/newest feed with paging, likes, reply counts and avatars; browser fallback |
-| Shorts | Dedicated swipe feed, own progress bar, captions, comments, pause indicator |
+| Shorts | Dedicated swipe feed, own progress bar, captions, like/dislike/comment counts, tappable channel, pause indicator |
 | Library | History, favourites, resume points, local subscriptions |
 | Accounts | Optional, multiple, removable; cookies excluded from backups |
 | Data portability | JSON backup through the system file picker |
@@ -187,8 +204,8 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
   networks. The original captions are shown instead.
 - Comments are read-only: liking, replying and reading replies need a signed-in
   session. The sheet offers the watch page in the browser instead.
-- Downloads, playlists and live chat are not implemented yet; see
-  `ROADMAP.md`.
+- Downloads, live chat, casting to an external device, and two-way YouTube
+  playlist/subscription sync are not implemented yet; see `ROADMAP.md`.
 
 ## Legal note
 

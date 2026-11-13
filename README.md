@@ -28,6 +28,9 @@ resolves.
 - Background audio via `MediaSessionService`, media notification, lock screen —
   or switch background playback off so leaving the app pauses the video
 - Playback speed 0.25×–4×, audio-only mode, resume where you left off
+- **In-player settings panel** behind the gear: quality, playback speed,
+  captions, audio-only, background playback, SponsorBlock and dislike counts,
+  all without leaving the video
 - **Hold the video (or a Short) for 2× playback; release to return to normal**
 - **Subtitles/CC** from the video's own tracks, with YouTube auto-translation and
   a fallback to the original track when translation is unavailable
@@ -38,8 +41,9 @@ resolves.
 **Discovery**
 - Home feed by region, or your own recommendations and subscriptions when signed in
 - Dedicated **Shorts** section: swipe up for the next clip, with its own progress
-  bar, tap-to-pause, 2× hold gesture, the CC menu and a comments rail. Signed in,
-  it follows your own account's Shorts shelf
+  bar, tap-to-pause, 2× hold gesture, the CC menu, and a rail with like, dislike
+  and comment counts whose channel line opens the channel. Signed in, it follows
+  your own account's Shorts shelf
 - Search with autocomplete and real continuation paging
 - Channels, related videos, like/subscriber counts, upload date
 - Local **Subscribe** on any channel, independent of any account
@@ -137,19 +141,22 @@ design, and why the direct backend is the default.
 
 ## Status
 
-0.1.5 — playback, feeds and accounts work on a real device against live
-endpoints. The playback path uses the plain Android client, which hands out
-progressive URLs that stay readable for the whole video; the Android VR client
-is the fallback for clips. Feeds are anonymous by default. Signed in, the web
-surface serves the personal recommendations, the account's subscription feed
-and the account's own Shorts shelf, while playback stays anonymous (the native
-clients refuse a session). The player has a fullscreen mode that letterboxes
-landscape and portrait videos alike, and a video-quality picker (Auto or any
-height the video offers, remembered as the default). Verified: home feed,
-subscriptions, search with paging, account-based Shorts, fullscreen (portrait
-and landscape), deep links, hold-to-2×, background playback (on and off), the CC
-menu with caption loading, the comment section (top/newest sort and paging), and
-video playback over `HTTP 206` from the CDN.
+0.1.6 — playback, feeds and accounts work on a real device against live
+endpoints. The playback path prefers the plain IOS client, whose adaptive links
+are not throttled and cover every resolution up to 2160p; the Android and Android
+VR clients are fallbacks, with the VR client's signed payload built only when it
+is needed. Feeds are anonymous by default. Signed in, the web surface serves the
+personal recommendations, the account's subscription feed and the account's own
+Shorts shelf, while playback stays anonymous (the native clients refuse a
+session). The player has a fullscreen mode that letterboxes landscape and
+portrait videos alike, a settings panel behind the control-bar gear (quality,
+speed, captions, audio-only, background playback, SponsorBlock, dislike counts),
+and a video-quality picker (Auto or any height the video offers, remembered as
+the default). Verified: home feed, subscriptions, search with paging,
+account-based Shorts (with like/dislike/comment counts and channel navigation),
+fullscreen (portrait and landscape), deep links, hold-to-2×, background playback
+(on and off), the CC menu with caption loading, the comment section (top/newest
+sort and paging), and video playback over `HTTP 206` from the CDN.
 
 Known limits: the comment section is read-only — liking, replying and viewing
 replies need a signed-in Google session, which WeTube does not fake, so the sheet
@@ -163,8 +170,9 @@ so streams and thumbnails use the same resolver and connection pool.
 Known limits: age-restricted videos need YouTube's JavaScript `n` challenge,
 which WeTube does not fake, so they can refuse to play even when signed in.
 Some networks also get a bot check regardless of client. Neither is bypassed —
-the player reports which wall it hit. Downloads, playlists, live chat and
-comments are tracked in `docs/ROADMAP.md`.
+the player reports which wall it hit. Downloads, live chat, casting to an
+external device, and two-way YouTube playlist and subscription sync are tracked
+in `docs/ROADMAP.md`.
 
 ## Licence
 
