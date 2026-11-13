@@ -16,6 +16,7 @@ easy to demo.
 - [x] Background playback can be switched off
 - [x] Shorts: swipe feed, progress bar, tap-to-pause, CC
 - [x] Comments: native top/newest reader with paging, browser fallback
+- [x] Video quality picker: Auto or a pinned height, from the player or Settings
 - [x] No ads, no trackers, no account
 
 ## 0.2 — player reliability & downloads
@@ -37,7 +38,6 @@ easy to demo.
 - [ ] Caption style (size, background), download, per-channel defaults
 - [ ] Sleep timer, "stop after this video"
 - [ ] PiP with proper enter/exit animations
-- [ ] Quality picker (manual override of adaptive selection)
 - [ ] Stats for nerds: resolution, codec, bitrate, dropped frames
 - [ ] SponsorBlock category editor + per-video segment list
 - [ ] DeArrow titles/thumbnails (opt-in)

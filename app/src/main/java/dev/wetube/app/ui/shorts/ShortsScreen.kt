@@ -83,6 +83,7 @@ import dev.wetube.app.ui.rememberIsBuffering
 import dev.wetube.app.ui.rememberIsPlaying
 import dev.wetube.app.ui.rememberPlayerDuration
 import dev.wetube.app.ui.rememberPlayerPosition
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 data class ShortsUiState(
@@ -166,9 +167,13 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
         val request = ++generation
         viewModelScope.launch {
             val result = runCatching {
+                val settings = locator.settings.settings.first()
                 val detail = locator.backend().video(video.id)
-                val item = StreamResolver.mediaItem(detail, audioOnly = false)
-                    ?: error("This clip has no playable stream.")
+                val item = StreamResolver.mediaItem(
+                    detail,
+                    audioOnly = false,
+                    preferredHeight = settings.videoQuality,
+                ) ?: error("This clip has no playable stream.")
                 detail to item
             }
             // A newer swipe already asked for another clip; this response is

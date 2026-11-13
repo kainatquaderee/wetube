@@ -23,6 +23,8 @@ data class AppSettings(
     val showDislikes: Boolean = true,
     val playbackSpeed: Float = 1f,
     val audioOnly: Boolean = false,
+    /** Video resolution to ask for: 0 = Auto, otherwise a height such as 720. */
+    val videoQuality: Int = 0,
     /** Keep audio alive when the app goes to the background. */
     val backgroundPlayback: Boolean = true,
     /** Subtitle preferences, shared by the player and Shorts. */
@@ -46,6 +48,7 @@ class SettingsStore(private val context: Context) {
         val dislikes = booleanPreferencesKey("show_dislikes")
         val speed = stringPreferencesKey("playback_speed")
         val audioOnly = booleanPreferencesKey("audio_only")
+        val videoQuality = stringPreferencesKey("video_quality")
         val backgroundPlayback = booleanPreferencesKey("background_playback")
         val captions = booleanPreferencesKey("captions")
         val captionLanguage = stringPreferencesKey("caption_language")
@@ -66,6 +69,7 @@ class SettingsStore(private val context: Context) {
             showDislikes = p[Keys.dislikes] ?: true,
             playbackSpeed = p[Keys.speed]?.toFloatOrNull() ?: 1f,
             audioOnly = p[Keys.audioOnly] ?: false,
+            videoQuality = p[Keys.videoQuality]?.toIntOrNull() ?: 0,
             backgroundPlayback = p[Keys.backgroundPlayback] ?: true,
             captionsEnabled = p[Keys.captions] ?: false,
             captionLanguage = p[Keys.captionLanguage].orEmpty(),
@@ -88,6 +92,7 @@ class SettingsStore(private val context: Context) {
             p[Keys.dislikes] = next.showDislikes
             p[Keys.speed] = next.playbackSpeed.toString()
             p[Keys.audioOnly] = next.audioOnly
+            p[Keys.videoQuality] = next.videoQuality.toString()
             p[Keys.backgroundPlayback] = next.backgroundPlayback
             p[Keys.captions] = next.captionsEnabled
             p[Keys.captionLanguage] = next.captionLanguage

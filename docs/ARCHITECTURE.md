@@ -67,11 +67,19 @@ The resolver picks one of three paths:
 - **Separate video + audio** merged by `MergingMediaSource` when that gives
   better quality. The UI emits a private `wetube-merge://` URI and the service
   expands it, so Media3 types never cross into Compose.
-- **HLS** for live streams.
+- **HLS** for live streams. A manifest is adaptive by definition, so there is
+  nothing to pin inside it at this layer.
 
-H.264/AAC is preferred up to 1080p: hardware decode is near-universal on phones,
-while 4K VP9/AV1 often falls back to software decode. Bandwidth adaptation is
-delegated to ExoPlayer's `AdaptiveTrackSelection`.
+**Quality.** `StreamResolver` takes a preferred height. *Auto* prefers H.264/AAC
+up to 1080p — hardware decode is near-universal on phones, while 4K VP9/AV1 often
+falls back to software decode — and still allows 1440p/2160p when nothing smaller
+exists. A pinned height returns the closest match (the exact height, else the
+largest below, else the smallest above), and a muxed track wins a tie because its
+audio cannot expire out from under its video. Switching quality rebuilds the
+`MediaItem` from the streams already in hand and resumes at the same position, so
+it costs no network call; the choice is stored as the default and can also be set
+in Settings. Bandwidth adaptation inside a single stream stays with ExoPlayer's
+`AdaptiveTrackSelection`.
 
 The shared player is also used by Shorts. Every `MediaItem` carries the video id
 as its media id, so a screen can tell whether the player still holds the clip it

@@ -19,7 +19,10 @@ resolves.
 ## Features
 
 **Playback**
-- Media3/ExoPlayer, H.264/AAC for hardware decode, 1080p by default with 4K fallback
+- Media3/ExoPlayer, H.264/AAC for hardware decode
+- **Video quality picker**: leave it on Auto (H.264 up to 1080p, 1440p/2160p when
+  nothing smaller exists) or pin any height the video offers, 144p–2160p — from
+  the player, with a default in Settings
 - Separate high-quality video + audio tracks merged automatically
 - Live streams via HLS
 - Background audio via `MediaSessionService`, media notification, lock screen —
@@ -134,18 +137,19 @@ design, and why the direct backend is the default.
 
 ## Status
 
-0.1.4 — playback, feeds and accounts work on a real device against live
+0.1.5 — playback, feeds and accounts work on a real device against live
 endpoints. The playback path uses the plain Android client, which hands out
 progressive URLs that stay readable for the whole video; the Android VR client
 is the fallback for clips. Feeds are anonymous by default. Signed in, the web
 surface serves the personal recommendations, the account's subscription feed
 and the account's own Shorts shelf, while playback stays anonymous (the native
 clients refuse a session). The player has a fullscreen mode that letterboxes
-landscape and portrait videos alike. Verified: home feed, subscriptions, search
-with paging, account-based Shorts, fullscreen (portrait and landscape), deep
-links, hold-to-2×, background playback (on and off), the CC menu with caption
-loading, the comment section (top/newest sort and paging), and video playback
-over `HTTP 206` from the CDN.
+landscape and portrait videos alike, and a video-quality picker (Auto or any
+height the video offers, remembered as the default). Verified: home feed,
+subscriptions, search with paging, account-based Shorts, fullscreen (portrait
+and landscape), deep links, hold-to-2×, background playback (on and off), the CC
+menu with caption loading, the comment section (top/newest sort and paging), and
+video playback over `HTTP 206` from the CDN.
 
 Known limits: the comment section is read-only — liking, replying and viewing
 replies need a signed-in Google session, which WeTube does not fake, so the sheet

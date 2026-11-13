@@ -57,6 +57,12 @@ fun formatDuration(totalSeconds: Int): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
+/** Heights a quality picker offers, highest first. `0` is not listed: it means Auto. */
+val qualityHeights: List<Int> = listOf(2160, 1440, 1080, 720, 480, 360, 240, 144)
+
+/** "Auto" for the automatic choice, otherwise "720p". */
+fun qualityLabel(quality: Int): String = if (quality <= 0) "Auto" else "${quality}p"
+
 fun friendlyError(t: Throwable): String {
     val raw = t.message.orEmpty()
     return when {

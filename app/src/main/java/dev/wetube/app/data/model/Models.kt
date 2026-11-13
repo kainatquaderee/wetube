@@ -62,6 +62,18 @@ data class Playback(
     val hls: String? = null,
 ) {
     val isEmpty: Boolean get() = muxed.isEmpty() && videoOnly.isEmpty() && audioOnly.isEmpty() && hls == null
+
+    /**
+     * The distinct video resolutions this playback offers, highest first.
+     * Muxed and adaptive tracks are merged, so a video that only ships a single
+     * progressive file still reports one option.
+     */
+    val videoQualities: List<Int>
+        get() = (muxed + videoOnly)
+            .filter { it.url.isNotBlank() && it.height > 0 }
+            .map { it.height }
+            .distinct()
+            .sortedDescending()
 }
 
 data class VideoDetail(

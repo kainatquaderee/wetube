@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +21,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -54,6 +57,7 @@ import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.ui.formatSpeed
 import dev.wetube.app.ui.friendlyError
+import dev.wetube.app.ui.qualityHeights
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -266,6 +270,10 @@ fun SettingsScreen(
             checked = settings.audioOnly,
             onChange = { value -> viewModel.update { it.copy(audioOnly = value) } },
         )
+        QualityRow(
+            quality = settings.videoQuality,
+            onChange = { value -> viewModel.update { it.copy(videoQuality = value) } },
+        )
         SwitchRow(
             title = "Keep playing in the background",
             subtitle = "When off, playback pauses as soon as you leave the app.",
@@ -434,6 +442,50 @@ private fun Section(title: String) {
     Spacer(Modifier.height(12.dp))
     Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
     Spacer(Modifier.height(6.dp))
+}
+
+@Composable
+private fun QualityRow(quality: Int, onChange: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Video quality", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "Auto uses the best resolution the connection can carry. A fixed height applies " +
+                    "to every video; the closest one below is used when a video lacks it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Box {
+            OutlinedButton(onClick = { open = true }) {
+                Text(if (quality <= 0) "Auto" else "${quality}p")
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                DropdownMenuItem(
+                    text = { Text(if (quality <= 0) "Auto  ✓" else "Auto") },
+                    onClick = {
+                        open = false
+                        onChange(0)
+                    },
+                )
+                qualityHeights.forEach { height ->
+                    DropdownMenuItem(
+                        text = { Text(if (height == quality) "${height}p  ✓" else "${height}p") },
+                        onClick = {
+                            open = false
+                            onChange(height)
+                        },
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

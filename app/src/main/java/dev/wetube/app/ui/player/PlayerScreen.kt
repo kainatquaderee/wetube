@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.ThumbDown
@@ -105,6 +106,10 @@ data class PlayerUiState(
     val favourite: Boolean = false,
     val descriptionExpanded: Boolean = false,
     val speed: Float = 1f,
+    /** 0 = Auto, otherwise the requested height (e.g. 720). */
+    val videoQuality: Int = 0,
+    /** The resolution Auto/the request actually resolved to, or 0 if unknown. */
+    val effectiveHeight: Int = 0,
 )
 
 /**
@@ -152,7 +157,7 @@ class PlayerViewModel(
             runCatching {
                 val settings = locator.settings.settings.first()
                 val detail = locator.backend().video(videoId)
-                val item = StreamResolver.mediaItem(detail, settings.audioOnly)
+                val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
                     ?: error("This instance returned no playable streams.")
 
                 val resumeAt = runCatching {
@@ -182,6 +187,12 @@ class PlayerViewModel(
                     dislikes = dislikes,
                     favourite = favourite,
                     speed = settings.playbackSpeed,
+                    videoQuality = settings.videoQuality,
+                    effectiveHeight = StreamResolver.effectiveHeight(
+                        merged,
+                        settings.audioOnly,
+                        settings.videoQuality,
+                    ),
                 )
                 captions.attach(merged)
                 recoveries = 0
@@ -251,7 +262,7 @@ class PlayerViewModel(
             runCatching {
                 val settings = locator.settings.settings.first()
                 val detail = locator.backend().video(videoId)
-                val item = StreamResolver.mediaItem(detail, settings.audioOnly)
+                val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
                     ?: error("This video has no playable streams any more.")
                 state = state.copy(detail = merge(state.detail, detail), error = null)
                 locator.playback.play(
@@ -266,6 +277,31 @@ class PlayerViewModel(
     }
 
     private var recoveries = 0
+
+    /**
+     * Switches the current video to [height] (0 = Auto) without a network call:
+     * the streams are already in the detail, so we only rebuild the MediaItem
+     * and resume at the same position. The choice is remembered as the default
+     * for every later video too.
+     */
+    fun setQuality(height: Int) {
+        val detail = state.detail ?: return
+        state = state.copy(videoQuality = height)
+        viewModelScope.launch {
+            locator.settings.update { it.copy(videoQuality = height) }
+            val settings = locator.settings.settings.first()
+            state = state.copy(
+                effectiveHeight = StreamResolver.effectiveHeight(detail, settings.audioOnly, height),
+            )
+            val item = StreamResolver.mediaItem(detail, settings.audioOnly, height) ?: return@launch
+            val position = locator.playback.controller.value?.currentPosition ?: 0L
+            locator.playback.play(
+                item = item,
+                speed = settings.playbackSpeed,
+                startAtMs = position,
+            )
+        }
+    }
 
     companion object {
         fun factory(locator: ServiceLocator, videoId: String) = viewModelFactory {
@@ -489,9 +525,13 @@ fun PlayerScreen(
                 captionsEnabled = viewModel.captions.enabled,
                 captionsAvailable = viewModel.captions.tracks.isNotEmpty(),
                 commentCount = state.detail.comments.countText,
+                qualities = state.detail.playback.videoQualities,
+                videoQuality = state.videoQuality,
+                effectiveHeight = state.effectiveHeight,
                 onToggleDescription = viewModel::toggleDescription,
                 onToggleFavourite = viewModel::toggleFavourite,
                 onSpeed = viewModel::setSpeed,
+                onQuality = viewModel::setQuality,
                 onCaptions = { showCaptionSheet = true },
                 onComments = { showComments = true },
                 onSeek = { controller?.seekTo(it) },
@@ -536,9 +576,13 @@ private fun PlayerInfo(
     captionsEnabled: Boolean,
     captionsAvailable: Boolean,
     commentCount: String,
+    qualities: List<Int>,
+    videoQuality: Int,
+    effectiveHeight: Int,
     onToggleDescription: () -> Unit,
     onToggleFavourite: () -> Unit,
     onSpeed: (Float) -> Unit,
+    onQuality: (Int) -> Unit,
     onCaptions: () -> Unit,
     onComments: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -546,6 +590,12 @@ private fun PlayerInfo(
     onChannelClick: (String) -> Unit,
 ) {
     var speedMenu by remember { mutableStateOf(false) }
+    var qualityMenu by remember { mutableStateOf(false) }
+    val qualityChip = when {
+        videoQuality == 0 && effectiveHeight > 0 -> "Auto · ${effectiveHeight}p"
+        videoQuality == 0 -> "Auto"
+        else -> "${videoQuality}p"
+    }
     val chapters = remember(detail.item.id) { parseChapters(detail.description) }
     val scroll = rememberScrollState()
 
@@ -569,8 +619,8 @@ private fun PlayerInfo(
         )
 
         Spacer(Modifier.height(10.dp))
-        // FlowRow: five chips do not fit on a phone in one line; letting them
-        // wrap keeps every label readable (the old Row squeezed "Speed" into
+        // FlowRow: the chips do not fit on one phone line; letting them wrap
+        // keeps every label readable (a plain Row squeezed "Speed" into
         // "Spee / d" and pushed the last chip off-screen).
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -616,6 +666,39 @@ private fun PlayerInfo(
                                 onSpeed(choice)
                             },
                         )
+                    }
+                }
+            }
+            if (qualities.isNotEmpty()) {
+                Box {
+                    AssistChip(
+                        onClick = { qualityMenu = true },
+                        label = { Text(qualityChip) },
+                        leadingIcon = {
+                            Icon(Icons.Default.HighQuality, null, Modifier.size(16.dp))
+                        },
+                    )
+                    DropdownMenu(expanded = qualityMenu, onDismissRequest = { qualityMenu = false }) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (effectiveHeight > 0) "Auto (${effectiveHeight}p)" else "Auto")
+                            },
+                            onClick = {
+                                qualityMenu = false
+                                onQuality(0)
+                            },
+                        )
+                        qualities.forEach { height ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (height == videoQuality) "${height}p  ✓" else "${height}p")
+                                },
+                                onClick = {
+                                    qualityMenu = false
+                                    onQuality(height)
+                                },
+                            )
+                        }
                     }
                 }
             }
