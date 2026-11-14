@@ -424,18 +424,23 @@ private fun PlaylistRow(playlist: LocalPlaylist, onClick: () -> Unit) {
 /**
  * The status line for one download row.
  *
- * A running download shows a percentage whenever the server has said how big
- * the file is, and a plain word when it has not; the other states read a field
+ * A live download shows a percentage whenever the server has said how big the
+ * file is, and a plain word when it has not; the other states read a field
  * already on the entry. Pure and top-level so the wording is unit-tested rather
  * than buried in the composable.
  */
 internal fun downloadStatusLine(entry: DownloadEntry, progress: DownloadProgress?): String =
-    when (entry.state) {
-        DownloadState.QUEUED -> "Waiting to download"
-        DownloadState.RUNNING ->
-            progress?.fraction?.let { "${(it * 100).roundToInt()}%" } ?: "Downloading…"
-        DownloadState.COMPLETE -> "Saved · ${formatBytes(entry.bytes)}"
-        DownloadState.FAILED -> entry.error ?: "Download failed"
+    when {
+        entry.state == DownloadState.COMPLETE -> "Saved · ${formatBytes(entry.bytes)}"
+        entry.state == DownloadState.FAILED -> entry.error ?: "Download failed"
+        // The store reads a live transfer back as QUEUED: a process that dies
+        // mid-download must come back as work to do, so "is this one moving?" is
+        // answered by the live in-memory progress, not the persisted state.
+        // Without this the active row would say "Waiting to download" for its
+        // whole transfer.
+        progress != null ->
+            progress.fraction?.let { "${(it * 100).roundToInt()}%" } ?: "Downloading…"
+        else -> "Waiting to download"
     }
 
 /**

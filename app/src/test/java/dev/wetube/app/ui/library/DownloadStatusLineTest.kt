@@ -29,34 +29,40 @@ class DownloadStatusLineTest {
     )
 
     @Test
-    fun `a queued download reads as waiting`() {
+    fun `a queued download with no live progress reads as waiting`() {
         assertEquals("Waiting to download", downloadStatusLine(entry(DownloadState.QUEUED), null))
     }
 
     @Test
-    fun `a running download shows its percentage when the size is known`() {
+    fun `a live download shows its percentage when the size is known`() {
+        // The store hands a running transfer back as QUEUED, so the percentage
+        // has to come from the live progress rather than from the state. Both
+        // states are pinned so the row keeps working whichever one it sees.
         val progress = DownloadProgress(bytes = 500L, total = 1000L)
 
+        assertEquals("50%", downloadStatusLine(entry(DownloadState.QUEUED), progress))
         assertEquals("50%", downloadStatusLine(entry(DownloadState.RUNNING), progress))
     }
 
     @Test
-    fun `a running download rounds to the nearest whole percent`() {
+    fun `a live download rounds to the nearest whole percent`() {
         val progress = DownloadProgress(bytes = 333L, total = 1000L)
 
-        assertEquals("33%", downloadStatusLine(entry(DownloadState.RUNNING), progress))
+        assertEquals("33%", downloadStatusLine(entry(DownloadState.QUEUED), progress))
     }
 
     @Test
-    fun `a running download with no honest fraction just says downloading`() {
+    fun `a live download with no honest fraction just says downloading`() {
         // The fallback text carries a real ellipsis, not three dots.
         val downloading = "Downloading\u2026"
-        // No progress event at all yet.
-        assertEquals(downloading, downloadStatusLine(entry(DownloadState.RUNNING), null))
+
         // Progress seen, but the server never stated a total.
         assertEquals(
             downloading,
-            downloadStatusLine(entry(DownloadState.RUNNING), DownloadProgress(bytes = 500L, total = null)),
+            downloadStatusLine(
+                entry(DownloadState.QUEUED),
+                DownloadProgress(bytes = 500L, total = null),
+            ),
         )
     }
 
