@@ -162,6 +162,14 @@ easy to demo.
       page schedule the debounced push, so they reach the account's mirror
 - [x] Settings states that playlists created in WeTube stay on the device
 
+## 0.3.0 — polish pass (shipped in this tree)
+- [x] A pasted YouTube link opens that video instead of being searched as text
+- [x] Shorts' empty/error state has a Retry action
+- [x] An unclassified error shows a plain sentence, not raw exception text
+- [x] Home's first tab is labelled "Trending", matching what it loads
+- [x] Read-only like/dislike counts no longer look tappable
+- [x] Search's placeholder names the corpus; empty/error bodies are centred
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

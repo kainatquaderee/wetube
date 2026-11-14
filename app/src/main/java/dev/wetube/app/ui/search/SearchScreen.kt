@@ -44,6 +44,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import dev.wetube.app.core.youtubeVideoId
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.ui.LoadingBox
@@ -166,8 +167,16 @@ fun SearchScreen(
 
     // A search is submitted from the keyboard action or a suggestion; either
     // way the keyboard and focus go away so the results are not half-covered.
-    fun submit(block: () -> Unit = { viewModel.search() }) {
-        block()
+    fun submit(onSubmit: (() -> Unit)? = null) {
+        // A pasted YouTube link is a request to watch one specific video, not to
+        // search for the URL text. Only the plain submit (the keyboard action)
+        // checks, so tapping a suggestion still runs that suggestion.
+        val pasted = youtubeVideoId(state.query)
+        if (onSubmit == null && pasted != null) {
+            onVideoClick(pasted)
+        } else {
+            (onSubmit ?: { viewModel.search() })()
+        }
         keyboard?.hide()
         focusManager.clearFocus()
     }
@@ -203,7 +212,7 @@ fun SearchScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            placeholder = { Text("Search WeTube") },
+            placeholder = { Text("Search videos") },
             singleLine = true,
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
             trailingIcon = {

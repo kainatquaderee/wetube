@@ -1,6 +1,8 @@
 package dev.wetube.app.core
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -56,5 +58,26 @@ class VideoIdsTest {
     fun `the pattern is anchored so a valid id with extra text is rejected`() {
         assertFalse(isValidVideoId("dQw4w9WgXcQ\n"))
         assertFalse(isValidVideoId("dQw4w9WgXcQ extra"))
+    }
+
+    @Test
+    fun `a pasted youtube link yields its video id`() {
+        assertEquals("dQw4w9WgXcQ", youtubeVideoId("https://youtu.be/dQw4w9WgXcQ"))
+        assertEquals("dQw4w9WgXcQ", youtubeVideoId("youtu.be/dQw4w9WgXcQ"))
+        assertEquals("dQw4w9WgXcQ", youtubeVideoId("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        assertEquals("dQw4w9WgXcQ", youtubeVideoId("https://youtu.be/dQw4w9WgXcQ?t=42"))
+        assertEquals("dQw4w9WgXcQ", youtubeVideoId("https://m.youtube.com/watch?app=desktop&v=dQw4w9WgXcQ"))
+        assertEquals("dQw4w9WgXcQ", youtubeVideoId("  https://youtu.be/dQw4w9WgXcQ  "))
+    }
+
+    @Test
+    fun `text that is not a youtube link is not a video`() {
+        assertNull(youtubeVideoId("never gonna give you up"))
+        assertNull(youtubeVideoId(""))
+        assertNull(youtubeVideoId("https://example.com/watch?v=dQw4w9WgXcQ"))
+        assertNull(youtubeVideoId("https://evil-youtu.be.example/dQw4w9WgXcQ"))
+        assertNull(youtubeVideoId("https://youtu.be/not-an-id"))
+        assertNull(youtubeVideoId("https://www.youtube.com/watch?v="))
+        assertNull(youtubeVideoId("see https://youtu.be/dQw4w9WgXcQ maybe"))
     }
 }

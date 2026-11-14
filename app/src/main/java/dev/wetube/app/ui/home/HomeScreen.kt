@@ -39,7 +39,7 @@ import dev.wetube.app.ui.friendlyError
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-enum class Feed { FOR_YOU, SUBSCRIPTIONS }
+enum class Feed { TRENDING, SUBSCRIPTIONS }
 
 data class HomeUiState(
     val loading: Boolean = true,
@@ -47,7 +47,7 @@ data class HomeUiState(
     val error: String? = null,
     val region: String = "US",
     val refreshing: Boolean = false,
-    val feed: Feed = Feed.FOR_YOU,
+    val feed: Feed = Feed.TRENDING,
     /** A one-line note under the chips, e.g. when not every subscription is fetched. */
     val feedNote: String? = null,
 )
@@ -201,9 +201,9 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             FilterChip(
-                selected = state.feed == Feed.FOR_YOU,
-                onClick = { viewModel.select(Feed.FOR_YOU) },
-                label = { Text("For you") },
+                selected = state.feed == Feed.TRENDING,
+                onClick = { viewModel.select(Feed.TRENDING) },
+                label = { Text("Trending") },
             )
             FilterChip(
                 selected = state.feed == Feed.SUBSCRIPTIONS,

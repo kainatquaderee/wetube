@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -83,7 +84,9 @@ fun friendlyError(t: Throwable): String {
             "Can't reach the server. Check your connection, or change it in Settings."
         raw.contains("timeout", ignoreCase = true) -> "The request timed out."
         raw.isBlank() -> "Something went wrong."
-        else -> raw.take(220)
+        // Anything unclassified is internal detail (a parse or serialization
+        // exception's own text): show a plain sentence rather than leak it.
+        else -> "Something went wrong. Please try again."
     }
 }
 
@@ -299,6 +302,7 @@ fun MessageBox(title: String, body: String, modifier: Modifier = Modifier, actio
             body,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
         )
         if (action != null) {
             Spacer(Modifier.height(16.dp))

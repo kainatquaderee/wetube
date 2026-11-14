@@ -378,7 +378,9 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
   `www.youtube.com`, `m.youtube.com`) and validates the id with `isValidVideoId`
   (`^[A-Za-z0-9_-]{11}$`) before it becomes a navigation route. A cold launch
   consumes the link once, and a recreation replays the original intent without
-  reopening the video.
+  reopening the video. A YouTube link pasted into Search reuses the same host
+  list and id check (`youtubeVideoId`), so a pasted link and a tapped link open
+  the same way instead of the pasted text being searched for literally.
 - **The sign-in WebView.** Navigation is allow-listed to the Google/YouTube https
   apexes and their subdomains (`isAllowedSignInUrl`); every other host and every
   non-https scheme is refused. The view runs with file and content access off, no

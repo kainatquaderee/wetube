@@ -1,7 +1,36 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.9 (versionCode 19).
+Security. This release is 0.3.0 (versionCode 20).
+
+## 0.3.0 — 2026-11-14
+
+A polish pass from a full read-through of every screen: wording that promised
+what the app did not do, controls that looked tappable but were not, and states
+that left the viewer stuck.
+
+### Fixed
+- **A pasted YouTube link now opens, instead of being searched as text.** Search
+  told the user to "paste a link to watch something specific", but the text was
+  sent to YouTube as a search query. A `youtu.be/...` or `youtube.com/watch?v=...`
+  link pasted into the field now opens that video directly, reusing the same host
+  list and id check as a tapped deep link.
+- **The Shorts error state offers Retry.** A failed or empty Shorts fetch was a
+  dead end; it now carries the same Retry action as Home and Search.
+- **An unclassified error no longer leaks internal text.** The failure fallback
+  printed up to 220 characters of a raw exception message; it now shows a plain
+  sentence.
+
+### Changed
+- **The first Home tab is labelled "Trending", which is what it shows.** It was
+  called "For you" while loading the region's trending feed, and the empty-state
+  copy already spoke of "trending videos".
+- **Like and dislike counts no longer look tappable.** An anonymous client cannot
+  rate a video, so the counts are read-only; the chips are now drawn without a
+  press affordance instead of swallowing taps.
+- **Search's field says "Search videos",** naming the corpus rather than implying
+  a search of the local library.
+- **Empty and error messages centre their body text** under the centred title.
 
 ## 0.2.9 — 2026-11-14
 

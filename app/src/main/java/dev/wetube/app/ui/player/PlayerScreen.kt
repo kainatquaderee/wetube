@@ -1656,6 +1656,7 @@ private fun PlayerInfo(
                     // already says what the count is, and the label stays short.
                     AssistChip(
                         onClick = {},
+                        enabled = false,
                         label = { Text(compactCount(detail.likes)) },
                         leadingIcon = { Icon(Icons.Default.ThumbUp, null, Modifier.size(16.dp)) },
                     )
@@ -1665,6 +1666,7 @@ private fun PlayerInfo(
                 if (showDislikes && dislikes != null) {
                     AssistChip(
                         onClick = {},
+                        enabled = false,
                         label = { Text(compactCount(dislikes)) },
                         leadingIcon = { Icon(Icons.Default.ThumbDown, null, Modifier.size(16.dp)) },
                     )

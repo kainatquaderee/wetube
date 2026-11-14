@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -309,7 +310,9 @@ fun ShortsScreen(
             title = "Shorts",
             body = state.error ?: "No Shorts right now.",
             modifier = modifier,
-        )
+        ) {
+            Button(onClick = { viewModel.retry() }) { Text("Retry") }
+        }
 
         else -> {
             val pager = rememberPagerState(pageCount = { state.videos.size })
@@ -671,6 +674,7 @@ private fun ShortActions(
             label = if (likes > 0) compactCount(likes) else "Like",
             tint = Color.White,
             onClick = {},
+            enabled = false,
         )
         if (dislikes != null) {
             RailAction(
@@ -678,6 +682,7 @@ private fun ShortActions(
                 label = if (dislikes > 0) compactCount(dislikes) else "Dislike",
                 tint = Color.White,
                 onClick = {},
+                enabled = false,
             )
         }
         RailAction(
@@ -707,16 +712,30 @@ private fun RailAction(
     label: String,
     tint: Color,
     onClick: () -> Unit,
+    /** False for a read-only stat: the pill is drawn but takes no taps. */
+    enabled: Boolean = true,
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        IconButton(
-            onClick = onClick,
-            modifier = Modifier
-                .size(46.dp)
-                .clip(CircleShape)
-                .background(Color(0x66000000)),
-        ) {
-            Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(24.dp))
+        if (enabled) {
+            IconButton(
+                onClick = onClick,
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(Color(0x66000000)),
+            ) {
+                Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(24.dp))
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(Color(0x66000000)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(24.dp))
+            }
         }
         Text(
             label,
