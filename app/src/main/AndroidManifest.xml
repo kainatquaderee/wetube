@@ -8,6 +8,16 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Held only while the cast sheet is open: an M-SEARCH is sent from a normal
+         socket, and Android drops its unicast answers without this normal-level
+         permission. NetworkRemoteDiscovery acquires and releases the lock per sweep. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- Casting also works over ethernet (a TV on the same wired switch), so a
+         Wi-Fi radio is not required to install or use the app. -->
+    <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
 
     <application
         android:name=".WeTubeApp"
@@ -55,6 +65,14 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <!-- Casting pauses the local player, so Media3's media service is not in
+             the foreground while a TV plays. This one holds the process (and a
+             scoped wake lock) for as long as a cast session is live. -->
+        <service
+            android:name=".player.CastKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
     </application>
 </manifest>

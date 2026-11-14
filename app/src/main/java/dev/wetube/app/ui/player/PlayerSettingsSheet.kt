@@ -84,6 +84,8 @@ fun PlayerSettingsSheet(
     backgroundPlayback: Boolean,
     sponsorBlock: Boolean,
     showDislikes: Boolean,
+    /** True while a renderer, not the phone, is playing. */
+    castActive: Boolean = false,
     onQuality: (Int) -> Unit,
     onSpeed: (Float) -> Unit,
     onOpenCaptions: () -> Unit,
@@ -129,15 +131,28 @@ fun PlayerSettingsSheet(
                         icon = Icons.Default.Speed,
                         title = "Playback speed",
                         value = formatSpeed(speed),
+                        enabled = !castActive,
                         onClick = { page = SettingsPage.Speed },
                     )
                     NavRow(
                         icon = Icons.Default.Subtitles,
                         title = "Captions",
                         value = if (captionsEnabled) "On" else "Off",
-                        enabled = captionsAvailable,
+                        enabled = captionsAvailable && !castActive,
                         onClick = onOpenCaptions,
                     )
+                    if (castActive) {
+                        // The renderer decodes and drives captions/speed, so
+                        // these two cannot be changed from the phone without a
+                        // re-cast. Say so instead of offering dead rows.
+                        Text(
+                            text = "Speed and captions are controlled on the TV while casting. " +
+                                "Quality re-casts the video there.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+                        )
+                    }
 
                     SwitchRow(
                         icon = Icons.Default.PlayCircle,

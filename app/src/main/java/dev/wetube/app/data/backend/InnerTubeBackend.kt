@@ -446,11 +446,7 @@ class InnerTubeBackend(
         val fresh = SystemClock.elapsedRealtime() - playerMemoAt < 3_000
         if (memo != null && playerMemoId == id && fresh) return@withLock memo
 
-        val progressive = buildJsonObject {
-            put("videoId", id)
-            put("contentCheckOk", true)
-            put("racyCheckOk", true)
-        }
+        val progressive = playerBody(id)
 
         // Native clients reject a request that carries a session ("invalid
         // argument"), so playback is anonymous even while signed in. The
@@ -497,6 +493,51 @@ class InnerTubeBackend(
         playerMemoAt = SystemClock.elapsedRealtime()
         playerMemo = response
         response
+    }
+
+    /** The minimal player body: one video id and the two content flags. */
+    private fun playerBody(id: String): JsonObject = buildJsonObject {
+        put("videoId", id)
+        put("contentCheckOk", true)
+        put("racyCheckOk", true)
+    }
+
+    /**
+     * One muxed progressive track, for handing to a DLNA renderer.
+     *
+     * A television cannot pair an adaptive video with an adaptive audio track,
+     * so this never returns a `videoOnly`/`audioOnly` entry and never needs the
+     * local player's `wetube-merge://` wrapper: the result is one URL that
+     * already carries both. A player response still inside the memo's freshness
+     * window is free to read, but casting deliberately does not trigger the full
+     * IOS ladder — the ANDROID client exists for exactly this case, and answers
+     * with one always-playable progressive file in a single request.
+     *
+     * Both paths share [playerLock]: two player calls for the same video at the
+     * same time invalidate each other's media URLs.
+     */
+    override suspend fun progressive(id: String): StreamFormat? {
+        playerLock.withLock { freshMemoProgressive(id) }?.let { return it }
+
+        return playerLock.withLock {
+            // Re-check: a concurrent `video()` call may have filled the memo
+            // while we waited for the lock.
+            freshMemoProgressive(id)
+                ?: runCatching { call("player", androidClient, playerBody(id), withAuth = false) }
+                    .getOrNull()
+                    ?.muxedProgressive()
+        }
+    }
+
+    /**
+     * The muxed track of the memo, when it is for [id] and still young enough
+     * for its URLs to be valid. Caller holds [playerLock].
+     */
+    private fun freshMemoProgressive(id: String): StreamFormat? {
+        val memo = playerMemo ?: return null
+        if (playerMemoId != id) return null
+        if (SystemClock.elapsedRealtime() - playerMemoAt >= 3_000) return null
+        return memo.muxedProgressive()
     }
 
     /**
@@ -964,6 +1005,26 @@ class InnerTubeBackend(
             live = badgeText.contains("LIVE", ignoreCase = true) ||
                 viewText.contains("watching", ignoreCase = true),
         )
+    }
+
+    /**
+     * The best muxed progressive track in a player response, or `null`.
+     *
+     * Only `streamingData.formats` is considered; `adaptiveFormats` are
+     * single-purpose tracks a renderer cannot pair on its own. H.264/AAC is
+     * preferred and the pick caps at 1080p, because that is what consumer
+     * televisions decode in hardware. A rare progressive file that only exists
+     * above the cap is still accepted rather than refusing to cast.
+     */
+    private fun JsonObject.muxedProgressive(): StreamFormat? {
+        val muxed = get("streamingData").obj()?.get("formats").objects()
+            .mapNotNull { it.toFormat(audio = false) }
+            .filter { it.url.isNotBlank() }
+        if (muxed.isEmpty()) return null
+
+        val mp4 = muxed.filter { it.mime == "video/mp4" }
+        val capped = (mp4.ifEmpty { muxed }).filter { it.height in 1..1080 }
+        return (capped.ifEmpty { mp4.ifEmpty { muxed } }).maxByOrNull { it.height }
     }
 
     private fun JsonObject.toFormat(audio: Boolean): StreamFormat? {

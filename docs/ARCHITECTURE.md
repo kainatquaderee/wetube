@@ -225,9 +225,20 @@ can turn this off: the root composable observes the activity lifecycle and
 pauses playback on `ON_STOP`. Both behaviours use the same media session, so the
 notification and lock-screen controls stay correct either way.
 
+While casting, the phone's ExoPlayer is paused and silent, but the media session
+stays the system's control surface. `PlaybackService` forwards transport commands
+to the renderer instead of the local player (section 11), and the same `ON_STOP`
+handler pauses the TV through `OutputRouter` rather than the silent local
+player.
+
 ## 7. Permissions
 
-Internet, network state, wake lock, foreground media playback and notifications.
+Internet, network state, wake lock, foreground media playback, notifications,
+and `CHANGE_WIFI_MULTICAST_STATE`. The last is normal-level and held only while
+the cast sheet is open: an SSDP `M-SEARCH` is sent from an ordinary socket, and
+Android drops its unicast answers without it. It is acquired and released around
+each sweep, never at app start and never in the background.
+
 Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 
 ## 8. Feature set
@@ -239,6 +250,7 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | Playback | Progressive, merged A/V, HLS live |
 | Player panel | In-player gear: quality, speed, captions, audio-only, background, SponsorBlock, dislikes |
 | Player extras | Read-only dislike count, Share, Subscribe/Subscribed on the channel row, end screen with the next related video |
+| Casting | DLNA/UPnP `MediaRenderer` discovery and playback on the local network, with a remote-control page |
 | Search | Autocomplete and continuation paging; keyboard dismissed on submit, next page loaded at the end of the list |
 | Subtitles | Tracks from the video itself, CC menu, YouTube auto-translation with fallback |
 | Gestures | Hold for 2×, tap to pause in Shorts, vertical pager |
@@ -264,7 +276,12 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 - **Cleartext off.** `network_security_config.xml` sets
   `cleartextTrafficPermitted="false"` with no per-domain exemptions, so a mistyped
   or tampered host cannot silently downgrade a request to `http://`; `sanitizeBackendHost`
-  enforces the same rule at the URL layer.
+  enforces the same rule at the URL layer. The one raw-HTTP path is DLNA control,
+  which necessarily targets a private `http://` control URL on the LAN. It is not
+  a policy-consulting stack: `RawSocketLanHttp` writes the request over a plain
+  socket, so no exemption is added to the config, and the destination host has
+  already been forced to a private or link-local literal by `LanAddress`. A
+  renderer cannot redirect that traffic at an internet host.
 - **Dynamic URL values.** Video ids, search queries and region codes are
   percent-encoded with `encodeUrlValue` before they are placed in a path or query.
 - **Deep links.** `MainActivity` accepts only the declared hosts (`youtu.be`,
@@ -290,8 +307,76 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
   networks. The original captions are shown instead.
 - Comments are read-only: liking, replying and reading replies need a signed-in
   session. The sheet offers the watch page in the browser instead.
-- Downloads, live chat, casting to an external device, and two-way YouTube
-  playlist/subscription sync are not implemented yet; see `ROADMAP.md`.
+- Downloads, live chat, and two-way YouTube playlist/subscription sync are not
+  implemented yet; see `ROADMAP.md`. Casting covers DLNA/UPnP renderers on the
+  local network only — Google Cast needs a registered receiver app id, and audio
+  routing to Bluetooth/USB is left to the system output picker.
+
+## 11. Casting / external devices
+
+`OutputRouter` is the single source of truth for where playback happens, exposed
+as `PlaybackOutput.Local` or `PlaybackOutput.Remote(target)`. Both the player UI
+and `PlaybackService` read that flow, so there is no window in which the phone
+believes it is playing while a TV also does.
+
+**Discovery.** `NetworkRemoteDiscovery` sends SSDP `M-SEARCH` datagrams and reads
+the answers, keeping only devices whose description and whose every resolved
+service URL (AVTransport, RenderingControl, ConnectionManager) is a private or
+link-local literal (`LanAddress.isCastingTarget`). A description is fetched only
+from a literal on the user's own network, and the cloud-metadata address
+(`169.254.169.254`) is refused even though it is technically link-local, so a
+hostile responder cannot aim a control request off-LAN. It runs only while the
+cast sheet is open: `start()` on open, `stop()` on dispose. Nothing scans at app
+start. The `CHANGE_WIFI_MULTICAST_STATE` lock is taken per sweep, never held idle.
+
+**Hardening.** Every document a device sends is untrusted: both the description
+parser and the SOAP parser refuse any document that declares a DTD (blocking
+entity expansion), the JAXP factory additionally disables external entities and
+DTD/schema access, the element walks are iterative so a deeply nested body cannot
+overflow the stack, and responses are capped in size, trailer count and total
+read time. DIDL and SOAP values are XML-escaped. Control traffic is plain HTTP on
+the LAN, which is inherent to UPnP; it never leaves the local network.
+
+**Playing.** A cast needs one muxed URL, so `StreamResolver.pickProgressive`
+supplies it and `VideoDetail.toRemoteMedia` packages the metadata a TV shows
+(title, channel, artwork). `RemotePlaybackManager` sends `SetAVTransportURI` +
+`Play` over SOAP and then polls `GetPositionInfo`/`GetTransportInfo`, which is
+what feeds the remote surface's live position and play state. The local player is
+paused only after the renderer accepted the handoff; if connecting fails, local
+playback is untouched and the UI shows the failure with its recovery action.
+
+**The remote surface.** While `OutputRouter` reports remote, `PlayerScreen` does
+not attach a controller to its `PlayerView` and does not derive buffering,
+position or duration from ExoPlayer — those would all be stale. It draws
+`RemoteSurface` (artwork, "Playing on <name>", transport, a scrubber committed on
+release) and routes seek/volume/play-pause to the router. Speed and captions are
+disabled while casting because the renderer owns them; a quality or audio-only
+change instead re-casts the same video at the renderer's live position.
+SponsorBlock skips go through `OutputRouter.seekTo`. "Play here instead" calls
+`returnLocal`, which disconnects and loads on the phone at the position the TV
+had reached.
+
+**Media session.** The blueprint's `onPlay`/`onPause`/`onSeekTo` callbacks do not
+exist in Media3 1.5.1. The real hook is
+`MediaSession.Callback.onPlayerCommandRequest(session, controller, playerCommand)`.
+It is marked deprecated in favour of limiting `getAvailableCommands()` or
+`setAvailableCommands`, but that only hides a command — it cannot route it to a
+renderer — so the callback is still the correct (and only) interception point.
+Returning a non-zero `SessionResult` code vetoes the default local handling and
+returns that code to the controller; `RESULT_SUCCESS` (0) lets the command run
+locally. So while remote: `PLAY_PAUSE` toggles the renderer and is vetoed
+(`RESULT_INFO_SKIPPED`), `STOP` pauses it and is vetoed, `PREPARE` is vetoed, and
+`SEEK_BACK`/`SEEK_FORWARD` are computed from the renderer's live position and
+vetoed rather than trusting the paused local player's mirror. Absolute seeks fall
+through to the local player and are then mirrored to the renderer from
+`onPositionDiscontinuity` (`DISCONTINUITY_REASON_SEEK`) while the session is
+active. The notification therefore shows the local player's stale transport
+state; play/pause and the scrubber in the app are the authoritative controls.
+
+**Forward compatibility.** `LocalNetworkAccess.canScan` is the one place that
+knows about a future runtime gate on local-network scanning. It returns `true`
+today; when `Build.VERSION.SDK_INT >= 37` the gate can be enforced there without
+touching discovery.
 
 ## Legal note
 

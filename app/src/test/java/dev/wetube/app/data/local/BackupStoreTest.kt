@@ -1,5 +1,6 @@
 package dev.wetube.app.data.local
 
+import dev.wetube.app.core.DEFAULT_INVIDIOUS_HOST
 import dev.wetube.app.data.backend.BackendType
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.data.prefs.AppSettings
@@ -189,7 +190,7 @@ class BackupStoreTest {
         assertEquals(BackendType.INNERTUBE, restored.backend)
         assertTrue(restored.proxyStreams)
         assertTrue(restored.showDislikes)
-        assertEquals("https://invidious.materialio.us", restored.invidiousHost)
+        assertEquals(DEFAULT_INVIDIOUS_HOST, restored.invidiousHost)
         assertEquals("https://pipedapi.kavin.rocks", restored.pipedHost)
         assertEquals(setOf("sponsor", "selfpromo", "interaction"), restored.sponsorCategories)
     }

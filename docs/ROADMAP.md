@@ -45,7 +45,25 @@ easy to demo.
 - [x] Hardening: https-only host validation, cleartext traffic disabled,
       percent-encoded URL parameters
 
-## 0.1.8 — polish follow-ups
+## 0.1.8 — casting (shipped in this tree)
+- [x] Discover DLNA/UPnP `MediaRenderer` devices on the local network while the
+      cast sheet is open, with the multicast lock held per sweep
+- [x] Cast the current video to a renderer: muxed stream, title, channel and
+      artwork, resuming at the phone's position
+- [x] Cast icon in the player (filled state while active) and a two-page sheet:
+      device list, then remote controls with live position and play state
+- [x] Remote surface replaces the local player while casting, with transport,
+      scrubber, volume, retry and "Play on this phone"
+- [x] Lock-screen/notification transport routed to the renderer through the media
+      session, so play/pause does not resume silent local audio
+- [x] Quality and audio-only recast at the renderer's live position; SponsorBlock
+      skips and "Play here instead" follow the active output
+- [x] Cast failures carry a specific reason and a recovery action
+- [ ] Custom cast receiver (Google Cast needs a registered app id and is not part
+      of this release)
+- [ ] Queue management on the renderer
+
+## 0.1.9 — polish follow-ups
 - [ ] Mini-player: keep the current video docked while browsing the rest of the app
 - [ ] Comment composer: post and reply from the app when signed in
 - [ ] Fullscreen auto-rotate for landscape video, with a portrait lock option
@@ -83,8 +101,11 @@ easy to demo.
 - [ ] Local "likes" for organising favourites
 
 ## 0.5 — reach
-- [ ] Listen on an external device: cast to Chromecast/DLNA and route audio to a
-      picked output (the Cast receiver needs an app id)
+- [x] Cast to a DLNA/UPnP renderer on the local network (shipped in 0.1.8)
+- [ ] Route audio to a picked Bluetooth/USB output
+- [ ] Google Cast support (needs a registered receiver app id)
+- [ ] Custom cast receiver app
+- [ ] Queue management on the renderer
 - [ ] Android TV / leanback UI
 - [ ] Tablet two-pane layout
 - [ ] Wear OS media controls

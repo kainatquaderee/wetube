@@ -22,6 +22,17 @@ object StreamResolver {
     const val MERGE_SCHEME = "wetube-merge"
 
     /**
+     * The DLNA HLS profile. `Didl` advertises the same string, and a renderer
+     * that supports HLS at all matches on it rather than on Media3's internal
+     * `application/x-mpegURL` spelling, so the two do not share a constant:
+     * only the cast path ever needs this one.
+     */
+    private const val CAST_HLS_MIME = "application/vnd.apple.mpegurl"
+
+    /** A DLNA renderer decodes 1080p H.264 in hardware; above it is a maybe. */
+    private const val CAST_MAX_HEIGHT = 1080
+
+    /**
      * Builds the item for [detail].
      *
      * [preferredHeight] is the user's quality choice: `0` means Auto (play the
@@ -174,5 +185,61 @@ object StreamResolver {
         if (usable.isEmpty()) return null
         val mp4 = usable.filter { it.mime == MimeTypes.AUDIO_MP4 }
         return (mp4.ifEmpty { usable }).maxByOrNull { it.bitrate }
+    }
+
+    /**
+     * The single track to hand a DLNA renderer, or `null` when there is none.
+     *
+     * A renderer plays one resource, so this never returns a track that needs a
+     * companion: no `videoOnly` entry and nothing that [mediaItem] would have to
+     * wrap in a `wetube-merge://` URI. The pick is restricted to a muxed
+     * progressive track — H.264/AAC when the backend offers it — because that is
+     * what an unmodified TV decodes.
+     *
+     * [preferredHeight] follows the same ladder as [pickVideo]: the exact height
+     * when it exists, otherwise the closest below it, otherwise the closest
+     * above it. When there is no muxed track at all a live HLS manifest is the
+     * last resort, flagged by its MIME type as best-effort.
+     */
+    internal fun pickProgressive(
+        p: Playback,
+        preferredHeight: Int,
+        audioOnly: Boolean,
+    ): StreamFormat? {
+        if (audioOnly) {
+            return (pickAudio(p.audioOnly) ?: pickMuxed(p.muxed, preferredHeight = 0))
+                ?.takeIf { it.url.isNotBlank() }
+        }
+
+        pickMuxed(p.muxed, preferredHeight)?.takeIf { it.url.isNotBlank() }?.let { return it }
+
+        // Adaptive and DASH are not offered: neither is a URL a renderer can be
+        // pointed at. A live stream's manifest is, but only some devices take it.
+        return p.hls?.takeIf { it.isNotBlank() }?.let { manifest ->
+            StreamFormat(url = manifest, label = "HLS", mime = CAST_HLS_MIME, audio = false)
+        }
+    }
+
+    /**
+     * Best muxed track at or below [CAST_MAX_HEIGHT], preferring MP4.
+     *
+     * Falls back to whatever muxed track exists when the only ones are taller
+     * than the cap (a rare progressive 1440p), because a slightly awkward cast
+     * beats refusing to cast at all.
+     */
+    private fun pickMuxed(muxed: List<StreamFormat>, preferredHeight: Int): StreamFormat? {
+        val usable = muxed.filter { it.url.isNotBlank() }
+        if (usable.isEmpty()) return null
+
+        val mp4 = usable.filter { it.mime == MimeTypes.VIDEO_MP4 }
+        val capped = (mp4.ifEmpty { usable }).filter { it.height in 1..CAST_MAX_HEIGHT }
+        val pool = capped.ifEmpty { mp4.ifEmpty { usable } }
+
+        if (preferredHeight <= 0) return pool.maxByOrNull { it.height }
+
+        return pool.firstOrNull { it.height == preferredHeight }
+            ?: pool.filter { it.height in 1 until preferredHeight }.maxByOrNull { it.height }
+            ?: pool.filter { it.height > preferredHeight }.minByOrNull { it.height }
+            ?: pool.firstOrNull()
     }
 }

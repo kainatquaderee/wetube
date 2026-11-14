@@ -5,6 +5,7 @@ import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.SearchResult
+import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.data.prefs.SettingsStore
@@ -83,6 +84,14 @@ class ContentFilterBackend(
     override suspend fun suggestions(query: String): List<String> = delegate.suggestions(query)
 
     override suspend fun subscriptions(): List<VideoItem> = visible(delegate.subscriptions())
+
+    /**
+     * A cast is not a listing: the mature-content filter has nothing to hide in
+     * a track URL, and [delegate] (usually [InnerTubeBackend]) is the only layer
+     * that knows how to obtain a progressive file. Passing through keeps casting
+     * available for every video the user can already open.
+     */
+    override suspend fun progressive(id: String): StreamFormat? = delegate.progressive(id)
 
     private fun isAgeWall(message: String?): Boolean {
         val text = message.orEmpty()

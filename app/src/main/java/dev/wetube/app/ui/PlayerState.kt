@@ -85,6 +85,58 @@ fun rememberIsBuffering(player: Player?, delayMs: Long = 350L): Boolean {
 fun rememberIsPlaying(player: Player?): Boolean = rememberPlaybackFlags(player).playing
 
 /**
+ * True while the player intends to be producing sound: it is set to play and is
+ * either rendering or filling its buffer.
+ *
+ * This is the screen-on predicate, and it is deliberately *not* just
+ * [rememberIsPlaying]: a video that stalls to buffer mid-play still has someone
+ * watching the screen, and letting the screen time out through a spinner would
+ * be the bug this exists to fix. It is narrower in every other direction, which
+ * is the part that matters — a paused, ended or idle player clears it, and a
+ * [null] player (which is what the screen passes while a TV owns playback)
+ * clears it too, so casting never holds the phone's screen on.
+ */
+@Composable
+fun rememberPlayingIntent(player: Player?): Boolean {
+    var intent by remember(player) {
+        mutableStateOf(player?.hasPlayingIntent() == true)
+    }
+
+    DisposableEffect(player) {
+        if (player == null) {
+            intent = false
+            return@DisposableEffect onDispose { }
+        }
+        intent = player.hasPlayingIntent()
+        val listener = object : Player.Listener {
+            // Any of the three can flip the answer on its own: play/pause moves
+            // `playWhenReady`, the first frame moves the playback state off
+            // BUFFERING, and a buffered renderer reports `isPlaying`. Recompute
+            // from the player each time rather than trying to track the
+            // combination here.
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                intent = player.hasPlayingIntent()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                intent = player.hasPlayingIntent()
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                intent = player.hasPlayingIntent()
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
+
+    return intent
+}
+
+private fun Player.hasPlayingIntent(): Boolean =
+    playWhenReady && (isPlaying || playbackState == Player.STATE_BUFFERING)
+
+/**
  * True while the player sits at the end of its media.
  *
  * The end screen is driven from this rather than from the media item, so it

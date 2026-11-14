@@ -14,8 +14,18 @@ import java.util.Locale
  * live in one place instead of being re-derived at each call site.
  */
 
-/** Built-in independent instances, used whenever a stored host is rejected. */
-const val DEFAULT_INVIDIOUS_HOST: String = "https://invidious.materialio.us"
+/**
+ * Built-in independent instances, used whenever a stored host is rejected.
+ *
+ * The Invidious default was moved off `invidious.materialio.us`, which now
+ * answers the public API with HTTP 500 for video lookups: a built-in default
+ * that is guaranteed to fail makes the whole Invidious backend look broken
+ * before the user can even pick another instance. `yt.chocolatemoo53.com` is a
+ * public instance from the official list that answers the API normally. It can
+ * go dark like any community host, which is exactly why the failure is now
+ * reported honestly instead of being masked behind an empty screen.
+ */
+const val DEFAULT_INVIDIOUS_HOST: String = "https://yt.chocolatemoo53.com"
 const val DEFAULT_PIPED_HOST: String = "https://pipedapi.kavin.rocks"
 
 /** A real hostname tops out at 253 characters; anything longer is not one. */

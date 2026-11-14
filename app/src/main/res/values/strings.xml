@@ -1,4 +1,9 @@
 <resources>
     <string name="app_name">WeTube</string>
     <string name="notification_channel_name">Playback</string>
+    <string name="cast_channel_name">Casting</string>
+    <string name="cast_channel_description">Keeps a cast running while the screen is off.</string>
+    <string name="cast_notification_title">Casting to %1$s</string>
+    <string name="cast_notification_text">Your phone can sleep; the device keeps playing.</string>
+    <string name="cast_notification_unknown_device">a device</string>
 </resources>

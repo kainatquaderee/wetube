@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import dev.wetube.app.core.DEFAULT_INVIDIOUS_HOST
 import dev.wetube.app.data.backend.BackendType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,7 +57,7 @@ class SettingsStoreTest {
         val settings = store.settings.first()
 
         assertEquals(BackendType.INNERTUBE, settings.backend)
-        assertEquals("https://invidious.materialio.us", settings.invidiousHost)
+        assertEquals(DEFAULT_INVIDIOUS_HOST, settings.invidiousHost)
         assertEquals("https://pipedapi.kavin.rocks", settings.pipedHost)
         assertEquals("US", settings.region)
         assertTrue(settings.proxyStreams)

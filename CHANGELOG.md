@@ -1,7 +1,55 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.1.7 (versionCode 8).
+Security. This release is 0.1.8 (versionCode 9).
+
+## 0.1.8 — 2026-11-14
+
+Cast the current video to a DLNA/UPnP renderer on your own Wi-Fi and use the
+phone as the remote.
+
+### Added
+- **Cast to a device.** The player gains a cast icon that opens a sheet listing
+  DLNA/UPnP `MediaRenderer` devices found on the local network — a smart TV, a
+  speaker, another phone running VLC or Kodi. Discovery runs only while the sheet
+  is open; nothing scans the network in the background.
+- **Remote surface.** While casting, the player shows the video's artwork,
+  "Playing on <name>", and transport, a scrubber and a volume slider, all routed
+  to the renderer. Position and play state come from the renderer's own
+  `GetPositionInfo`/`GetTransportInfo` poll, not from the paused phone.
+- **Handoff that resumes where you are.** A cast starts at the phone's current
+  position; a quality or audio-only change re-casts the same video at the
+  renderer's live position; "Play on this phone" brings playback back at the same
+  spot.
+- **Lock-screen and notification controls follow the cast.** Play, pause, stop
+  and seek from the media session are routed to the renderer instead of resuming
+  silent audio on the phone.
+- **Screen-on only while a video is actually watched on the phone.** The screen
+  stays awake during local video playback and is left to sleep on audio-only,
+  when paused, and while casting (the other device is the display).
+
+### Fixed
+- **Casting survives the screen turning off.** A short-lived foreground service
+  and a scoped partial wake lock keep the session alive across screen-off, and
+  both are released as soon as the cast ends or fails.
+- **Honest cast failures.** A refused or unreachable renderer reports a specific
+  reason (UPnP error codes included), names the retry action, and never leaves
+  the player stuck.
+- **Paused playback no longer resumes silently** behind an active cast.
+
+### Changed
+- The built-in Invidious default moved to an instance that currently answers the
+  API; the previous default had begun returning HTTP 500 for video lookups.
+
+### Security
+- A hostile device can no longer aim the app's volume or seek requests at an
+  arbitrary host: every resolved control URL must be a private or link-local
+  literal, and the cloud-metadata address is refused even though it is link-local.
+- Descriptions and SOAP responses that declare a DTD are rejected, and the XML
+  walks are iterative, so a crafted document can neither expand entities nor
+  overflow the stack.
+- Response size, chunked-trailer count and total read time are all capped, so a
+  slow-drip responder cannot pin a connection open.
 
 ## 0.1.7 — 2026-11-13
 

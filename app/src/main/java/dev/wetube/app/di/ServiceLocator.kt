@@ -18,7 +18,14 @@ import dev.wetube.app.data.local.LibraryStore
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.data.prefs.SettingsStore
 import dev.wetube.app.player.CaptionLoader
+import dev.wetube.app.player.CastSessionKeeper
+import dev.wetube.app.player.OutputRouter
 import dev.wetube.app.player.PlaybackController
+import dev.wetube.app.player.remote.NetworkRemoteDiscovery
+import dev.wetube.app.player.remote.RemotePlaybackManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import okhttp3.Dns
@@ -79,6 +86,34 @@ class ServiceLocator(context: Context) {
     val dislikes = DislikeClient(jsonHttp)
     val playback = PlaybackController(appContext)
     val captionLoader = CaptionLoader(jsonHttp)
+
+    /**
+     * Process-scoped coroutines for work that must outlive a screen — the cast
+     * poll loop. Created on first use, like the rest of the casting graph.
+     */
+    private val appScope by lazy { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
+
+    /**
+     * Where playback is: phone or a LAN renderer.
+     *
+     * Deliberately lazy, all the way down: a user who never opens the device
+     * sheet never constructs the SSDP socket, the DLNA transport, the poll
+     * scope or a discovery sweep. Everything a cast needs is built on the first
+     * touch of the cast UI, and the local player is unaffected until then.
+     */
+    val output: OutputRouter by lazy {
+        val remote = RemotePlaybackManager(
+            discovery = NetworkRemoteDiscovery(appContext),
+            resolveProgressive = { id -> backend().progressive(id) },
+            scope = appScope,
+        )
+        // The poll loop lives in the process, not in a screen, so the process
+        // has to stay alive — and awake — while a TV owns playback. The keeper
+        // is bound to the remote manager's session, not to the router's output,
+        // so a mid-session failure also releases the keep-alive.
+        CastSessionKeeper(appContext, remote.state, appScope).start()
+        OutputRouter(local = playback, remote = remote)
+    }
 
     /** Settings plus whichever account the backends were built for. */
     private data class BackendKey(val settings: AppSettings, val account: String)

@@ -23,6 +23,10 @@ resolves.
 - **Video quality picker**: leave it on Auto (H.264 up to 1080p, 1440p/2160p when
   nothing smaller exists) or pin any height the video offers, 144p–2160p — from
   the player, with a default in Settings
+- **Cast to a device**: find DLNA/UPnP renderers on your own Wi-Fi (a smart TV,
+  a speaker, another phone running VLC or Kodi), play there, and use the phone as
+  a remote for transport, seek and volume. Quality re-casts at the TV's live
+  position; "Play here instead" brings playback back at the same spot
 - Separate high-quality video + audio tracks merged automatically
 - Live streams via HLS
 - Background audio via `MediaSessionService`, media notification, lock screen —
@@ -210,9 +214,9 @@ so streams and thumbnails use the same resolver and connection pool.
 Known limits: age-restricted videos need YouTube's JavaScript `n` challenge,
 which WeTube does not fake, so they can refuse to play even when signed in.
 Some networks also get a bot check regardless of client. Neither is bypassed —
-the player reports which wall it hit. Downloads, live chat, casting to an
-external device, and two-way YouTube playlist and subscription sync are tracked
-in `docs/ROADMAP.md`.
+the player reports which wall it hit. Downloads, live chat, Google Cast (which
+needs a registered receiver app id), in-app audio output routing, and two-way
+YouTube playlist and subscription sync are tracked in `docs/ROADMAP.md`.
 
 ## Licence
 

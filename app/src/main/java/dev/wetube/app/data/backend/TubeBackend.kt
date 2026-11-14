@@ -4,6 +4,7 @@ import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.SearchResult
+import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
 
@@ -47,4 +48,17 @@ interface TubeBackend {
 
     /** Query autocomplete. Backends that cannot answer return an empty list. */
     suspend fun suggestions(query: String): List<String> = emptyList()
+
+    /**
+     * One muxed progressive track for [id], or `null` when the backend cannot
+     * offer one.
+     *
+     * Casting needs a single URL a television can open on its own, and this is
+     * the only place that knows which transports can produce one. It is
+     * deliberately separate from [video]: a cast happens while the local player
+     * is paused or playing something else, and the caller only needs one track,
+     * not a whole [VideoDetail]. Backends that cannot answer return `null`, and
+     * the caller reports "not castable" instead of guessing at an adaptive URL.
+     */
+    suspend fun progressive(id: String): StreamFormat? = null
 }

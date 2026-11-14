@@ -22,6 +22,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Fullscreen
@@ -51,6 +53,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -89,11 +92,17 @@ import android.view.MotionEvent
 import android.view.ViewGroup
 import coil.compose.AsyncImage
 import dev.wetube.app.data.extras.SponsorSegment
+import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.player.CaptionSession
+import dev.wetube.app.player.PlaybackOutput
 import dev.wetube.app.player.StreamResolver
+import dev.wetube.app.player.remote.RemoteFailure
+import dev.wetube.app.player.remote.RemoteSessionState
+import dev.wetube.app.player.remote.RemoteTarget
+import dev.wetube.app.player.toRemoteMedia
 import dev.wetube.app.ui.CaptionSpeedBadge
 import dev.wetube.app.ui.CompactVideoRow
 import dev.wetube.app.ui.LoadingBox
@@ -108,6 +117,7 @@ import dev.wetube.app.ui.parseChapters
 import dev.wetube.app.ui.rememberIsBuffering
 import dev.wetube.app.ui.rememberPlaybackEnded
 import dev.wetube.app.ui.rememberPlayerPosition
+import dev.wetube.app.ui.rememberPlayingIntent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -132,6 +142,19 @@ data class PlayerUiState(
     val backgroundPlayback: Boolean = true,
     val sponsorBlockEnabled: Boolean = true,
     val showDislikes: Boolean = true,
+    /**
+     * Why the last cast attempt failed at the source or on the device, or
+     * `null` after a successful handoff. Shown in the cast sheet and over the
+     * remote surface; cleared whenever casting succeeds or the phone takes over.
+     */
+    val castFailure: RemoteFailure? = null,
+    /**
+     * True from the tap on a device until the renderer accepts the handoff or
+     * the attempt fails. The cast sheet and the remote surface show a
+     * connecting spinner from this, which is also what makes a retry against a
+     * still-offline network visibly do something before it reports the reason.
+     */
+    val casting: Boolean = false,
 )
 
 /**
@@ -194,11 +217,23 @@ class PlayerViewModel(
                     locator.library.resumePoints.first()[id]?.positionMs
                 }.getOrNull()
 
-                locator.playback.play(
-                    item = item,
-                    speed = settings.playbackSpeed,
-                    startAtMs = resumeAt,
-                )
+                // A new "up next" tap while the TV is casting must take the
+                // phone back first, or the silent local player would start
+                // behind a live cast. The resume point is per-video, so pass it
+                // explicitly: never inherit the previous video's cast position.
+                if (locator.output.isRemote) {
+                    locator.output.returnLocal(
+                        item = item,
+                        speed = settings.playbackSpeed,
+                        startAtMs = resumeAt ?: 0L,
+                    )
+                } else {
+                    locator.playback.play(
+                        item = item,
+                        speed = settings.playbackSpeed,
+                        startAtMs = resumeAt,
+                    )
+                }
                 locator.library.addToHistory(detail.item)
 
                 val favourite = locator.library.favourites.first().any { it.id == detail.item.id }
@@ -227,6 +262,7 @@ class PlayerViewModel(
                     backgroundPlayback = settings.backgroundPlayback,
                     sponsorBlockEnabled = settings.sponsorBlockEnabled,
                     showDislikes = settings.showDislikes,
+                    castFailure = null,
                 )
                 captions.attach(merged)
                 recoveries = 0
@@ -249,7 +285,13 @@ class PlayerViewModel(
             it.actionType == "skip" && positionMs >= it.startMs && positionMs < it.endMs
         }
         if (skip != null) {
-            locator.playback.seekTo(skip.endMs)
+            // While casting, the renderer owns the timeline: seeking the silent
+            // local player would move nothing the viewer can hear.
+            if (locator.output.isRemote) {
+                viewModelScope.launch { locator.output.seekTo(skip.endMs) }
+            } else {
+                locator.playback.seekTo(skip.endMs)
+            }
             return
         }
         if (positionMs - lastSaved >= 10_000) {
@@ -284,6 +326,9 @@ class PlayerViewModel(
      * screen.
      */
     fun recoverPlayback(positionMs: Long) {
+        // A cast failure is the manager's to report; re-resolving into the
+        // silent local player would start audio behind a live TV.
+        if (locator.output.isRemote) return
         if (recoveries >= 3) {
             state = state.copy(
                 error = state.error
@@ -359,7 +404,7 @@ class PlayerViewModel(
         state = state.copy(videoQuality = height)
         viewModelScope.launch {
             locator.settings.update { it.copy(videoQuality = height) }
-            applySettings()
+            if (locator.output.isRemote) recastRemote() else applySettings()
         }
     }
 
@@ -368,8 +413,161 @@ class PlayerViewModel(
         state = state.copy(audioOnly = value)
         viewModelScope.launch {
             locator.settings.update { it.copy(audioOnly = value) }
-            applySettings()
+            if (locator.output.isRemote) recastRemote() else applySettings()
         }
+    }
+
+    // -- casting ------------------------------------------------------------
+
+    /**
+     * Hands the current video to [target].
+     *
+     * A renderer takes one URL, so the format is chosen from the muxed
+     * progressive tracks first ([StreamResolver.pickProgressive]). The backend's
+     * `progressive()` is the fallback because the default InnerTube profile is
+     * IOS, whose player response is often adaptive-only and therefore has no
+     * muxed track in the detail already in memory.
+     */
+    fun castTo(target: RemoteTarget) {
+        val detail = state.detail ?: return
+        // Set the flag before launching, not inside the coroutine: two quick
+        // taps must not both pass this guard and start overlapping handshakes
+        // against the one renderer session.
+        if (state.casting) return
+        state = state.copy(casting = true, castFailure = null)
+        viewModelScope.launch {
+            try {
+                // Preflight before resolving anything. A network that cannot
+                // carry a cast is answered honestly and at once; without this,
+                // a retry while offline spent a whole connect budget on a
+                // doomed handshake and then reported the device instead of the
+                // network. The short hold only exists so the spinner is
+                // actually seen — an instantaneous answer would look like the
+                // retry button did nothing at all.
+                val blocked = locator.output.castBlockedReason()
+                if (blocked != null) {
+                    delay(CAST_PREFLIGHT_SPINNER_MS)
+                    state = state.copy(castFailure = blocked)
+                    return@launch
+                }
+                val settings = locator.settings.settings.first()
+                val format = resolveCastSource(detail, settings.audioOnly, settings.videoQuality)
+                if (format == null) {
+                    state = state.copy(castFailure = RemoteFailure.StreamUnavailable)
+                    return@launch
+                }
+                val accepted = locator.output.playRemote(
+                    target = target,
+                    media = detail.toRemoteMedia(format, settings.audioOnly),
+                )
+                if (!accepted) {
+                    state = state.copy(
+                        castFailure = (locator.output.session.value as? RemoteSessionState.Failed)
+                            ?.failure ?: RemoteFailure.Unreachable(target.address),
+                    )
+                }
+            } finally {
+                // Whatever the outcome, the spinner must stop: a stuck true
+                // here would hide every later cast behind "Connecting...".
+                state = state.copy(casting = false)
+            }
+        }
+    }
+
+    /**
+     * Ends the cast and resumes on the phone where the renderer had reached.
+     * When playback is already local this only clears a stale cast error: a
+     * reload would reset the position for no reason.
+     */
+    fun playHere() {
+        val detail = state.detail ?: return
+        viewModelScope.launch {
+            if (!locator.output.isRemote) {
+                state = state.copy(castFailure = null)
+                return@launch
+            }
+            val settings = locator.settings.settings.first()
+            val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
+            if (item == null) {
+                state = state.copy(castFailure = RemoteFailure.StreamUnavailable)
+                return@launch
+            }
+            locator.output.returnLocal(item, settings.playbackSpeed)
+            state = state.copy(castFailure = null)
+        }
+    }
+
+    /**
+     * Re-tries the failed session on the same device, or re-runs discovery when
+     * the failure happened before a device was chosen.
+     */
+    fun retryCast() {
+        val target = when (val session = locator.output.session.value) {
+            is RemoteSessionState.Active -> session.target
+            is RemoteSessionState.Connecting -> session.target
+            is RemoteSessionState.Failed -> session.target
+            RemoteSessionState.Idle -> null
+        }
+        if (target != null) castTo(target) else refreshRenderers()
+    }
+
+    /** One manual discovery sweep; the sheet's refresh button. */
+    fun refreshRenderers() {
+        viewModelScope.launch { locator.output.refreshRenderers() }
+    }
+
+    fun remotePlayPause() {
+        val session = locator.output.session.value as? RemoteSessionState.Active ?: return
+        viewModelScope.launch {
+            if (session.paused) locator.output.play() else locator.output.pause()
+        }
+    }
+
+    fun remoteSeek(positionMs: Long) {
+        viewModelScope.launch { locator.output.seekTo(positionMs) }
+    }
+
+    fun remoteVolume(level: Float) {
+        viewModelScope.launch { locator.output.setVolume(level) }
+    }
+
+    /**
+     * Rebuilds the cast source after a quality or audio-only change and resumes
+     * at the renderer's own live position — the local player is paused at the
+     * position it had when the handoff happened, which is stale by now.
+     */
+    private suspend fun recastRemote() {
+        val detail = state.detail ?: return
+        val target = (locator.output.output.value as? PlaybackOutput.Remote)?.target ?: return
+        val session = locator.output.session.value as? RemoteSessionState.Active ?: return
+        val settings = locator.settings.settings.first()
+        val format = resolveCastSource(detail, settings.audioOnly, settings.videoQuality)
+        if (format == null) {
+            state = state.copy(castFailure = RemoteFailure.StreamUnavailable)
+            return
+        }
+        val accepted = locator.output.playRemote(
+            target = target,
+            media = detail.toRemoteMedia(format, settings.audioOnly),
+            startAtMs = session.positionMs,
+        )
+        if (!accepted) {
+            state = state.copy(
+                castFailure = (locator.output.session.value as? RemoteSessionState.Failed)
+                    ?.failure ?: RemoteFailure.Unreachable(target.address),
+            )
+        }
+    }
+
+    /** The one muxed track a renderer can open, or `null` when there is none. */
+    private suspend fun resolveCastSource(
+        detail: VideoDetail,
+        audioOnly: Boolean,
+        preferredHeight: Int,
+    ): StreamFormat? {
+        StreamResolver.pickProgressive(detail.playback, preferredHeight, audioOnly)
+            ?.let { return it }
+        return runCatching { locator.backend().progressive(detail.item.id) }.getOrNull()
     }
 
     /** Whether the media session outlives the app being backgrounded. */
@@ -440,6 +638,13 @@ class PlayerViewModel(
     }
 
     companion object {
+        /**
+         * Minimum time the connecting spinner is shown for a blocked cast, so a
+         * retry reads as an action that completed rather than a dead button.
+         * Long enough to register, far shorter than any real handshake.
+         */
+        private const val CAST_PREFLIGHT_SPINNER_MS = 700L
+
         fun factory(locator: ServiceLocator, videoId: String) = viewModelFactory {
             initializer { PlayerViewModel(locator, videoId) }
         }
@@ -468,6 +673,15 @@ fun PlayerScreen(
     val subscriptions by locator.library.subscriptions.collectAsStateWithLifecycle(
         initialValue = emptyList(),
     )
+    // The single source of "where playback is". Reading it is what constructs
+    // the lazy casting graph, so a viewer who never opens the cast sheet pays
+    // nothing for it beyond this StateFlow.
+    val output by locator.output.output.collectAsStateWithLifecycle()
+    val session by locator.output.session.collectAsStateWithLifecycle()
+    val remoteTargets by locator.output.renderers.collectAsStateWithLifecycle()
+    val scanningRenderers by locator.output.scanning.collectAsStateWithLifecycle()
+    val discoveryFailure by locator.output.discoveryFailure.collectAsStateWithLifecycle()
+    val isRemote = output is PlaybackOutput.Remote
     val context = LocalContext.current
     val view = LocalView.current
 
@@ -475,12 +689,23 @@ fun PlayerScreen(
     var showCaptionSheet by remember { mutableStateOf(false) }
     var showComments by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showCastSheet by remember { mutableStateOf(false) }
     var holding by remember { mutableStateOf(false) }
     var speedBeforeHold by remember { mutableFloatStateOf(1f) }
 
-    val buffering = rememberIsBuffering(controller)
-    val positionMs = rememberPlayerPosition(controller)
-    val playbackEnded = rememberPlaybackEnded(controller)
+    // While a TV owns playback the local player has no media and no controls, so
+    // the local helpers receive `null` and never poll ExoPlayer; the remote
+    // surface reads the session instead. Passing null rather than skipping the
+    // calls keeps the composition shape stable when the output flips.
+    val localController = if (isRemote) null else controller
+    val buffering = rememberIsBuffering(localController)
+    val localPositionMs = rememberPlayerPosition(localController)
+    val positionMs = if (isRemote) {
+        (session as? RemoteSessionState.Active)?.positionMs ?: 0L
+    } else {
+        localPositionMs
+    }
+    val playbackEnded = rememberPlaybackEnded(localController)
     val nextVideo = state.detail?.related?.firstOrNull()
 
     val playerView = remember {
@@ -491,6 +716,17 @@ fun PlayerScreen(
             // whole in the tall fullscreen surface instead of being cropped.
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
         }
+    }
+
+    // Hold the screen awake only for a video that is actually being watched on
+    // this phone. Audio-only playback belongs in a pocket with the screen off,
+    // and while casting the TV is the display, so neither may pin the phone's
+    // screen. `keepScreenOn` is the view-level flag Android recommends for
+    // media surfaces: the window clears it automatically when the screen leaves
+    // the foreground, so there is no wake lock to leak.
+    val playingIntent = rememberPlayingIntent(localController)
+    SideEffect {
+        playerView.keepScreenOn = playingIntent && !isRemote && !state.audioOnly
     }
 
     // Immersive playback: hide the status/navigation bars while fullscreen and
@@ -519,7 +755,13 @@ fun PlayerScreen(
     // Back leaves fullscreen first, then the screen.
     BackHandler(enabled = fullscreen) { fullscreen = false }
 
-    LaunchedEffect(controller) { playerView.player = controller }
+    LaunchedEffect(controller, isRemote) {
+        // Detach the local player entirely while casting. A PlayerView that
+        // still points at the paused ExoPlayer would draw its last frame and
+        // offer controls that move nothing the viewer can hear.
+        playerView.useController = !isRemote
+        playerView.player = if (isRemote) null else controller
+    }
 
     // Media3 puts its own gear in the control bar and, depending on which
     // commands the session exposes, hides it again — so it is neither a
@@ -534,8 +776,9 @@ fun PlayerScreen(
     // Hold the video (or anywhere on the player surface) for 2×. The touch
     // listener returns false, so the normal controller taps and the progress
     // bar keep working unchanged.
-    DisposableEffect(controller, playerView) {
+    DisposableEffect(controller, playerView, isRemote) {
         val player = controller ?: return@DisposableEffect onDispose { }
+        if (isRemote) return@DisposableEffect onDispose { }
         val handler = Handler(Looper.getMainLooper())
         val startHold = Runnable {
             if (!player.isPlaying) return@Runnable
@@ -585,15 +828,24 @@ fun PlayerScreen(
 
     DisposableEffect(Unit) {
         onDispose {
+            playerView.keepScreenOn = false
             playerView.player = null
             playerView.onPause()
         }
     }
 
-    LaunchedEffect(videoId) {
+    LaunchedEffect(videoId, isRemote) {
         while (isActive) {
             delay(1_000)
-            viewModel.onTick(playerView.player?.currentPosition ?: 0L)
+            // Read the live session rather than closing over the snapshot at
+            // the start of the effect: polling would otherwise freeze on the
+            // "Connecting" state even after the renderer went Active.
+            val livePosition = if (isRemote) {
+                (locator.output.session.value as? RemoteSessionState.Active)?.positionMs ?: 0L
+            } else {
+                playerView.player?.currentPosition ?: 0L
+            }
+            viewModel.onTick(livePosition)
         }
     }
 
@@ -610,10 +862,25 @@ fun PlayerScreen(
                     .background(Color.Black)
             },
         ) {
-            androidx.compose.ui.viewinterop.AndroidView(
-                factory = { playerView },
-                modifier = Modifier.fillMaxSize(),
-            )
+            if (isRemote) {
+                RemoteSurface(
+                    session = session,
+                    artworkUrl = state.detail?.item?.thumbnail,
+                    casting = state.casting,
+                    castFailure = state.castFailure,
+                    onPlayPause = viewModel::remotePlayPause,
+                    onSeek = viewModel::remoteSeek,
+                    onVolume = viewModel::remoteVolume,
+                    onRetry = viewModel::retryCast,
+                    onPlayHere = viewModel::playHere,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                androidx.compose.ui.viewinterop.AndroidView(
+                    factory = { playerView },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
             // A subtle scrim keeps the always-visible top bar legible over a
             // bright frame; Media3's own gradient only appears with its controls.
             Box(
@@ -641,6 +908,24 @@ fun PlayerScreen(
                 modifier = Modifier.align(Alignment.TopEnd),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                IconButton(onClick = { showCastSheet = true }) {
+                    Icon(
+                        imageVector = if (isRemote) {
+                            Icons.Default.CastConnected
+                        } else {
+                            Icons.Default.Cast
+                        },
+                        contentDescription = if (isRemote) {
+                            "Casting — open device controls"
+                        } else {
+                            "Play on a device"
+                        },
+                        // The connected icon is the one piece of state the top
+                        // bar carries; the accent colour makes "casting" visible
+                        // at a glance even before the surface text is read.
+                        tint = if (isRemote) MaterialTheme.colorScheme.primary else Color.White,
+                    )
+                }
                 // Media3's own gear lives in a control row it hides in portrait,
                 // so the player exposes its own always-reachable settings entry.
                 IconButton(onClick = { showSettings = true }) {
@@ -658,14 +943,14 @@ fun PlayerScreen(
                     )
                 }
             }
-            if (controller == null || buffering) {
+            if (!isRemote && (controller == null || buffering)) {
                 CircularProgressIndicator(
                     modifier = Modifier.align(Alignment.Center),
                     color = Color.White,
                 )
             }
 
-            if (holding) {
+            if (!isRemote && holding) {
                 CaptionSpeedBadge(
                     text = "2×",
                     modifier = Modifier
@@ -674,19 +959,24 @@ fun PlayerScreen(
                 )
             }
 
-            CaptionOverlay(
-                session = viewModel.captions,
-                positionMs = positionMs,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 56.dp),
-            )
+            // Captions are timed against the local player; while casting they
+            // are off by design (the TV renders its own), so the overlay must
+            // not keep following a stale position.
+            if (!isRemote) {
+                CaptionOverlay(
+                    session = viewModel.captions,
+                    positionMs = positionMs,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 56.dp),
+                )
+            }
 
             // A failed load or a failed re-resolve belongs to the player, not
             // to the page: keep the title, channel, chips and comments below.
             val error = state.error
-            if (error != null && state.detail != null) {
+            if (!isRemote && error != null && state.detail != null) {
                 PlaybackErrorCard(
                     message = error,
                     onRetry = viewModel::load,
@@ -695,8 +985,10 @@ fun PlayerScreen(
             }
 
             // The finished video stays on screen while the viewer decides;
-            // playing "up next" swaps the media in this same player.
-            if (playbackEnded && nextVideo != null) {
+            // playing "up next" swaps the media in this same player. A cast
+            // session reports its own end through the renderer's transport
+            // state, which the remote surface already shows.
+            if (!isRemote && playbackEnded && nextVideo != null) {
                 PlaybackEndedOverlay(
                     video = nextVideo,
                     onPlay = { viewModel.playRelated(nextVideo) },
@@ -733,7 +1025,7 @@ fun PlayerScreen(
                 onQuality = viewModel::setQuality,
                 onCaptions = { showCaptionSheet = true },
                 onComments = { showComments = true },
-                onSeek = { controller?.seekTo(it) },
+                onSeek = { if (isRemote) viewModel.remoteSeek(it) else controller?.seekTo(it) },
                 onVideoClick = onVideoClick,
                 onChannelClick = onChannelClick,
             )
@@ -765,6 +1057,32 @@ fun PlayerScreen(
         )
     }
 
+    if (showCastSheet) {
+        RemoteTargetSheet(
+            targets = remoteTargets,
+            scanning = scanningRenderers,
+            discoveryFailure = discoveryFailure,
+            session = session,
+            castFailure = state.castFailure,
+            casting = state.casting,
+            onStartDiscovery = { locator.output.startDiscovery() },
+            onStopDiscovery = { locator.output.stopDiscovery() },
+            onRefresh = viewModel::refreshRenderers,
+            onCast = viewModel::castTo,
+            // Ending a cast leaves nothing for the sheet to control, so close it
+            // instead of dropping the viewer on an empty device list.
+            onPlayHere = {
+                viewModel.playHere()
+                showCastSheet = false
+            },
+            onRetryCast = viewModel::retryCast,
+            onPlayPause = viewModel::remotePlayPause,
+            onSeek = viewModel::remoteSeek,
+            onVolume = viewModel::remoteVolume,
+            onDismiss = { showCastSheet = false },
+        )
+    }
+
     if (showSettings && state.detail != null) {
         PlayerSettingsSheet(
             quality = state.videoQuality,
@@ -777,6 +1095,7 @@ fun PlayerScreen(
             backgroundPlayback = state.backgroundPlayback,
             sponsorBlock = state.sponsorBlockEnabled,
             showDislikes = state.showDislikes,
+            castActive = isRemote,
             onQuality = viewModel::setQuality,
             onSpeed = viewModel::setSpeed,
             onOpenCaptions = {

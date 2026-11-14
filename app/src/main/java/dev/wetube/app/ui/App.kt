@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -41,6 +42,7 @@ import dev.wetube.app.ui.player.PlayerScreen
 import dev.wetube.app.ui.search.SearchScreen
 import dev.wetube.app.ui.settings.SettingsScreen
 import dev.wetube.app.ui.shorts.ShortsScreen
+import kotlinx.coroutines.launch
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
@@ -68,10 +70,16 @@ fun WeTubeRoot(
     // leaving the app pauses audio instead of keeping the media session alive.
     val prefs by locator.settings.settings.collectAsStateWithLifecycle(initialValue = AppSettings())
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
     DisposableEffect(lifecycleOwner, prefs.backgroundPlayback) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP && !prefs.backgroundPlayback) {
-                locator.playback.pause()
+                // While casting the local player is paused and silent, so pausing
+                // only the phone would leave the TV playing. Going through the
+                // router keeps the right side in charge in both modes.
+                scope.launch {
+                    if (locator.output.isRemote) locator.output.pause() else locator.playback.pause()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
