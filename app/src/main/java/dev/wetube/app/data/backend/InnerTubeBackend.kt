@@ -412,13 +412,32 @@ class InnerTubeBackend(
     /**
      * A Shorts feed for the dedicated section.
      *
-     * Signed in, the account's own Shorts shelf sits inside its personalised
-     * home feed (`FEwhat_to_watch`), so that shelf is what the section follows;
-     * the anonymous surface has no such shelf. Either way we also search the
-     * `#shorts` hashtag, whose real clips arrive as `shortsLockupViewModel`
-     * cards, and finally fall back to filtering the regular video feed.
+     * The section follows the same surface the real Shorts tab uses: the reel
+     * watch sequence (`reel_watch_sequence`), a vertical, recommendation-driven
+     * feed that answers with the signed-in account's clips and keeps going
+     * through its own continuation token. That sequence is re-seeded around its
+     * opening clip and walked a few pages deep, which is what builds a full
+     * feed.
+     *
+     * If that surface is unavailable, the section falls back to the account's
+     * own Shorts shelf in its home feed, then to the `#shorts` hashtag search,
+     * and finally to filtering the regular video feed, so it still shows clips.
      */
     override suspend fun shorts(): List<VideoItem> {
+        val sequenced = runCatching { shortsSequence() }.getOrDefault(emptyList())
+        if (sequenced.isNotEmpty()) {
+            if (BuildConfig.DEBUG) {
+                android.util.Log.d(
+                    "WeTube",
+                    "shorts: source=sequence signed=${auth.headers().isNotEmpty()} n=${sequenced.size}",
+                )
+            }
+            return sequenced
+        }
+
+        // The account's own Shorts shelf sits inside its personalised home feed
+        // (`FEwhat_to_watch`); the anonymous surface has no such shelf. It is
+        // not always present, so it is only a fallback for the sequence above.
         val personal = if (auth.headers().isNotEmpty()) {
             runCatching {
                 call("browse", web, buildJsonObject { put("browseId", "FEwhat_to_watch") })
@@ -428,6 +447,8 @@ class InnerTubeBackend(
             emptyList()
         }
 
+        // The `#shorts` hashtag search, whose real clips arrive as
+        // `shortsLockupViewModel` cards. Account clips lead; the search fills.
         val search = runCatching {
             call("search", web, buildJsonObject { put("query", "#shorts") })
         }.getOrNull()
@@ -440,8 +461,8 @@ class InnerTubeBackend(
         if (BuildConfig.DEBUG) {
             android.util.Log.d(
                 "WeTube",
-                "shorts: signed=${auth.headers().isNotEmpty()} personal=${personal.size} " +
-                    "searched=${searched.size} merged=${merged.size}",
+                "shorts: source=fallback signed=${auth.headers().isNotEmpty()} " +
+                    "personal=${personal.size} searched=${searched.size} merged=${merged.size}",
             )
         }
         if (merged.isNotEmpty()) return merged.take(40)
@@ -454,6 +475,86 @@ class InnerTubeBackend(
             .distinctBy { it.id }
             .take(40)
     }
+
+    /**
+     * The reel watch sequence, walked through a few continuation pages.
+     *
+     * A fresh sequence ([SHORTS_SEQUENCE_FRESH]) picks the account's opening
+     * clip but hands back only that one clip; re-seeding the sequence around
+     * that clip's id makes each page come back full. Each response carries its
+     * own `continuationEndpoint` token for the next page, so pages are fetched
+     * until [SHORTS_SEQUENCE_TARGET] clips are collected, [SHORTS_SEQUENCE_MAX_PAGES]
+     * past the first are read, or the sequence ends.
+     */
+    private suspend fun shortsSequence(): List<VideoItem> {
+        val found = LinkedHashMap<String, VideoItem>()
+
+        val fresh = call(
+            "reel/reel_watch_sequence",
+            web,
+            buildJsonObject { put("sequenceParams", SHORTS_SEQUENCE_FRESH) },
+        )
+        val seeded = fresh.shortsSequenceItems().firstOrNull()
+        seeded?.let { found.putIfAbsent(it.id, it) }
+
+        // Re-seeding around a clip is what unlocks full pages; without a clip to
+        // seed with, the fresh response is all the sequence will give.
+        var response = if (seeded != null) {
+            call(
+                "reel/reel_watch_sequence",
+                web,
+                buildJsonObject { put("sequenceParams", sequenceParamsFor(seeded.id)) },
+            )
+        } else {
+            fresh
+        }
+
+        var pages = 0
+        while (pages < SHORTS_SEQUENCE_MAX_PAGES) {
+            val items = response.shortsSequenceItems()
+            items.forEach { found.putIfAbsent(it.id, it) }
+            if (found.size >= SHORTS_SEQUENCE_TARGET) break
+            val token = response.continuationToken() ?: break
+            response = call(
+                "reel/reel_watch_sequence",
+                web,
+                buildJsonObject { put("continuation", token) },
+            )
+            pages++
+        }
+        return found.values.toList()
+    }
+
+    /**
+     * Clips in a reel watch sequence response, in order.
+     *
+     * Each `entries[]` item hides its clip in
+     * `command.reelWatchEndpoint`; the id, poster frame and (when the response
+     * prefetched the player) the title, channel and view count all live there.
+     * Entries that did not prefetch carry no title, which the Shorts screen
+     * fills in once the clip resolves.
+     */
+    private fun JsonObject.shortsSequenceItems(): List<VideoItem> =
+        this["entries"].objects().mapNotNull { entry ->
+            val reel = entry["command"].obj()?.get("reelWatchEndpoint").obj()
+                ?: return@mapNotNull null
+            val id = reel.str("videoId")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val details = reel["unserializedPrefetchData"].obj()
+                ?.get("playerResponse").obj()
+                ?.get("videoDetails").obj()
+            VideoItem(
+                id = id,
+                title = details?.str("title").orEmpty(),
+                channelName = details?.str("author").orEmpty(),
+                channelId = details?.str("channelId").orEmpty(),
+                thumbnail = reel.get("thumbnail").thumbnailUrl()
+                    ?: "https://i.ytimg.com/vi/$id/frame0.jpg",
+                durationSeconds = 0,
+                views = parseCount(details?.str("viewCount").orEmpty()),
+                publishedText = "",
+                live = false,
+            )
+        }
 
     override suspend fun search(query: String, nextPage: String?): SearchResult {
         val extra = buildJsonObject {
@@ -1140,6 +1241,19 @@ class InnerTubeBackend(
     private companion object {
         const val endpoint = "https://www.youtube.com/youtubei/v1"
         const val apiKey = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+
+        /**
+         * The seed for a fresh reel watch sequence (protobuf, percent-encoded).
+         * The web Shorts surface answers this with the first clip plus the
+         * continuation token for the rest of the feed.
+         */
+        const val SHORTS_SEQUENCE_FRESH = "CA8%3D"
+
+        /** Sequence pages read per Shorts load, past the initial entry. */
+        const val SHORTS_SEQUENCE_MAX_PAGES = 3
+
+        /** Clips to collect before the Shorts feed is considered full. */
+        const val SHORTS_SEQUENCE_TARGET = 24
     }
 }
 
@@ -1222,3 +1336,19 @@ internal fun parseDurationLabel(text: String?): Int {
     }
 }
 
+/**
+ * Seed for a reel watch sequence, built around one clip id.
+ *
+ * The value is a small protobuf: field 1 carries the clip id (`0x0a`, byte
+ * length, the id bytes), which is all the `reel_watch_sequence` endpoint needs
+ * to answer with a full page of the feed around that clip. Top-level (not a
+ * member) so the encoding can be pinned by a unit test without a network stack.
+ */
+internal fun sequenceParamsFor(clipId: String): String {
+    val idBytes = clipId.toByteArray(Charsets.UTF_8)
+    val proto = ByteArray(idBytes.size + 2)
+    proto[0] = 0x0a
+    proto[1] = idBytes.size.toByte()
+    idBytes.copyInto(proto, 2)
+    return java.util.Base64.getEncoder().encodeToString(proto)
+}

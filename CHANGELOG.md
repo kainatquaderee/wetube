@@ -1,7 +1,22 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.0 (versionCode 20).
+Security. This release is 0.3.1 (versionCode 21).
+
+## 0.3.1 — 2026-11-14
+
+The Shorts tab now follows the account, like the real thing does.
+
+### Fixed
+- **The Shorts feed follows your account's algorithm, not a hashtag search.**
+  The feed was built from a Shorts shelf on the home page, which YouTube only
+  sends some of the time; when it was missing, the tab fell back to searching
+  `#shorts` and showed a near-random mix that ignored who was signed in. The tab
+  now loads the same reel sequence the real Shorts surface uses — a vertical,
+  recommendation-driven feed that answers for the signed-in account and grows
+  through its own continuation token — so the clips match your interests. The
+  home-page shelf and the `#shorts` search stay only as fallbacks if that
+  surface is unavailable.
 
 ## 0.3.0 — 2026-11-14
 

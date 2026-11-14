@@ -68,6 +68,11 @@ The default `InnerTubeBackend` speaks plain JSON over HTTP:
   the parser simply finds what it needs.
 - **Continuation tokens.** Search and feeds use the token the server returns,
   not a fabricated "load more".
+- **The Shorts feed is a sequence, not a shelf.** It loads the reel watch
+  sequence — the same recommendation surface the real Shorts tab uses — seeded
+  around its opening clip and walked a few continuation pages deep, so it answers
+  for the signed-in account. A home-page Shorts shelf and a `#shorts` search are
+  kept only as fallbacks for when that surface is unavailable.
 
 `InvidiousBackend` and `PipedBackend` are selectable for people who prefer to
 route metadata through an instance they choose. Playback always uses whatever

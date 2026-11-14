@@ -170,6 +170,11 @@ easy to demo.
 - [x] Read-only like/dislike counts no longer look tappable
 - [x] Search's placeholder names the corpus; empty/error bodies are centred
 
+## 0.3.1 — on-device fix (shipped in this tree)
+- [x] The Shorts feed loads the same reel sequence the real Shorts surface uses,
+      so it follows the signed-in account instead of falling back to a `#shorts`
+      search when the home page omits its Shorts shelf
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override
