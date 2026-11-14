@@ -289,6 +289,16 @@ bounded concurrency and merged newest-first, using the relative `publishedText`
 fails is skipped rather than blanking the feed, and the first results are shown
 before the slowest channel answers.
 
+**The feed refreshes on resume.** Home loads its first page in the view model's
+`init`, and would otherwise show that page forever after. A lifecycle observer on
+the screen's own back-stack entry refreshes it whenever the entry becomes
+`RESUMED` — returning from a video, another tab, or the background. A monotonic
+"last loaded" stamp with a one-minute floor keeps the observer from doubling the
+cold-start request or re-fetching on a quick tab switch, which matters most for
+Subscriptions, where one load costs a request per channel. Because that refresh
+runs behind the list already on screen, a slim progress bar is shown while it is
+in flight so a silent update is still visible.
+
 **One writer, one transaction.** A preference change goes through
 `SettingsStore.update { … }`, which runs the read-modify-write *inside* the
 DataStore `edit` transaction rather than snapshotting a value first and writing
@@ -341,6 +351,14 @@ file (one muxed track, and re-resolving it needs the network the download exists
 to avoid), a cast or a live stream (both owned by something else), and a video
 with no separate audio rendition to switch to. It also requires **Keep playing in
 the background** to be on, since a paused player has no picture to drop.
+
+**The screen stays on while a video plays.** Both the full player and the Shorts
+reel set the view-level `keepScreenOn` flag on their `PlayerView` whenever
+playback intends to play (`playWhenReady` while playing or buffering). The flag is
+per-view: the window holds the display only while that surface is in the
+foreground, and Android clears it when the surface leaves the window, so there is
+no wake lock to leak. Audio-only playback and casting deliberately do not hold the
+phone's screen — in those cases the phone is in a pocket or the TV is the display.
 
 ## 7. Permissions
 

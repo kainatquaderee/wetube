@@ -1,5 +1,6 @@
 package dev.wetube.app.ui.home
 
+import android.os.SystemClock
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,17 +16,22 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -52,16 +58,38 @@ data class HomeUiState(
     val feedNote: String? = null,
 )
 
+/**
+ * Whether a feed last loaded at [lastLoadedAtMs] should be refreshed at [nowMs].
+ *
+ * A feed that has never loaded (`lastLoadedAtMs <= 0`) is always stale. The
+ * times are read from the monotonic clock, so [maxAgeMs] is a duration rather
+ * than a wall-clock date and a clock change cannot strand the feed. Extracted so
+ * the resume decision is a pure, testable value rather than a condition buried
+ * in a lifecycle callback.
+ */
+internal fun feedIsStale(lastLoadedAtMs: Long, nowMs: Long, maxAgeMs: Long): Boolean =
+    lastLoadedAtMs <= 0L || nowMs - lastLoadedAtMs >= maxAgeMs
+
 class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     var state by mutableStateOf(HomeUiState())
         private set
+
+    /**
+     * When the feed was last (re)loaded, on the monotonic clock. [load] stamps
+     * this before it dispatches, so the resume that follows a cold start finds
+     * it fresh and never doubles the initial request.
+     */
+    private var lastLoadedAtMs = 0L
 
     init {
         load()
     }
 
     fun load() {
+        // Stamped on entry, not on success: a resume that lands while the first
+        // request is still in flight must not start a second one.
+        lastLoadedAtMs = SystemClock.elapsedRealtime()
         viewModelScope.launch {
             state = state.copy(loading = state.videos.isEmpty(), refreshing = true, error = null)
             runCatching {
@@ -148,6 +176,20 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
         load()
     }
 
+    /**
+     * Refreshes the feed once it has gone stale.
+     *
+     * Called when the screen resumes — returning from a video, another tab, or
+     * the background — so the front page shows current uploads without anyone
+     * reaching for Refresh. The [AUTO_REFRESH_AFTER_MS] floor keeps a quick tab
+     * switch from re-fetching a feed that was just loaded (the Subscriptions
+     * feed costs one request per channel).
+     */
+    fun refreshIfStale(nowMs: Long = SystemClock.elapsedRealtime()) {
+        if (!feedIsStale(lastLoadedAtMs, nowMs, AUTO_REFRESH_AFTER_MS)) return
+        load()
+    }
+
     companion object {
         /** The most subscriptions one feed load fetches uploads for. */
         private const val MAX_FEED_CHANNELS = 40
@@ -160,6 +202,13 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
 
         /** How many merged items the feed keeps. */
         private const val MAX_FEED_ITEMS = 200
+
+        /**
+         * How long a feed may sit before a resume silently refreshes it. A
+         * minute is short enough that coming back from a video shows new
+         * uploads, and long enough that flipping between tabs does not re-fetch.
+         */
+        private const val AUTO_REFRESH_AFTER_MS = 60_000L
 
         fun factory(locator: ServiceLocator) = viewModelFactory {
             initializer { HomeViewModel(locator) }
@@ -177,6 +226,19 @@ fun HomeScreen(
 ) {
     val viewModel: HomeViewModel = viewModel(factory = HomeViewModel.factory(locator))
     val state = viewModel.state
+
+    // The feed goes stale while the viewer is elsewhere: watching a video,
+    // another tab, or the app put away. Refresh on resume so the front page is
+    // current without reaching for the Refresh button. This observes the nav
+    // back-stack entry, so it fires exactly when this screen becomes visible.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshIfStale()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Column(modifier.fillMaxSize()) {
         TopAppBar(
@@ -219,6 +281,15 @@ fun HomeScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
+        }
+
+        // A resume-triggered refresh runs in the background of the list the
+        // viewer is already reading, so it would otherwise be invisible. A slim
+        // bar over the content is the feedback that the feed is updating. It is
+        // hidden during the initial load, where LoadingBox already owns the
+        // screen, and during the empty/error states, which carry their own copy.
+        if (state.refreshing && !state.loading && state.videos.isNotEmpty()) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
 
         when {

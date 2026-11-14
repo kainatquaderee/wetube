@@ -201,6 +201,14 @@ easy to demo.
 - [x] Unsubscribing confirms first; subscribing stays one tap
 - [x] "Show dislike count" names the switch; the search placeholder invites a link
 
+## 0.3.4 — freshness and screen-on (shipped in this tree)
+- [x] Home refreshes itself when it becomes visible again, with a one-minute
+      floor so a quick tab switch does not re-fetch (Subscriptions costs a
+      request per channel)
+- [x] The Shorts reel holds the screen awake while a clip plays, exactly as the
+      full player does, and releases it on leave
+- [x] A resume refresh shows a slim progress bar, so a silent update is visible
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

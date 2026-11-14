@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -89,6 +90,7 @@ import dev.wetube.app.ui.rememberIsBuffering
 import dev.wetube.app.ui.rememberIsPlaying
 import dev.wetube.app.ui.rememberPlayerDuration
 import dev.wetube.app.ui.rememberPlayerPosition
+import dev.wetube.app.ui.rememberPlayingIntent
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -314,6 +316,13 @@ fun ShortsScreen(
         }
     }
     LaunchedEffect(controller) { playerView.player = controller }
+
+    // A Short fills the screen and keeps playing on its own, so the phone must
+    // not fall asleep mid-reel. Hold the display awake whenever the clip has an
+    // intent to play, exactly as the full player does — the view-level flag is
+    // cleared automatically when the surface leaves the window, so nothing leaks.
+    val playingIntent = rememberPlayingIntent(controller)
+    SideEffect { playerView.keepScreenOn = playingIntent }
 
     when {
         state.loading && state.videos.isEmpty() -> LoadingBox(modifier.fillMaxSize())
@@ -566,7 +575,10 @@ fun ShortsScreen(
     // controller at dispose time: it may well be null while this screen is
     // first composed, and a captured value would then never pause anything.
     DisposableEffect(Unit) {
-        onDispose { locator.playback.controller.value?.pause() }
+        onDispose {
+            playerView.keepScreenOn = false
+            locator.playback.controller.value?.pause()
+        }
     }
 }
 

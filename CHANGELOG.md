@@ -1,7 +1,28 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.3 (versionCode 23).
+Security. This release is 0.3.4 (versionCode 24).
+
+## 0.3.4 — 2026-11-14
+
+Two things that made the app feel like it was not paying attention: the front
+page could sit on old uploads until you refreshed by hand, and the screen could
+switch itself off mid-clip.
+
+### Fixed
+- **The feed updates itself.** The front page only loaded once, when the app
+  first opened, so coming back from a video, another tab, or the background
+  showed stale uploads until you reached for Refresh. Home now refreshes when it
+  becomes visible again. A one-minute floor keeps a quick tab switch from
+  re-fetching a feed that was just loaded — important for Subscriptions, which
+  costs one request per channel.
+- **Watching a Short keeps the screen awake.** The full player already held the
+  display on, but the Shorts reel never did, so the phone could fall asleep
+  while a clip was playing on its own. The reel now holds the screen exactly as
+  the player does, and releases it the moment you leave.
+- **A refresh is now visible.** A resume refresh happens behind the list you are
+  already reading; a slim progress bar under the filters shows that it is
+  updating, instead of the change arriving silently.
 
 ## 0.3.3 — 2026-11-14
 
