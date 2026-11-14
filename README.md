@@ -172,6 +172,11 @@ design, and why the direct backend is the default.
 
 ## Status
 
+0.2.8 is a small **copy release** closing three last wording gaps: the
+SponsorBlock notice pluralises its segment count through the shared helper, a
+rejected backend address is described plainly instead of technically, and sharing
+a Short now uses the same canonical link the player shares.
+
 0.2.7 is a second **consistency pass**. Bulk actions that delete something —
 clearing the play queue, deleting all finished downloads, removing the active
 account — now confirm first, matching the watch-history guard added in 0.2.6; the

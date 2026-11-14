@@ -391,7 +391,9 @@ fun ShortsScreen(
                         onShare = {
                             val send = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, "https://youtu.be/${subject.id}")
+                                // The canonical watch URL, the same shape the player
+                                // shares: one link that resolves everywhere.
+                                putExtra(Intent.EXTRA_TEXT, "https://www.youtube.com/watch?v=${subject.id}")
                             }
                             context.startActivity(Intent.createChooser(send, "Share video"))
                         },

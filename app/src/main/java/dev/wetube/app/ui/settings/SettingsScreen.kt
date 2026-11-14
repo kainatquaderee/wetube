@@ -499,8 +499,8 @@ fun SettingsScreen(
                     }
                     viewModel.message = when (invalid.size) {
                         0 -> "Backend settings saved."
-                        1 -> "That ${invalid.first()} host isn't a valid https address; using the default."
-                        else -> "Those hosts aren't valid https addresses; using the defaults."
+                        1 -> "That ${invalid.first()} address doesn't look valid; using the default instead."
+                        else -> "Those addresses don't look valid; using the defaults instead."
                     }
                     val region = regionDraft.trim().uppercase()
                     viewModel.update {

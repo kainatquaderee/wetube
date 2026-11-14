@@ -120,6 +120,7 @@ import dev.wetube.app.ui.captions.CaptionOverlay
 import dev.wetube.app.ui.captions.CaptionSheet
 import dev.wetube.app.ui.comments.CommentsSheet
 import dev.wetube.app.ui.compactCount
+import dev.wetube.app.ui.countOf
 import dev.wetube.app.ui.formatSpeed
 import dev.wetube.app.ui.friendlyError
 import dev.wetube.app.ui.library.AddToPlaylistSheet
@@ -1817,7 +1818,7 @@ private fun PlayerInfo(
         if (segmentCount > 0) {
             Spacer(Modifier.height(6.dp))
             Text(
-                "SponsorBlock: $segmentCount segment(s) will be skipped",
+                "SponsorBlock: ${countOf(segmentCount, "segment")} will be skipped",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
             )

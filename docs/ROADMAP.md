@@ -150,6 +150,11 @@ easy to demo.
 - [x] Name the direct backend "Direct (built-in)"; give an empty Shorts feed and a
       failed channel load wording a user can act on
 
+## 0.2.8 — copy pass (shipped in this tree)
+- [x] Pluralise the SponsorBlock segment notice through the shared count helper
+- [x] Plainer wording when a backend address is rejected on save
+- [x] Share a Short with the same canonical watch URL the player shares
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

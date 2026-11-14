@@ -1,7 +1,23 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.7 (versionCode 17).
+Security. This release is 0.2.8 (versionCode 18).
+
+## 0.2.8 — 2026-11-14
+
+A short copy release: three last rough edges in on-screen wording, all the same
+kind of fix as 0.2.6 and 0.2.7.
+
+### Changed
+- **The SponsorBlock notice is a sentence.** The player said "3 segment(s) will be
+  skipped"; it now says "3 segments" through the same shared helper the sync
+  prompt uses, so a count never shows a bracketed placeholder.
+- **A rejected backend address says so plainly.** Saving a host that is not a
+  usable `https://` address now answers "That Invidious address doesn't look
+  valid; using the default instead." rather than the more technical wording.
+- **Sharing a Short uses the same link as the player.** A Short now shares the
+  canonical `youtube.com/watch?v=` URL the player has always used, instead of the
+  short `youtu.be/` form, so both share paths produce one consistent link.
 
 ## 0.2.7 — 2026-11-14
 
