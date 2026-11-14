@@ -97,9 +97,9 @@ easy to demo.
       client profile or instance rather than showing an error
 - [ ] Offline downloads (video + audio merge, or muxed), resumable, with a
       download manager UI and storage cap
-- [ ] Playlists: create, reorder, play all
-- [ ] Watch Later
-- [ ] Queue: add to queue, drag to reorder, autoplay from related
+- [x] Playlists: create, reorder, play all (local, device-only; 0.2.1)
+- [x] Watch Later (device-only; 0.2.1)
+- [x] Queue: add to queue, drag to reorder, autoplay from the queue (0.2.1)
 - [x] YouTube playlist sync (pull-first mirror shipped in 0.2.0)
 - [x] YouTube subscription sync (pull-first, both-way, shipped in 0.2.0)
 - [ ] Import subscriptions from Google Takeout CSV / OPML

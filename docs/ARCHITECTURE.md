@@ -20,7 +20,7 @@ app/src/main/java/dev/wetube/app/
 │   ├── backend/   TubeBackend + InnerTube (default), Invidious, Piped
 │   ├── auth/      optional Google session, multiple accounts
 │   ├── extras/    SponsorBlock, Return YouTube Dislike
-│   ├── local/     history, favourites, resume, subscriptions, backup (DataStore)
+│   ├── local/     history, favourites, resume, subscriptions, watch later, queue, playlists, backup (DataStore)
 │   ├── model/     UI-facing models (no transport DTOs leak out)
 │   └── prefs/     settings
 ├── player/        MediaSessionService, stream resolver, captions, controller
@@ -188,11 +188,18 @@ therefore costs no extra request.
 
 ## 5. State and storage
 
-Preferences live in DataStore. History, favourites, resume points and local
-subscriptions are a JSON-encoded library on disk. Signing in is optional: an
-in-app browser session is kept in private storage and used only for the web
-surfaces, so feeds and subscriptions can be personal while playback stays
-anonymous.
+Preferences live in DataStore. History, favourites, resume points, local
+subscriptions, a Watch Later list, a play queue, local playlists and a bounded
+cache of video metadata are a JSON-encoded library on disk. Watch Later, the
+queue, the playlists and the metadata cache are device-local: they are never part
+of account sync, and local playlists carry a locally generated `local:` id so
+they can never be mistaken for a remote playlist. Because a local playlist stores
+only video ids — so a large one never pins a copy of every item it names — the
+cache holds the display fields of up to 1000 of them, newest first, and lets the
+rows render without a network call; it travels in a backup but never syncs.
+Signing in is optional: an in-app browser session is kept in private
+storage and used only for the web surfaces, so feeds and subscriptions can be
+personal while playback stays anonymous.
 
 **One writer, one transaction.** A preference change goes through
 `SettingsStore.update { … }`, which runs the read-modify-write *inside* the
@@ -210,13 +217,15 @@ stored in Google Drive, on a USB stick, or on another phone.
 
 The file is a versioned schema — **v2** adds the backend, the Invidious/Piped
 hosts, the proxy-streams flag and the SponsorBlock categories, alongside the
-playback preferences that v1 already carried. A restore validates the format and
-accepts only versions `1..2` (a file from a newer build is rejected rather than
-guessed at), refuses a file above 5 MB before parsing it, and caps the restored
-sponsor-category set. Because a backup can be written on one device and opened on
-another — including through Drive — its free-text host fields are re-validated
-when they are restored, and anything that fails the check falls back to the
-built-in default.
+playback preferences that v1 already carried; **v3** adds the two account-sync
+toggles, and **v4** adds the device-local Watch Later, play queue and playlists.
+A restore validates the format and accepts only versions `1..4` (a file from a
+newer build is rejected rather than guessed at), refuses a file above 5 MB
+before parsing it, and caps the restored sponsor-category set and every restored
+list. Because a backup can be written on one device and opened on another —
+including through Drive — its free-text host fields are re-validated when they
+are restored, and anything that fails the check falls back to the built-in
+default.
 
 ## 6. Background playback
 
@@ -257,7 +266,7 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | Gestures | Hold for 2×, tap to pause in Shorts, vertical pager |
 | Comments | Native top/newest feed with paging, likes, reply counts and avatars; browser fallback |
 | Shorts | Dedicated swipe feed, own progress bar, captions, like/dislike/comment counts, tappable channel, pause indicator |
-| Library | History, favourites, resume points, local subscriptions |
+| Library | History, favourites, resume points, local subscriptions, Watch Later, play queue, local playlists, video metadata cache |
 | Accounts | Optional, multiple, removable; cookies excluded from backups |
 | Data portability | Versioned JSON backup through the system file picker |
 | Extras | SponsorBlock auto-skip, Return YouTube Dislike |
@@ -311,9 +320,12 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 - Downloads and live chat are not implemented yet; see `ROADMAP.md`. Account
   sync (§12) pulls subscriptions and a favourites mirror down from the account
   and pushes local changes only after the user consents on the first sync; watch
-  history is never synced. Casting covers DLNA/UPnP renderers on the local
-  network only — Google Cast needs a registered receiver app id, and audio
-  routing to Bluetooth/USB is left to the system output picker.
+  history is never synced, and neither are Watch Later, the play queue, local
+  playlists or the video-metadata cache — they are device-local and travel only
+  in a backup. Casting covers
+  DLNA/UPnP renderers on the local network only — Google Cast needs a registered
+  receiver app id, and audio routing to Bluetooth/USB is left to the system
+  output picker.
 
 ## 11. Casting / external devices
 
@@ -466,7 +478,7 @@ builds only, `SyncCapabilityCheck` answers "are they live for this account?" wit
 non-mutating read probes and an explicitly-tapped write probe that creates and
 immediately deletes one private playlist of its own. Sync is off by default
 (`syncEnabled=false`) and unavailable on the Invidious/Piped backends, which have
-no account API; the two toggles travel in the v3 backup.
+no account API; the two toggles travel in the versioned backup.
 
 ## Legal note
 

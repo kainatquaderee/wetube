@@ -155,7 +155,7 @@ app/src/main/java/dev/wetube/app/
 │   ├── backend/   TubeBackend + InnerTube (default), Invidious, Piped
 │   ├── auth/      optional Google session, multiple accounts
 │   ├── extras/    SponsorBlock, Return YouTube Dislike
-│   ├── local/     history, favourites, resume, subscriptions, backup (DataStore)
+│   ├── local/     history, favourites, resume, subscriptions, collections, backup (DataStore)
 │   ├── model/     UI-facing models (no API DTOs leak out)
 │   └── prefs/     settings
 ├── player/        MediaSessionService, stream resolver, controller bridge
@@ -167,6 +167,13 @@ one class. `docs/ARCHITECTURE.md` explains the transport, playback and subtitle
 design, and why the direct backend is the default.
 
 ## Status
+
+0.2.1 adds a **device-local library**: save videos to **Watch Later**, line them
+up in a **play queue** that auto-advances, and build **local playlists** you can
+rename, reorder and play in full. All three live only on the phone — a local
+playlist gets a `local:` id so it can never be mistaken for a remote one, and
+none of them are ever synced. A bounded metadata cache lets a playlist render
+from ids alone without a network call.
 
 0.2.0 adds **account sync**: your subscriptions and a favourites mirror reconcile
 with a signed-in YouTube account, pull-first and consent-gated. The first sync

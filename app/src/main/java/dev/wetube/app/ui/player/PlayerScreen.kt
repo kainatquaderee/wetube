@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CastConnected
@@ -37,6 +39,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.ThumbDown
 import androidx.compose.material.icons.filled.ThumbUp
+import androidx.compose.material.icons.filled.WatchLater
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -59,6 +62,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.activity.compose.BackHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -92,6 +96,7 @@ import android.view.MotionEvent
 import android.view.ViewGroup
 import coil.compose.AsyncImage
 import dev.wetube.app.data.extras.SponsorSegment
+import dev.wetube.app.data.local.LocalPlaylist
 import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
@@ -113,13 +118,20 @@ import dev.wetube.app.ui.comments.CommentsSheet
 import dev.wetube.app.ui.compactCount
 import dev.wetube.app.ui.formatSpeed
 import dev.wetube.app.ui.friendlyError
+import dev.wetube.app.ui.library.AddToPlaylistSheet
+import dev.wetube.app.ui.library.nextQueued
 import dev.wetube.app.ui.parseChapters
 import dev.wetube.app.ui.rememberIsBuffering
 import dev.wetube.app.ui.rememberPlaybackEnded
 import dev.wetube.app.ui.rememberPlayerPosition
 import dev.wetube.app.ui.rememberPlayingIntent
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -193,6 +205,29 @@ class PlayerViewModel(
 
     /** Shared with the CC sheet and the overlay. */
     val captions = CaptionSession(locator, viewModelScope)
+
+    /**
+     * Whether the video in the player is in Watch Later.
+     *
+     * Derived from the store rather than a private flag so the More-menu label
+     * and the Library tab can never disagree; both read the same persisted
+     * list. [snapshotFlow] carries the current id, which changes without the
+     * library flow emitting when the end screen swaps the media in place.
+     */
+    val watchLater: StateFlow<Boolean> = combine(
+        locator.library.watchLater,
+        snapshotFlow { currentVideoId },
+    ) { list, id -> list.any { it.id == id } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** How many items are waiting to play; shown on the queue button. */
+    val queueCount: StateFlow<Int> = locator.library.queue
+        .map { it.size }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    /** Device-local playlists, kept live so the add-to-playlist sheet is current. */
+    val playlists: StateFlow<List<LocalPlaylist>> = locator.library.playlists
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private var lastSaved = 0L
 
@@ -306,6 +341,63 @@ class PlayerViewModel(
             val added = locator.library.toggleFavourite(detail.item)
             state = state.copy(favourite = added)
         }
+    }
+
+    /** Adds or removes the current video from the device-local Watch Later list. */
+    fun toggleWatchLater() {
+        val item = state.detail?.item ?: return
+        viewModelScope.launch { locator.library.toggleWatchLater(item) }
+    }
+
+    /** Appends the current video to the play queue; a duplicate is ignored. */
+    fun addToQueue() {
+        val item = state.detail?.item ?: return
+        viewModelScope.launch { locator.library.addToQueue(item) }
+    }
+
+    /**
+     * Adds the current video to the playlist [playlistId]. The store caches the
+     * item's metadata in the same transaction, so the playlist renders it
+     * without a network call; a duplicate is ignored there.
+     */
+    fun addToPlaylist(playlistId: String) {
+        val item = state.detail?.item ?: return
+        viewModelScope.launch { locator.library.addToPlaylist(playlistId, item) }
+    }
+
+    /**
+     * Creates a playlist named [name] and adds the current video in one step,
+     * for the sheet's "New playlist" row. A blank name is ignored before it
+     * reaches the store, which throws on one.
+     */
+    fun createPlaylistAndAdd(name: String) {
+        val item = state.detail?.item ?: return
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            val playlist = locator.library.createPlaylist(trimmed)
+            locator.library.addToPlaylist(playlist.id, item)
+        }
+    }
+
+    /** Removes the current video from the queue, for symmetry with [addToQueue]. */
+    fun removeFromQueue() {
+        val item = state.detail?.item ?: return
+        viewModelScope.launch { locator.library.removeFromQueue(item.id) }
+    }
+
+    /**
+     * Plays [video] from the queue and drops it in one step.
+     *
+     * Used when a video ends: [playRelated] swaps the media through the normal
+     * load path so likes, related videos and history all refresh, and the head
+     * is removed so the same item cannot be auto-played twice. Removal is fired
+     * after the swap is requested, so the queue visibly shrinks as the next item
+     * starts rather than a moment before.
+     */
+    fun playFromQueue(video: VideoItem) {
+        playRelated(video)
+        viewModelScope.launch { locator.library.removeFromQueue(video.id) }
     }
 
     fun setSpeed(speed: Float) {
@@ -660,6 +752,7 @@ fun PlayerScreen(
     onVideoClick: (String) -> Unit,
     onChannelClick: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenQueue: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: PlayerViewModel = viewModel(
@@ -673,6 +766,12 @@ fun PlayerScreen(
     val subscriptions by locator.library.subscriptions.collectAsStateWithLifecycle(
         initialValue = emptyList(),
     )
+    // The queue drives both the badge on the top-bar button and the
+    // end-of-playback auto-advance; one flow, so the two cannot disagree.
+    val queue by locator.library.queue.collectAsStateWithLifecycle(initialValue = emptyList())
+    val inWatchLater by viewModel.watchLater.collectAsStateWithLifecycle()
+    val queueCount by viewModel.queueCount.collectAsStateWithLifecycle()
+    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     // The single source of "where playback is". Reading it is what constructs
     // the lazy casting graph, so a viewer who never opens the cast sheet pays
     // nothing for it beyond this StateFlow.
@@ -690,6 +789,7 @@ fun PlayerScreen(
     var showComments by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showCastSheet by remember { mutableStateOf(false) }
+    var showPlaylistSheet by remember { mutableStateOf(false) }
     var holding by remember { mutableStateOf(false) }
     var speedBeforeHold by remember { mutableFloatStateOf(1f) }
 
@@ -707,6 +807,9 @@ fun PlayerScreen(
     }
     val playbackEnded = rememberPlaybackEnded(localController)
     val nextVideo = state.detail?.related?.firstOrNull()
+    // The head of the queue, if any. Non-null means a finished video should
+    // auto-advance instead of showing the Up-next overlay.
+    val queuedNext = nextQueued(queue)
 
     val playerView = remember {
         PlayerView(context).apply {
@@ -849,6 +952,25 @@ fun PlayerScreen(
         }
     }
 
+    // Auto-advance from the queue: a finished video plays the head of the queue
+    // instead of showing Up next. `rememberPlaybackEnded` can flip true more
+    // than once for the same finished item (a seek to the end, a player
+    // rebuild), so a one-shot flag guarantees at most one queued item per end.
+    // It resets only when playback leaves the ended state, which is exactly
+    // what preparing the next item does; keying the reset on the queue instead
+    // would let the shrinking queue trigger a second advance in the same end.
+    var advancedFromQueue by remember { mutableStateOf(false) }
+    LaunchedEffect(playbackEnded, queuedNext?.id) {
+        if (!playbackEnded) {
+            advancedFromQueue = false
+            return@LaunchedEffect
+        }
+        if (advancedFromQueue) return@LaunchedEffect
+        val head = queuedNext ?: return@LaunchedEffect
+        advancedFromQueue = true
+        viewModel.playFromQueue(head)
+    }
+
     Column(modifier.fillMaxSize()) {
         Box(
             modifier = if (fullscreen) {
@@ -908,6 +1030,21 @@ fun PlayerScreen(
                 modifier = Modifier.align(Alignment.TopEnd),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Reachable in windowed and fullscreen playback alike, exactly
+                // like the other top-bar controls. The waiting count lives in
+                // the description rather than a separate badge, so the row does
+                // not need a new layout.
+                IconButton(onClick = onOpenQueue) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.PlaylistPlay,
+                        contentDescription = if (queueCount > 0) {
+                            "Queue, $queueCount waiting"
+                        } else {
+                            "Queue"
+                        },
+                        tint = Color.White,
+                    )
+                }
                 IconButton(onClick = { showCastSheet = true }) {
                     Icon(
                         imageVector = if (isRemote) {
@@ -985,10 +1122,12 @@ fun PlayerScreen(
             }
 
             // The finished video stays on screen while the viewer decides;
-            // playing "up next" swaps the media in this same player. A cast
-            // session reports its own end through the renderer's transport
+            // playing "up next" swaps the media in this same player. A queue
+            // takes precedence: the auto-advance effect above has already
+            // started its head, so Up next belongs only to an empty queue. A
+            // cast session reports its own end through the renderer's transport
             // state, which the remote surface already shows.
-            if (!isRemote && playbackEnded && nextVideo != null) {
+            if (!isRemote && playbackEnded && queuedNext == null && nextVideo != null) {
                 PlaybackEndedOverlay(
                     video = nextVideo,
                     onPlay = { viewModel.playRelated(nextVideo) },
@@ -1009,6 +1148,7 @@ fun PlayerScreen(
                     subscriptions.any { it.id == detail.item.channelId },
                 segmentCount = state.segments.size,
                 favourite = state.favourite,
+                watchLater = inWatchLater,
                 descriptionExpanded = state.descriptionExpanded,
                 speed = state.speed,
                 captionsEnabled = viewModel.captions.enabled,
@@ -1019,6 +1159,9 @@ fun PlayerScreen(
                 effectiveHeight = state.effectiveHeight,
                 onToggleDescription = viewModel::toggleDescription,
                 onToggleFavourite = viewModel::toggleFavourite,
+                onToggleWatchLater = viewModel::toggleWatchLater,
+                onAddToQueue = viewModel::addToQueue,
+                onOpenPlaylistSheet = { showPlaylistSheet = true },
                 onToggleSubscription = viewModel::toggleSubscription,
                 onShare = { shareVideo(context, detail.item.id) },
                 onSpeed = viewModel::setSpeed,
@@ -1083,6 +1226,18 @@ fun PlayerScreen(
         )
     }
 
+    if (showPlaylistSheet && state.detail != null) {
+        AddToPlaylistSheet(
+            playlists = playlists,
+            // The end screen can swap the media without a route change, so the
+            // check marks follow the player's current id, not the nav argument.
+            currentVideoId = viewModel.currentVideoId,
+            onAdd = viewModel::addToPlaylist,
+            onCreateAndAdd = viewModel::createPlaylistAndAdd,
+            onDismiss = { showPlaylistSheet = false },
+        )
+    }
+
     if (showSettings && state.detail != null) {
         PlayerSettingsSheet(
             quality = state.videoQuality,
@@ -1129,6 +1284,7 @@ private fun PlayerInfo(
     subscribed: Boolean,
     segmentCount: Int,
     favourite: Boolean,
+    watchLater: Boolean,
     descriptionExpanded: Boolean,
     speed: Float,
     captionsEnabled: Boolean,
@@ -1139,6 +1295,9 @@ private fun PlayerInfo(
     effectiveHeight: Int,
     onToggleDescription: () -> Unit,
     onToggleFavourite: () -> Unit,
+    onToggleWatchLater: () -> Unit,
+    onAddToQueue: () -> Unit,
+    onOpenPlaylistSheet: () -> Unit,
     onToggleSubscription: () -> Unit,
     onShare: () -> Unit,
     onSpeed: (Float) -> Unit,
@@ -1240,6 +1399,34 @@ private fun PlayerInfo(
                     leadingIcon = { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) },
                 )
                 DropdownMenu(expanded = moreMenu, onDismissRequest = { moreMenu = false }) {
+                    // Queue and Watch Later sit above the playback options:
+                    // they change what will play next, so they are the primary
+                    // items, and speed/quality/captions are refinements of the
+                    // current video.
+                    DropdownMenuItem(
+                        text = { Text(if (watchLater) "In Watch Later  ✓" else "Save to Watch Later") },
+                        leadingIcon = { Icon(Icons.Default.WatchLater, null) },
+                        onClick = {
+                            moreMenu = false
+                            onToggleWatchLater()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add to queue") },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null) },
+                        onClick = {
+                            moreMenu = false
+                            onAddToQueue()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add to playlist") },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null) },
+                        onClick = {
+                            moreMenu = false
+                            onOpenPlaylistSheet()
+                        },
+                    )
                     DropdownMenuItem(
                         text = { Text("Playback speed: ${formatSpeed(speed)}") },
                         leadingIcon = { Icon(Icons.Default.Speed, null) },

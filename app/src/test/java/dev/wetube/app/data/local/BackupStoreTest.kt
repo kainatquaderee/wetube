@@ -160,6 +160,55 @@ class BackupStoreTest {
     }
 
     @Test
+    fun `a version 3 backup without the local collections parses them as empty`() {
+        // v3 predates Watch Later, the queue and local playlists, so it simply
+        // lacks them; they must decode to empty rather than fail the file.
+        val text = """
+            {
+              "format": "${BackupFile.FORMAT}",
+              "version": 3,
+              "library": {
+                "history": [{"id": "dQw4w9WgXcQ", "title": "A song", "channelName": "Rick"}]
+              }
+            }
+        """.trimIndent()
+
+        val decoded = json.parseBackup(text)
+
+        assertEquals(1, decoded.library.history.size)
+        assertTrue(decoded.library.watchLater.isEmpty())
+        assertTrue(decoded.library.queue.isEmpty())
+        assertTrue(decoded.library.playlists.isEmpty())
+    }
+
+    @Test
+    fun `a version 4 backup round-trips the local collections`() {
+        val video = VideoItem(id = "dQw4w9WgXcQ", title = "A song", channelName = "Rick")
+        val playlist = LocalPlaylist(
+            id = "local:abc",
+            name = "Mix",
+            videoIds = listOf(video.id),
+            createdAt = 5L,
+            updatedAt = 6L,
+        )
+        val file = BackupFile(
+            library = LibrarySnapshot(
+                watchLater = listOf(video),
+                queue = listOf(video.copy(id = "other")),
+                playlists = listOf(playlist),
+            ),
+        )
+
+        val decoded = json.parseBackup(json.encodeToString(BackupFile.serializer(), file))
+
+        assertEquals(4, decoded.version)
+        assertEquals(BackupFile.VERSION, decoded.version)
+        assertEquals(listOf(video), decoded.library.watchLater)
+        assertEquals(listOf("other"), decoded.library.queue.map { it.id })
+        assertEquals(listOf(playlist), decoded.library.playlists)
+    }
+
+    @Test
     fun `unknown fields from a newer minor schema are ignored`() {
         val text = """
             {

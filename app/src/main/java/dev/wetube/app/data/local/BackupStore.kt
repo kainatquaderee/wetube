@@ -54,8 +54,14 @@ data class BackupFile(
          * so they decode to their declared defaults and restore stays
          * deterministic: the outcome depends only on the file, never on what the
          * live store happened to hold.
+         *
+         * v4 adds the device-local collections ([LibrarySnapshot.watchLater],
+         * [LibrarySnapshot.queue] and [LibrarySnapshot.playlists]). A v1-v3 file
+         * lacks all three, so they decode to empty and restoring an older backup
+         * leaves Watch Later, the queue and local playlists empty rather than
+         * merging them with what the device already holds.
          */
-        const val VERSION = 3
+        const val VERSION = 4
     }
 }
 

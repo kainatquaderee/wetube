@@ -15,21 +15,25 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,6 +43,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
 import dev.wetube.app.data.auth.Account
+import dev.wetube.app.data.local.LocalPlaylist
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.sync.SyncPhase
@@ -64,6 +69,14 @@ class LibraryViewModel(private val locator: ServiceLocator) : ViewModel() {
     val subscriptions: StateFlow<List<VideoItem>> = locator.library.subscriptions
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** Device-local Watch Later, newest first; mirrors [favourites]. */
+    val watchLater: StateFlow<List<VideoItem>> = locator.library.watchLater
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Device-local playlists, in creation order; mirrors [watchLater]. */
+    val playlists: StateFlow<List<LocalPlaylist>> = locator.library.playlists
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     /** The engine's live state; already a [StateFlow], so no collection is needed. */
     val syncStatus: StateFlow<SyncStatus> = locator.syncEngine.status
 
@@ -77,6 +90,39 @@ class LibraryViewModel(private val locator: ServiceLocator) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun clearHistory() = viewModelScope.launch { locator.library.clearHistory() }
+
+    /**
+     * Creates a playlist from a user-typed [name] and reports its id.
+     *
+     * The store throws on a blank name, so the guard here is what keeps a
+     * whitespace-only tap from crashing: the name is trimmed and a blank is
+     * simply ignored. [onCreated] only runs for a playlist the store really
+     * created, so the screen never navigates to an id that does not exist.
+     */
+    fun createPlaylist(name: String, onCreated: (String) -> Unit) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            val playlist = locator.library.createPlaylist(trimmed)
+            onCreated(playlist.id)
+        }
+    }
+
+    /**
+     * Removes [video] from Watch Later from a list row.
+     *
+     * The store only exposes a *toggle*, so an unconditional call would put the
+     * item back if the row were tapped twice before the list recomposed. Reading
+     * the persisted list first makes the row's remove idempotent, the same way
+     * [unsubscribe] guards its toggle.
+     */
+    fun removeFromWatchLater(video: VideoItem) {
+        viewModelScope.launch {
+            if (locator.library.watchLater.first().any { it.id == video.id }) {
+                locator.library.toggleWatchLater(video)
+            }
+        }
+    }
 
     fun unsubscribe(channel: VideoItem) {
         viewModelScope.launch {
@@ -114,28 +160,65 @@ class LibraryViewModel(private val locator: ServiceLocator) : ViewModel() {
 private const val TAB_HISTORY = 0
 private const val TAB_SAVED = 1
 private const val TAB_SUBS = 2
+private const val TAB_WATCH_LATER = 3
+private const val TAB_PLAYLISTS = 4
+
+/**
+ * Tab order as drawn. The `TAB_*` values are stable identifiers, not positions:
+ * Watch Later was appended last (`= 3`) but is presented third, so the row maps
+ * them through this list rather than assuming id == index. Playlists likewise
+ * sits between Watch Later and Subscriptions even though it was added after
+ * both.
+ */
+private val libraryTabOrder =
+    listOf(TAB_HISTORY, TAB_SAVED, TAB_WATCH_LATER, TAB_PLAYLISTS, TAB_SUBS)
+
+/** The label shown for a tab id. */
+private fun libraryTabLabel(tab: Int): String = when (tab) {
+    TAB_HISTORY -> "History"
+    TAB_SAVED -> "Saved"
+    TAB_WATCH_LATER -> "Watch Later"
+    TAB_PLAYLISTS -> "Playlists"
+    else -> "Subscriptions"
+}
+
+/**
+ * The subtitle for a playlist row, e.g. `0 videos`, `1 video`, `12 videos`.
+ *
+ * Pure and separate so the pluralisation is unit-tested rather than buried in
+ * two Compose call sites (the Library tab and the add-to-playlist sheet).
+ */
+internal fun playlistItemCount(playlist: LocalPlaylist): String =
+    if (playlist.videoIds.size == 1) "1 video" else "${playlist.videoIds.size} videos"
 
 @Composable
 fun LibraryScreen(
     locator: ServiceLocator,
     onVideoClick: (String) -> Unit,
     onChannelClick: (String) -> Unit = {},
+    onPlaylistClick: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val viewModel: LibraryViewModel = viewModel(factory = LibraryViewModel.factory(locator))
     val history by viewModel.history.collectAsStateWithLifecycle()
     val favourites by viewModel.favourites.collectAsStateWithLifecycle()
     val subscriptions by viewModel.subscriptions.collectAsStateWithLifecycle()
+    val watchLater by viewModel.watchLater.collectAsStateWithLifecycle()
+    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val syncEnabled by viewModel.syncEnabled.collectAsStateWithLifecycle()
     val account by viewModel.account.collectAsStateWithLifecycle()
     var tab by remember { mutableIntStateOf(TAB_HISTORY) }
 
     Column(modifier.fillMaxSize()) {
-        TabRow(selectedTabIndex = tab) {
-            Tab(selected = tab == TAB_HISTORY, onClick = { tab = TAB_HISTORY }, text = { Text("History") })
-            Tab(selected = tab == TAB_SAVED, onClick = { tab = TAB_SAVED }, text = { Text("Saved") })
-            Tab(selected = tab == TAB_SUBS, onClick = { tab = TAB_SUBS }, text = { Text("Subscriptions") })
+        ScrollableTabRow(selectedTabIndex = libraryTabOrder.indexOf(tab)) {
+            libraryTabOrder.forEach { id ->
+                Tab(
+                    selected = tab == id,
+                    onClick = { tab = id },
+                    text = { Text(libraryTabLabel(id)) },
+                )
+            }
         }
 
         // Sync only exists for a signed-in account; a signed-out user sees the
@@ -178,20 +261,47 @@ fun LibraryScreen(
             return@Column
         }
 
-        val videos = if (tab == TAB_HISTORY) history else favourites
+        if (tab == TAB_PLAYLISTS) {
+            PlaylistsTab(
+                playlists = playlists,
+                onPlaylistClick = onPlaylistClick,
+                // Creating and opening the new playlist in one step: the store
+                // returns its id, so there is no need to look it up by name.
+                onCreate = { name, onCreated -> viewModel.createPlaylist(name, onCreated) },
+            )
+            return@Column
+        }
+
+        val videos = when (tab) {
+            TAB_HISTORY -> history
+            TAB_WATCH_LATER -> watchLater
+            else -> favourites
+        }
         if (videos.isEmpty()) {
             MessageBox(
-                title = if (tab == TAB_HISTORY) "No watch history" else "Nothing saved yet",
-                body = if (tab == TAB_HISTORY) {
-                    "Videos you watch show up here, stored only on this device."
-                } else {
-                    "Tap Save on a video to keep it here."
+                title = when (tab) {
+                    TAB_HISTORY -> "No watch history"
+                    TAB_WATCH_LATER -> "Nothing in Watch Later"
+                    else -> "Nothing saved yet"
+                },
+                body = when (tab) {
+                    TAB_HISTORY -> "Videos you watch show up here, stored only on this device."
+                    TAB_WATCH_LATER -> "Open a video, tap More → Save to Watch Later."
+                    else -> "Tap Save on a video to keep it here."
                 },
             )
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
                 items(videos, key = { it.id }) { video ->
-                    VideoCard(video = video, onClick = { onVideoClick(video.id) })
+                    if (tab == TAB_WATCH_LATER) {
+                        WatchLaterRow(
+                            video = video,
+                            onClick = { onVideoClick(video.id) },
+                            onRemove = { viewModel.removeFromWatchLater(video) },
+                        )
+                    } else {
+                        VideoCard(video = video, onClick = { onVideoClick(video.id) })
+                    }
                 }
                 if (tab == TAB_HISTORY) {
                     item {
@@ -203,6 +313,154 @@ fun LibraryScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * The Playlists tab: the list, or an invitation to make the first one.
+ *
+ * Creating from here opens the new playlist straight away: a name was just
+ * typed for it, so landing in the empty list is the natural next step. The
+ * dialog is the same [PlaylistNameDialog] the detail screen uses for rename.
+ */
+@Composable
+private fun PlaylistsTab(
+    playlists: List<LocalPlaylist>,
+    onPlaylistClick: (String) -> Unit,
+    onCreate: (name: String, onCreated: (String) -> Unit) -> Unit,
+) {
+    var naming by remember { mutableStateOf(false) }
+
+    if (naming) {
+        PlaylistNameDialog(
+            title = "New playlist",
+            initialName = "",
+            confirmLabel = "Create",
+            onConfirm = { name ->
+                naming = false
+                onCreate(name, onPlaylistClick)
+            },
+            onDismiss = { naming = false },
+        )
+    }
+
+    if (playlists.isEmpty()) {
+        MessageBox(
+            title = "No playlists yet",
+            body = "Tap New playlist, or add a video from its More menu.",
+        ) {
+            TextButton(onClick = { naming = true }) { Text("New playlist") }
+        }
+        return
+    }
+
+    LazyColumn(Modifier.fillMaxSize()) {
+        item {
+            TextButton(
+                onClick = { naming = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+            ) { Text("New playlist") }
+        }
+        items(playlists, key = { it.id }) { playlist ->
+            PlaylistRow(
+                playlist = playlist,
+                onClick = { onPlaylistClick(playlist.id) },
+            )
+        }
+    }
+}
+
+/** One playlist in the tab: its name and how many videos it holds. */
+@Composable
+private fun PlaylistRow(playlist: LocalPlaylist, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                playlist.name,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                playlistItemCount(playlist),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * The create/rename dialog for a playlist.
+ *
+ * Shared by the Library tab, the detail screen's rename and the player's
+ * add-to-playlist sheet so all three validate a name exactly once, here: a name
+ * that trims to nothing cannot be confirmed, because the store rejects a blank
+ * name outright and the screen would have no id to act on.
+ */
+@Composable
+internal fun PlaylistNameDialog(
+    title: String,
+    initialName: String,
+    confirmLabel: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(initialName) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Name") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            Button(
+                enabled = name.isNotBlank(),
+                onClick = { onConfirm(name) },
+            ) { Text(confirmLabel) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+/**
+ * A Watch Later entry with a per-row remove action.
+ *
+ * The entry itself stays the shared [VideoCard], so the tab reads exactly like
+ * Saved and History. Remove is a separate tap target *below* the card rather
+ * than an overlay on it, so opening the video can never delete it by accident.
+ */
+@Composable
+private fun WatchLaterRow(
+    video: VideoItem,
+    onClick: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Column {
+        VideoCard(video = video, onClick = onClick)
+        TextButton(
+            onClick = onRemove,
+            modifier = Modifier
+                .align(Alignment.End)
+                .padding(end = 12.dp),
+        ) { Text("Remove") }
     }
 }
 

@@ -1,7 +1,37 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.0 (versionCode 10).
+Security. This release is 0.2.1 (versionCode 11).
+
+## 0.2.1 — 2026-11-14
+
+Keep videos for later, line them up to play, and group them into playlists — all
+on this device, with no account and no server.
+
+### Added
+- **Watch Later.** Save from a video's More menu and find it in a new Library
+  tab. Rows can be removed in place, and the list is capped so it cannot grow
+  without bound.
+- **A play queue.** Add any video to the queue from the More menu, open the queue
+  from the player's top bar, and drag the handle to reorder. When a video ends,
+  the next queued item plays automatically; the Up-next overlay only appears once
+  the queue is empty.
+- **Local playlists.** Create a playlist from the Library, or from a video's
+  "Add to playlist" sheet without leaving playback. A playlist opens on its own
+  screen where you can rename it, delete it with a confirmation, reorder its
+  rows by dragging, remove items, and **Play all**. Like Watch Later and the
+  queue these are device-local: a local playlist gets a `local:` id so it can
+  never be mistaken for a remote one, and none of the three are ever synced —
+  only subscriptions and favourites are.
+- **A local video-metadata cache.** A bounded cache (newest first, 1000 entries)
+  remembers the display fields of the ids a local playlist names, so an id-only
+  playlist renders without a network call. Like the other device-local
+  collections it travels in a backup and never syncs.
+
+### Changed
+- **Backups are schema v4.** The file now also carries Watch Later, the play
+  queue, local playlists and the video-metadata cache; a v1–v3 file is still
+  accepted and restores with those collections empty.
 
 ## 0.2.0 — 2026-11-14
 

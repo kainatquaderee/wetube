@@ -38,6 +38,8 @@ import dev.wetube.app.ui.channel.ChannelScreen
 import dev.wetube.app.ui.credits.CreditsScreen
 import dev.wetube.app.ui.home.HomeScreen
 import dev.wetube.app.ui.library.LibraryScreen
+import dev.wetube.app.ui.library.PlaylistDetailScreen
+import dev.wetube.app.ui.library.QueueScreen
 import dev.wetube.app.ui.player.PlayerScreen
 import dev.wetube.app.ui.search.SearchScreen
 import dev.wetube.app.ui.settings.SettingsScreen
@@ -140,6 +142,7 @@ fun WeTubeRoot(
                     locator = locator,
                     onVideoClick = { id -> navController.navigate("watch/$id") },
                     onChannelClick = { id -> navController.navigate("channel/$id") },
+                    onPlaylistClick = { id -> navController.navigate("playlist/$id") },
                 )
             }
             composable("settings") {
@@ -171,6 +174,32 @@ fun WeTubeRoot(
                     },
                     onChannelClick = { id -> navController.navigate("channel/$id") },
                     onOpenSettings = { navController.navigate("settings") },
+                    onOpenQueue = { navController.navigate("queue") },
+                )
+            }
+            // Not one of the five top-level tabs, so `showBottomBar` stays
+            // false here: a playlist is a detail of the library, not another
+            // tab. Same reasoning as "queue" below.
+            composable(
+                route = "playlist/{playlistId}",
+                arguments = listOf(navArgument("playlistId") { type = NavType.StringType }),
+            ) { entry ->
+                PlaylistDetailScreen(
+                    locator = locator,
+                    playlistId = entry.arguments?.getString("playlistId").orEmpty(),
+                    onVideoClick = { id ->
+                        navController.navigate("watch/$id") { launchSingleTop = true }
+                    },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            // Not one of the five top-level tabs, so `showBottomBar` stays
+            // false here: the queue is a detail of playback, not another tab.
+            composable("queue") {
+                QueueScreen(
+                    locator = locator,
+                    onVideoClick = { id -> navController.navigate("watch/$id") },
+                    onBack = { navController.popBackStack() },
                 )
             }
             composable(
