@@ -1,7 +1,23 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.4 (versionCode 14).
+Security. This release is 0.2.5 (versionCode 15).
+
+## 0.2.5 — 2026-11-14
+
+Playback recovery now retries through a different client profile, and the one
+remaining gap — the throttling `n` parameter on the last-resort client's URLs —
+is documented as a deliberate deferral rather than left as an open bug.
+
+### Added
+- **Playback failover across client profiles.** When a stream URL is refused
+  mid-playback, the player already re-resolved the video and resumed where the
+  viewer was; it now also asks the backend to drop its leading client profile for
+  that retry, so the next resolve starts from the next client instead of asking
+  the same one for a URL it has just rejected. A failure a retry cannot clear (a
+  decode or container error) is shown with an explanation rather than swallowed,
+  and a downloaded video being played is re-opened from disk before the network
+  is consulted.
 
 ## 0.2.4 — 2026-11-14
 

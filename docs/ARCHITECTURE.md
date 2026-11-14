@@ -109,6 +109,17 @@ full speed; the `ANDROID` and `ANDROID_VR` fallbacks expose fewer, sometimes
 muxed-only, options. Live streams keep the HLS path, since a manifest is what the
 live surface returns.
 
+**Recovery across client profiles.** A stream URL can be rejected at play time —
+it expires, or the CDN refuses it. The player re-resolves the video and resumes
+at the position the viewer had, rather than stopping on an error, up to three
+times. Because the leading `IOS` client is where most playable URLs come from, a
+naive retry would ask it again and get the same rejection; so a recovery first
+asks the backend to drop its leading profile, and the next resolve starts at the
+`ANDROID` client — whose single progressive file always plays — still falling
+through to `ANDROID_VR`. A failure a retry cannot clear (a decode or container
+error) is shown to the viewer with an explanation instead of being swallowed, and
+a download being played is re-opened from disk before the network is consulted.
+
 **In-place reloads.** Re-resolving the same video — after a quality or audio-only
 change, or on retry — replaces the `MediaItem` without forcing playback to start
 (`PlaybackController.load()` rather than `play()`). A paused video stays paused
@@ -379,6 +390,14 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
   fake YouTube's JavaScript challenge; the player says which wall it hit.
 - Some networks present a bot check to any third-party client. Nothing is
   bypassed.
+- URLs from the last-resort `ANDROID_VR` profile carry YouTube's `n` throttling
+  parameter, which is designed to be unscrambled by a JavaScript transform the
+  player deliberately does not run. Those URLs therefore slow to a crawl after
+  the first few tens of megabytes. The `IOS` profile, the normal playback source,
+  hands back URLs whose `n` is already applied and downloads at full speed, so
+  this only touches the rare video the other profiles refuse; bundling a
+  JavaScript engine for that narrow fallback is not worth the weight (see
+  `ROADMAP.md`).
 - Machine-translated caption tracks are rate-limited by YouTube on some
   networks. The original captions are shown instead.
 - Comments are read-only: liking, replying and reading replies need a signed-in

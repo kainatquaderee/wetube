@@ -679,6 +679,10 @@ class PlayerViewModel(
                 val detail = if (local != null) {
                     state.detail ?: locator.backend().video(id)
                 } else {
+                    // The URL that just failed came from the leading profile;
+                    // ask the backend to start from the next one so the retry
+                    // is not the same request that was already rejected.
+                    locator.backend().forcePlaybackFallback()
                     locator.backend().video(id)
                 }
                 if (id != currentVideoId) return@runCatching

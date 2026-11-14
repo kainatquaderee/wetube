@@ -492,6 +492,17 @@ class InnerTubeBackend(
     private var playerMemo: JsonObject? = null
 
     /**
+     * A one-shot request from [forcePlaybackFallback]. Player calls run under
+     * [playerLock], so a set flag is consumed by the next resolve and cannot
+     * leak into an unrelated one.
+     */
+    private val fallbackRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    override fun forcePlaybackFallback() {
+        fallbackRequested.set(true)
+    }
+
+    /**
      * Asks YouTube for stream URLs.
      *
      * Client choice is deliberately narrow, and ordered by quality.
@@ -504,15 +515,19 @@ class InnerTubeBackend(
      * `ANDROID_VR` is the last resort for the rare video the other two refuse;
      * its URLs stop working partway through, so it only helps clips.
      *
+     * A recovery may have just had an IOS URL rejected at playback, so it asks
+     * for a fallback: the order then starts at `ANDROID`, skipping the leader
+     * that failed, and the short-lived memo is bypassed because it is likely to
+     * hold exactly the response being retried.
+     *
      * Mobile web and desktop web are not used here: they answer with URLs that
      * need a JavaScript `n` challenge solved, which WeTube does not fake.
      */
     private suspend fun playerResponse(id: String): JsonObject = playerLock.withLock {
+        val fallback = fallbackRequested.getAndSet(false)
         val memo = playerMemo
         val fresh = SystemClock.elapsedRealtime() - playerMemoAt < 3_000
-        if (memo != null && playerMemoId == id && fresh) return@withLock memo
-
-        val progressive = playerBody(id)
+        if (!fallback && memo != null && playerMemoId == id && fresh) return@withLock memo
 
         // Native clients reject a request that carries a session ("invalid
         // argument"), so playback is anonymous even while signed in. The
@@ -522,43 +537,44 @@ class InnerTubeBackend(
         // 360p fallback. Only the VR client wants the desktop signature, and
         // reading the watch page for it is not free, so that payload is built
         // only once both of the others come back empty.
-        val ios = runCatching {
-            call("player", iosClient, progressive, withAuth = false)
+        var answer: JsonObject? = null
+        for (profile in playbackProfileOrder(skipLeading = fallback)) {
+            answer = playerFor(profile, id)
+            if (answer != null) break
         }
-            .onFailure {
-                if (BuildConfig.DEBUG) {
-                    android.util.Log.w("WeTube", "player (ios) failed: ${it.javaClass.simpleName}")
-                }
-            }
-            .getOrNull()
-            ?.takeIf { it.playableUrlCount() > 0 }
-
-        val androidPlain = ios ?: runCatching {
-            call("player", androidClient, progressive, withAuth = false)
-        }
-            .onFailure {
-                if (BuildConfig.DEBUG) {
-                    android.util.Log.w("WeTube", "player (android) failed: ${it.javaClass.simpleName}")
-                }
-            }
-            .getOrNull()
-            ?.takeIf { it.playableUrlCount() > 0 }
-
-        val response = androidPlain ?: runCatching {
-            call("player", vr, signedPlayerPayload(id), withAuth = false)
-        }
-            .onFailure {
-                if (BuildConfig.DEBUG) {
-                    android.util.Log.w("WeTube", "player (vr) failed: ${it.javaClass.simpleName}")
-                }
-            }
-            .getOrNull()
-            ?: error("YouTube did not answer the player request.")
+        val response = answer ?: error("YouTube did not answer the player request.")
 
         playerMemoId = id
         playerMemoAt = SystemClock.elapsedRealtime()
         playerMemo = response
         response
+    }
+
+    /**
+     * One player request for [profile], or `null` when it had nothing playable.
+     *
+     * The VR body is built here, so its watch-page read happens only when the
+     * order actually reaches VR: a playable IOS or Android response ends the
+     * loop before this is called. A failed request is logged with its profile
+     * name and treated as a miss, so the next profile still gets a turn.
+     */
+    private suspend fun playerFor(profile: PlaybackProfile, id: String): JsonObject? {
+        val (client, body) = when (profile) {
+            PlaybackProfile.IOS -> iosClient to playerBody(id)
+            PlaybackProfile.ANDROID -> androidClient to playerBody(id)
+            PlaybackProfile.VR -> vr to signedPlayerPayload(id)
+        }
+        return runCatching { call("player", client, body, withAuth = false) }
+            .onFailure {
+                if (BuildConfig.DEBUG) {
+                    android.util.Log.w(
+                        "WeTube",
+                        "player (${profile.name.lowercase()}) failed: ${it.javaClass.simpleName}",
+                    )
+                }
+            }
+            .getOrNull()
+            ?.takeIf { it.playableUrlCount() > 0 }
     }
 
     /** The minimal player body: one video id and the two content flags. */

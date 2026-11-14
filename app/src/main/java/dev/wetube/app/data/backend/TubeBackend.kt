@@ -63,6 +63,17 @@ interface TubeBackend {
     suspend fun progressive(id: String): StreamFormat? = null
 
     /**
+     * Ask the next playback resolve to lead with a different client profile.
+     *
+     * Recovery calls this when a stream URL was rejected at playback: asking
+     * the same transport for the same URL again usually earns the same
+     * rejection, so the next [video] starts from the next profile instead. It
+     * is non-suspending and parameterless on purpose — a backend with a single
+     * transport keeps the no-op, and the UI never needs to know profile names.
+     */
+    fun forcePlaybackFallback() {}
+
+    /**
      * The account-write transport, when this backend has one.
      *
      * Sync is a capability, not a requirement: a public-feed transport such as

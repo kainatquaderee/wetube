@@ -172,6 +172,14 @@ design, and why the direct backend is the default.
 
 ## Status
 
+0.2.5 makes playback recovery **fail over between client profiles**. When a
+stream URL is refused mid-playback the player re-resolves the video and resumes
+where the viewer was, and it now asks the backend to drop its leading client
+profile for that retry — so the next resolve starts from the next client instead
+of asking the same one for a URL it has just rejected. Failures a retry cannot
+clear are shown with an explanation, and a downloaded video being played is
+re-opened from disk before the network is consulted.
+
 0.2.4 is a fix-up for **offline downloads**. A transfer left queued by a process
 kill now resumes on the next launch; the downloader verifies the server's byte
 range before trusting a resume, so an inconsistent answer can no longer be saved

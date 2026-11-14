@@ -94,6 +94,13 @@ class ContentFilterBackend(
     override suspend fun progressive(id: String): StreamFormat? = delegate.progressive(id)
 
     /**
+     * Playback recovery is not a listing either: forwarding the request keeps
+     * the filter layer from swallowing a failover the delegate is about to
+     * honour.
+     */
+    override fun forcePlaybackFallback() = delegate.forcePlaybackFallback()
+
+    /**
      * Sync is not a listing, so the mature-content filter has nothing to
      * intercept; the capability is forwarded verbatim. Keeping it explicit
      * (rather than relying on the `null` default) is what makes sync work when

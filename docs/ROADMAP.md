@@ -90,11 +90,9 @@ easy to demo.
 - [ ] Sync on the Invidious/Piped backends (they have no account API)
 
 ## 0.2 — player reliability & downloads
-- [ ] `n`-parameter transform for the fallback clients, so strictly throttled
-      networks stop 403ing their URLs (IOS-first already avoids this for
-      recorded video)
-- [ ] Automatic backend failover: if the player URL fails, retry through another
-      client profile or instance rather than showing an error
+- [x] Automatic playback failover: when a stream URL is refused, recovery asks
+      the backend to drop its leading client profile and re-resolves from the
+      next one (0.2.5)
 - [x] Offline downloads (video + audio merge, or muxed), resumable, with a
       download manager UI and storage cap (0.2.3)
 - [x] Playlists: create, reorder, play all (local, device-only; 0.2.1)
@@ -104,6 +102,19 @@ easy to demo.
 - [x] YouTube subscription sync (pull-first, both-way, shipped in 0.2.0)
 - [x] Import subscriptions from Google Takeout CSV / OPML (0.2.2)
 - [x] Subscription feed (local, newest-first) (0.2.2)
+
+### Deliberately deferred
+- **`n`-parameter transform for the fallback clients.** The `ANDROID_VR`
+  profile's URLs carry YouTube's `n` throttling parameter, which needs a
+  JavaScript transform to unscramble; without it those URLs slow after a few
+  tens of megabytes. The `IOS` profile — the normal playback source — already
+  ships `n` applied, so this affects only the last-resort profile on a video the
+  other two refuse. Solving it means bundling and sandboxing a JavaScript engine
+  and keeping it in step with a script YouTube rotates without notice, for a
+  fallback path most playback never reaches. The cost outweighs the reach, so it
+  stays deferred rather than shipped half-working; the failure it produces is a
+  slow download, not an unplayable video, and playback failover now reaches for
+  the profiles that do not carry it first.
 
 ## 0.2.4 — download hardening (shipped in this tree)
 - [x] Resume a queued download on the next launch instead of waiting for another
