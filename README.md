@@ -172,6 +172,14 @@ design, and why the direct backend is the default.
 
 ## Status
 
+0.2.4 is a fix-up for **offline downloads**. A transfer left queued by a process
+kill now resumes on the next launch; the downloader verifies the server's byte
+range before trusting a resume, so an inconsistent answer can no longer be saved
+as a corrupt file; a finished download whose file went missing offers **Download
+again** instead of a dead "Downloaded ✓"; and changing the storage limit trims
+finished downloads at once. Player errors that a retry cannot clear are now shown
+rather than swallowed.
+
 0.2.3 takes videos **offline**. A video's More menu offers **Download**, and a
 **Downloads** tab in the Library lists everything saved — live progress, saved
 size, retry and remove — with a Settings cap on how much finished media is kept.

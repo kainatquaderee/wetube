@@ -74,6 +74,38 @@ internal fun formatBytes(bytes: Long): String {
 }
 
 /**
+ * The starting byte from a `Content-Range` header, or `null` when it does not
+ * name one.
+ *
+ * `"bytes 100-999/1000"` yields `100`. It is the counterpart of
+ * [totalFromContentRange] and exists for the same reason: a resume must check
+ * that the body it appends begins exactly where the part ends, and the only
+ * place that is stated is here. A malformed header, an unsatisfiable-range
+ * header that names a wildcard position, and an absent header all yield
+ * `null`, so a caller treats "position unknown" as "cannot safely append".
+ */
+internal fun startFromContentRange(header: String?): Long? =
+    header
+        ?.substringAfter(' ', missingDelimiterValue = "")
+        ?.substringBefore('-')
+        ?.trim()
+        ?.toLongOrNull()
+
+/**
+ * The storage limit in bytes for a limit stored in the settings' 1000-based
+ * megabytes.
+ *
+ * The settings store the limit in the very units [formatBytes] prints and the
+ * Settings dropdown labels ("1 GB"): a limit of `1000` is one billion bytes.
+ * Scaling it by 1024 twice would enforce a ceiling about 7% larger than the
+ * figure the user picked, so the bytes an owner counts against the limit would
+ * not match the label. A limit of `0` or less means unlimited and yields `0`,
+ * which the manager already reads as "no limit".
+ */
+internal fun downloadLimitBytes(limitMb: Int): Long =
+    if (limitMb <= 0) 0L else limitMb.toLong() * 1_000L * 1_000L
+
+/**
  * The fraction of a download that is done, as `0f..1f`, or `null` when the
  * total is unknown or meaningless.
  *

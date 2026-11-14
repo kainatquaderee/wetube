@@ -19,8 +19,10 @@ import dev.wetube.app.data.extras.SponsorBlockClient
 import dev.wetube.app.data.content.AgeGateStore
 import dev.wetube.app.data.download.DownloadManager
 import dev.wetube.app.data.download.DownloadService
+import dev.wetube.app.data.download.DownloadState
 import dev.wetube.app.data.download.DownloadStore
 import dev.wetube.app.data.download.FileDownloader
+import dev.wetube.app.data.download.downloadLimitBytes
 import dev.wetube.app.data.download.mediaDirectory
 import dev.wetube.app.data.local.BackupStore
 import dev.wetube.app.data.local.AccountKeySource
@@ -42,6 +44,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.Dns
 import okhttp3.OkHttpClient
@@ -140,11 +143,32 @@ class ServiceLocator(context: Context) {
                 }
             },
             scope = appScope,
-            // The stored limit is megabytes; the manager deals in bytes. A small
-            // read off the same DataStore the UI already observes.
-            limitBytes = { settings.settings.first().downloadLimitMb.toLong() * 1024L * 1024L },
+            // The stored limit is in the settings' 1000-based megabytes — the
+            // same base the dropdown labels ("1 GB") and the UI's byte formatter
+            // use — so the ceiling enforced on disk is the figure the user sees.
+            limitBytes = { downloadLimitBytes(settings.settings.first().downloadLimitMb) },
         )
     }
+
+    /**
+     * Picks up whatever offline work a previous process left queued.
+     *
+     * A download the user asked for is recorded before the service starts, but
+     * the service is `START_NOT_STICKY`: a process killed mid-transfer leaves a
+     * record the store reads back as `QUEUED`, and nothing ever starts the
+     * service to drain it until the user downloads something else. Reading the
+     * queue once at launch and waking the worker only when it holds queued work
+     * fixes that without building the manager or the service for a user who
+     * never downloads.
+     */
+    fun resumePendingDownloads() {
+        appScope.launch {
+            if (downloadStore.downloads.first().any { it.state == DownloadState.QUEUED }) {
+                downloads.start()
+            }
+        }
+    }
+
     val ageGate = AgeGateStore(appContext)
     val sponsorBlock = SponsorBlockClient(jsonHttp)
     val dislikes = DislikeClient(jsonHttp)

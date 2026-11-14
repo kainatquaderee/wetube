@@ -91,6 +91,36 @@ class DownloadPlannerTest {
     }
 
     @Test
+    fun `a content range yields its starting offset`() {
+        assertEquals(100L, startFromContentRange("bytes 100-999/1000"))
+        assertEquals(0L, startFromContentRange("bytes 0-999/1000"))
+        assertEquals(1024L, startFromContentRange("bytes 1024-2047/4096"))
+    }
+
+    @Test
+    fun `a content range without a position yields no offset`() {
+        // A 416 answers with a wildcard position; there is no start to resume to.
+        assertNull(startFromContentRange("bytes */1000"))
+        // A start that is not a number is no more usable than a missing one.
+        assertNull(startFromContentRange("bytes abc-999/1000"))
+        assertNull(startFromContentRange("garbage"))
+        assertNull(startFromContentRange(""))
+        assertNull(startFromContentRange(null))
+    }
+
+    @Test
+    fun `the storage limit is the 1000-based size the label shows`() {
+        // `0` is unlimited, and a negative value is treated the same way.
+        assertEquals(0L, downloadLimitBytes(0))
+        assertEquals(0L, downloadLimitBytes(-1))
+        // The settings' unit is the one the dropdown labels in GB, so 1000 units
+        // must be exactly the billion bytes "1 GB" prints as.
+        assertEquals(1_000_000_000L, downloadLimitBytes(1_000))
+        assertEquals("1.0 GB", formatBytes(downloadLimitBytes(1_000)))
+        assertEquals("10 GB", formatBytes(downloadLimitBytes(10_000)))
+    }
+
+    @Test
     fun `a range header is only sent when resuming`() {
         assertNull(rangeHeader(0))
         assertNull(rangeHeader(-1))

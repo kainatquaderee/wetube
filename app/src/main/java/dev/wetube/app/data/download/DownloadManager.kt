@@ -87,6 +87,9 @@ class DownloadManager(
      * re-queued in place, keeping its position. Only a video with no muxed
      * progressive track is refused outright — and nothing is stored for it, so
      * the UI can say "not available" without leaving a dead record behind.
+     *
+     * A queue already at its count cap makes room first, deleting the file of
+     * whatever it evicts; [ensureRoom] owns that choice.
      */
     suspend fun enqueue(video: VideoItem): EnqueueResult {
         // The store reads a stale RUNNING record back as QUEUED, so anything but
@@ -96,6 +99,12 @@ class DownloadManager(
 
         val format = resolveSource(video.id)
         if (format == null || format.url.isBlank()) return EnqueueResult.NotAvailable
+
+        // A brand-new record is the only enqueue that grows the queue; a
+        // re-queue of a failed one keeps its slot. Make room before the store
+        // sees it, so the store's blind count cap never drops a record (and
+        // strands the media file behind it).
+        if (existing == null) ensureRoom()
 
         val now = clock()
         val stored = store.enqueue(
@@ -210,6 +219,64 @@ class DownloadManager(
                 index++
             }
         }
+    }
+
+    /**
+     * Makes room for one more queue record, deleting whatever it evicts.
+     *
+     * The store's own cap can only drop the front of the list, which would
+     * orphan the media file of a finished entry. So the manager evicts first,
+     * and evicts the entry a user is least likely to miss. In order of
+     * preference:
+     *
+     *  1. the oldest record that is neither finished nor downloading — a
+     *     queued, failed, or process-abandoned one, whose file no one is
+     *     waiting for;
+     *  2. the oldest finished download, deleting its file so the bytes really
+     *     go away;
+     *  3. the oldest record at all, which only happens when the queue is
+     *     entirely a single live transfer.
+     *
+     * The transfer in flight is protected because [progress] already names it,
+     * and cancelling active work to make room for more is the one outcome worse
+     * than evicting an old finished file. Runs until the queue is one below the
+     * cap, so the append that follows never reaches the store's backstop.
+     * Failures are swallowed: this is housekeeping on top of an enqueue the user
+     * asked for, not a reason for that enqueue to fail.
+     */
+    private suspend fun ensureRoom() {
+        runCatching {
+            while (true) {
+                val entries = store.snapshot()
+                if (entries.size < DownloadStore.MAX_DOWNLOADS) return@runCatching
+                val live = progress.value.keys
+                val victim = listOfNotNull(
+                    entries
+                        .filter { it.state != DownloadState.COMPLETE && it.video.id !in live }
+                        .minByOrNull { it.createdAt },
+                    entries
+                        .filter { it.state == DownloadState.COMPLETE }
+                        .minByOrNull { it.createdAt },
+                    entries.minByOrNull { it.createdAt },
+                ).first()
+                store.remove(victim.video.id)
+                deleteFiles(victim.file)
+                _progress.update { it - victim.video.id }
+            }
+        }
+    }
+
+    /**
+     * Re-applies the storage limit, for when the user changes it in Settings.
+     *
+     * The limit otherwise only bites when a download finishes or another is
+     * queued. Lowering it must take effect at once, or the subtitle promising
+     * that the oldest finished downloads are removed when the limit is reached
+     * would not be true until the user happened to download something else.
+     * Fire-and-forget on the manager's scope, like the other trims.
+     */
+    fun applyStorageLimit() {
+        scope.launch { enforceLimit() }
     }
 
     /** Records the bytes a running download has landed; called by the service. */

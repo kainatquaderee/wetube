@@ -106,23 +106,33 @@ class DownloadStoreTest {
     }
 
     @Test
-    fun `enqueue over a failed entry re-queues it in place`() = runBlocking {
-        store.enqueue(entry("a"))
-        store.enqueue(entry("b"))
-        store.markFailed("a", "boom", at = 5L)
+    fun `enqueue over a failed entry re-queues it in place, keeping its file and creation time`() =
+        runBlocking {
+            store.enqueue(entry("a"))
+            store.enqueue(entry("b"))
+            store.markFailed("a", "boom", at = 5L)
 
-        val added = store.enqueue(entry("a", title = "retry", at = 50L))
+            // The retry resolves a different container, but the record must keep
+            // the file name (and the `.part` that may sit under it) it started
+            // with, and the time it first entered the queue.
+            val retry = entry("a", title = "retry", at = 50L)
+                .copy(file = "renamed.webm", mime = "video/webm")
+            val added = store.enqueue(retry)
 
-        assertTrue(added)
-        // Same position ...
-        assertEquals(listOf("a", "b"), ids())
-        // ... replaced by the new request, queued and with the error cleared.
-        val stored = store.downloads.first().first()
-        assertEquals("retry", stored.video.title)
-        assertEquals(DownloadState.QUEUED, stored.state)
-        assertNull(stored.error)
-        assertEquals(50L, stored.createdAt)
-    }
+            assertTrue(added)
+            // Same position ...
+            assertEquals(listOf("a", "b"), ids())
+            // ... re-queued in place, with only state, error and update time
+            // touched.
+            val stored = store.downloads.first().first()
+            assertEquals("a", stored.video.title)
+            assertEquals("a.mp4", stored.file)
+            assertEquals("", stored.mime)
+            assertEquals(0L, stored.createdAt)
+            assertEquals(DownloadState.QUEUED, stored.state)
+            assertNull(stored.error)
+            assertEquals(50L, stored.updatedAt)
+        }
 
     @Test
     fun `markRunning sets the state and the update time`() = runBlocking {

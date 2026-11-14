@@ -562,7 +562,14 @@ fun SettingsScreen(
         Section("Downloads")
         DownloadLimitRow(
             limitMb = settings.downloadLimitMb,
-            onChange = { value -> viewModel.update { it.copy(downloadLimitMb = value) } },
+            onChange = { value ->
+                viewModel.update { it.copy(downloadLimitMb = value) }
+                // The limit is otherwise only enforced when a download finishes
+                // or another is queued, so lowering it while already over budget
+                // has to trim here or the subtitle's promise waits for the next
+                // download. Fire-and-forget on the manager's own scope.
+                locator.downloads.applyStorageLimit()
+            },
         )
 
         Section("Content")

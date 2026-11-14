@@ -201,6 +201,92 @@ private fun merge(previous: VideoDetail?, fresh: VideoDetail): VideoDetail {
     )
 }
 
+/**
+ * The player's More-menu download row for the current video.
+ *
+ * [DownloadManager.enqueue] answers "already saved" for any entry that is not
+ * FAILED, so a completed record whose file has since been removed — a storage
+ * clean-up, a manual delete — could never be revived through the normal
+ * download action. Such a record is offered as a re-download instead, which
+ * re-queues the existing entry in place. Keeping the decision pure is what lets
+ * the menu agree with [DownloadManager.localMedia], which already treats a
+ * file-less record as "not downloaded": otherwise the menu says "Downloaded ✓",
+ * disabled, while playback quietly falls back to the network.
+ */
+internal data class DownloadMenuRow(
+    val label: String,
+    val enabled: Boolean,
+    /** A tap re-queues the record already in the store instead of enqueueing. */
+    val requeue: Boolean,
+)
+
+/** The More-menu download row for [state], given whether its file is gone. */
+internal fun downloadMenuRow(state: DownloadState?, fileMissing: Boolean): DownloadMenuRow =
+    when (state) {
+        null -> DownloadMenuRow("Download", enabled = true, requeue = false)
+        DownloadState.QUEUED, DownloadState.RUNNING ->
+            DownloadMenuRow("Downloading…", enabled = false, requeue = false)
+        DownloadState.COMPLETE -> if (fileMissing) {
+            DownloadMenuRow("Download again", enabled = true, requeue = true)
+        } else {
+            DownloadMenuRow("Downloaded ✓", enabled = false, requeue = false)
+        }
+        DownloadState.FAILED -> DownloadMenuRow("Retry download", enabled = true, requeue = false)
+    }
+
+/** What the player should do about one platform playback error. */
+internal enum class PlaybackErrorAction {
+    /**
+     * Ask for the media again: an expired stream URL, a dropped connection, or
+     * a local file that has vanished can all come back on another attempt.
+     */
+    RECOVER,
+
+    /**
+     * Tell the viewer instead. The same bytes would fail the same way — a
+     * decode, container or unsupported-format error is not a transient one — so
+     * retrying would only hide the reason behind a frozen frame.
+     */
+    REPORT,
+}
+
+/**
+ * The decision for one [PlaybackException] error code, given whether the media
+ * being played is the local file.
+ *
+ * Only failures a second attempt can actually clear are retried: the IO
+ * network/HTTP codes, which is what an expired stream URL or a flaky connection
+ * surfaces as. [localSource] widens that set by exactly one code,
+ * [PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND]: a deleted download is not a
+ * dead end, because recovery re-checks the file and can fall back to the
+ * network, whereas a network source reporting "file not found" has nothing to
+ * fall back to. Every other code is reported, because swallowing a decode or
+ * container failure leaves a stuck player with no explanation.
+ */
+internal fun playbackErrorAction(errorCode: Int, localSource: Boolean): PlaybackErrorAction =
+    when (errorCode) {
+        PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> PlaybackErrorAction.RECOVER
+
+        PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+            if (localSource) PlaybackErrorAction.RECOVER else PlaybackErrorAction.REPORT
+
+        else -> PlaybackErrorAction.REPORT
+    }
+
+/**
+ * The wording for an error playback cannot retry its way out of.
+ *
+ * A saved file gets its own line because the fix is one the viewer can carry
+ * out; a stream that will not decode is simply not watchable on this device.
+ */
+internal fun playbackErrorMessage(localSource: Boolean): String = if (localSource) {
+    "The saved file for this video could not be played. Remove the download and save it again."
+} else {
+    "This video could not be played. Its stream is in a format this device cannot play."
+}
+
 class PlayerViewModel(
     private val locator: ServiceLocator,
     videoId: String,
@@ -211,6 +297,16 @@ class PlayerViewModel(
         private set
 
     var state by mutableStateOf(PlayerUiState())
+        private set
+
+    /**
+     * Whether the media now in the player was opened from the downloaded file
+     * rather than the network. Set wherever the source is chosen, so it can
+     * never describe the previous video: it decides which error codes are
+     * retried and whether recovery re-opens the file or re-resolves the
+     * stream.
+     */
+    var isLocalSource: Boolean = false
         private set
 
     /** Shared with the CC sheet and the overlay. */
@@ -241,6 +337,26 @@ class PlayerViewModel(
         snapshotFlow { currentVideoId },
     ) { list, id -> list.firstOrNull { it.video.id == id }?.state }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * Whether the current video's COMPLETE download has lost its file.
+     *
+     * A complete record can outlive the media — clearing the app's storage or a
+     * manual delete removes the bytes but not the record — so the store alone
+     * would keep answering "downloaded". [DownloadManager.localMedia] already
+     * treats that case as not downloaded, and the player must agree or its
+     * More menu offers a dead "Downloaded ✓" that can never re-fetch. The file
+     * check is a disk hit, so it runs only while a COMPLETE record exists and
+     * only when the store emits or the end screen swaps the video — never per
+     * recomposition.
+     */
+    val downloadFileMissing: StateFlow<Boolean> = combine(
+        locator.downloads.downloads,
+        snapshotFlow { currentVideoId },
+    ) { list, id ->
+        val state = list.firstOrNull { it.video.id == id }?.state
+        state == DownloadState.COMPLETE && locator.downloads.completedFile(id) == null
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /** How many items are waiting to play; shown on the queue button. */
     val queueCount: StateFlow<Int> = locator.library.queue
@@ -286,6 +402,10 @@ class PlayerViewModel(
                     ?.let { StreamResolver.localItem(detail.item, it.file, it.mime) }
                     ?: (StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
                         ?: error("This instance returned no playable streams."))
+                // Remembered here, at the one place the local-vs-network choice
+                // is made, so an error later knows whether the bytes it is
+                // playing came from the file or the stream.
+                isLocalSource = local != null
 
                 val resumeAt = runCatching {
                     locator.library.resumePoints.first()[id]?.positionMs
@@ -442,6 +562,26 @@ class PlayerViewModel(
         state = state.copy(downloadMessage = null)
     }
 
+    /**
+     * Re-fetches the current video after its finished download lost its file.
+     *
+     * [DownloadManager.enqueue] answers "already saved" for the COMPLETE record
+     * that is still in the store, so it cannot bring the media back;
+     * [DownloadManager.retry] re-queues that record in place and wakes the
+     * worker, which is the only path that actually re-downloads. A word is left
+     * on screen because the queue drains in the background service and the
+     * menu's own label would otherwise be the only sign the tap landed.
+     */
+    fun redownload() {
+        locator.downloads.retry(currentVideoId)
+        state = state.copy(downloadMessage = "Downloading again…")
+    }
+
+    /** Surfaces an error the player cannot retry its way out of. */
+    fun reportPlaybackError() {
+        state = state.copy(error = playbackErrorMessage(isLocalSource))
+    }
+
     /** Appends the current video to the play queue; a duplicate is ignored. */
     fun addToQueue() {
         val item = state.detail?.item ?: return
@@ -509,6 +649,12 @@ class PlayerViewModel(
      * Media URLs can expire or be rejected by the CDN. Re-resolve the video and
      * resume where the listener stopped instead of leaving them on an error
      * screen.
+     *
+     * A local source is re-opened from disk, not re-resolved: the bytes are
+     * already here, so reaching for the network would ignore the whole point of
+     * the download and fail the moment the connection is what is down. Only a
+     * local file that has become unusable falls through to a network resolve,
+     * which is also why a "file not found" on a download is worth retrying.
      */
     fun recoverPlayback(positionMs: Long) {
         // A cast failure is the manager's to report; re-resolving into the
@@ -523,13 +669,24 @@ class PlayerViewModel(
         }
         recoveries += 1
         val id = currentVideoId
+        val wasLocal = isLocalSource
         viewModelScope.launch {
             runCatching {
                 val settings = locator.settings.settings.first()
-                val detail = locator.backend().video(id)
+                val local = if (wasLocal) locator.downloads.localMedia(id) else null
+                // Keep the metadata already on screen for a local re-open; only
+                // an absent file needs the watch-page call.
+                val detail = if (local != null) {
+                    state.detail ?: locator.backend().video(id)
+                } else {
+                    locator.backend().video(id)
+                }
                 if (id != currentVideoId) return@runCatching
-                val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
+                val item = local
+                    ?.let { StreamResolver.localItem(detail.item, it.file, it.mime) }
+                    ?: StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
                     ?: error("This video has no playable streams any more.")
+                isLocalSource = local != null
                 state = state.copy(detail = merge(state.detail, detail), error = null)
                 locator.playback.play(
                     item = item,
@@ -568,6 +725,9 @@ class PlayerViewModel(
             )
             val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
                 ?: return@launch
+            // This path always rebuilds from the stream URLs, so the source is
+            // the network from here on even if the previous item was the file.
+            isLocalSource = false
             val position = locator.playback.controller.value?.currentPosition ?: 0L
             // Non-resuming: changing quality/audio-only must not un-pause a
             // video the viewer deliberately paused.
@@ -678,6 +838,9 @@ class PlayerViewModel(
                 return@launch
             }
             locator.output.returnLocal(item, settings.playbackSpeed)
+            // Taking playback back from the TV hands the phone a stream item,
+            // so the source is the network from here on.
+            isLocalSource = false
             state = state.copy(castFailure = null)
         }
     }
@@ -867,6 +1030,9 @@ fun PlayerScreen(
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     // Where this video's offline download stands; drives the More-menu label.
     val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
+    // Whether that COMPLETE record still has its file; a missing one turns the
+    // label into a real re-download instead of a dead "Downloaded ✓".
+    val downloadFileMissing by viewModel.downloadFileMissing.collectAsStateWithLifecycle()
     // The single source of "where playback is". Reading it is what constructs
     // the lazy casting graph, so a viewer who never opens the cast sheet pays
     // nothing for it beyond this StateFlow.
@@ -1011,13 +1177,13 @@ fun PlayerScreen(
         val player = controller ?: return@DisposableEffect onDispose { }
         val listener = object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                // Re-resolving helps with expired URLs and flaky connections. A
-                // decode/unsupported error would fail identically on retry, so
-                // only network and HTTP failures are retried.
-                val retryable = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
-                    error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
-                if (retryable) viewModel.recoverPlayback(player.currentPosition)
+                // Expired URLs and flaky connections are worth another attempt;
+                // a decode/container failure would fail identically, so it is
+                // reported instead of vanishing and leaving a stuck player.
+                when (playbackErrorAction(error.errorCode, viewModel.isLocalSource)) {
+                    PlaybackErrorAction.RECOVER -> viewModel.recoverPlayback(player.currentPosition)
+                    PlaybackErrorAction.REPORT -> viewModel.reportPlaybackError()
+                }
             }
         }
         player.addListener(listener)
@@ -1245,6 +1411,7 @@ fun PlayerScreen(
                 favourite = state.favourite,
                 watchLater = inWatchLater,
                 downloadState = downloadState,
+                downloadFileMissing = downloadFileMissing,
                 downloadMessage = state.downloadMessage,
                 descriptionExpanded = state.descriptionExpanded,
                 speed = state.speed,
@@ -1258,6 +1425,7 @@ fun PlayerScreen(
                 onToggleFavourite = viewModel::toggleFavourite,
                 onToggleWatchLater = viewModel::toggleWatchLater,
                 onDownload = viewModel::toggleDownload,
+                onRedownload = viewModel::redownload,
                 onClearDownloadMessage = viewModel::clearDownloadMessage,
                 onAddToQueue = viewModel::addToQueue,
                 onOpenPlaylistSheet = { showPlaylistSheet = true },
@@ -1385,6 +1553,7 @@ private fun PlayerInfo(
     favourite: Boolean,
     watchLater: Boolean,
     downloadState: DownloadState?,
+    downloadFileMissing: Boolean,
     downloadMessage: String?,
     descriptionExpanded: Boolean,
     speed: Float,
@@ -1398,6 +1567,7 @@ private fun PlayerInfo(
     onToggleFavourite: () -> Unit,
     onToggleWatchLater: () -> Unit,
     onDownload: () -> Unit,
+    onRedownload: () -> Unit,
     onClearDownloadMessage: () -> Unit,
     onAddToQueue: () -> Unit,
     onOpenPlaylistSheet: () -> Unit,
@@ -1422,12 +1592,7 @@ private fun PlayerInfo(
     val chapters = remember(detail.item.id) { parseChapters(detail.description) }
     val scroll = rememberScrollState()
     val chipsScroll = rememberScrollState()
-    val downloadLabel = when (downloadState) {
-        null -> "Download"
-        DownloadState.QUEUED, DownloadState.RUNNING -> "Downloading…"
-        DownloadState.COMPLETE -> "Downloaded ✓"
-        DownloadState.FAILED -> "Retry download"
-    }
+    val downloadRow = downloadMenuRow(downloadState, downloadFileMissing)
     // The download answer is a toast-like line under the actions, not a menu
     // entry that stays open; it clears itself so the next video never inherits
     // a stale message.
@@ -1546,16 +1711,18 @@ private fun PlayerInfo(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text(downloadLabel) },
+                        text = { Text(downloadRow.label) },
                         leadingIcon = { Icon(Icons.Default.Download, null) },
                         // Saving is a one-way action: while a download is
-                        // waiting, running or done there is nothing more to do
-                        // from here, so only an idle or failed state stays
-                        // tappable (a failed one as a retry).
-                        enabled = downloadState == null || downloadState == DownloadState.FAILED,
+                        // waiting or running there is nothing more to do from
+                        // here, so only an idle, failed, or file-less state
+                        // stays tappable. The file-less one re-queues the record
+                        // already in the store, which is the only action that
+                        // can actually fetch the bytes again.
+                        enabled = downloadRow.enabled,
                         onClick = {
                             moreMenu = false
-                            onDownload()
+                            if (downloadRow.requeue) onRedownload() else onDownload()
                         },
                     )
                     DropdownMenuItem(

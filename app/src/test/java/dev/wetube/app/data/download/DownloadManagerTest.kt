@@ -106,6 +106,37 @@ class DownloadManagerTest {
     }
 
     /**
+     * Seeds the store directly with [ids] in order, oldest first. Entries are
+     * left queued, or written as finished downloads with a one-byte stand-in
+     * file when [complete] is true.
+     *
+     * Writing the store directly (rather than going through the manager) keeps
+     * a 200-entry cap test fast and focused on the eviction decision the
+     * manager makes when the next enqueue arrives.
+     */
+    private suspend fun TestScope.seedEntries(
+        fixture: Fixture,
+        ids: List<String>,
+        complete: Boolean,
+    ) {
+        ids.forEachIndexed { index, id ->
+            val at = index.toLong() + 1
+            val entry = DownloadEntry(
+                video = video.copy(id = id),
+                file = downloadFileName(id, "video/mp4"),
+                createdAt = at,
+                updatedAt = at,
+            )
+            fixture.store.enqueue(entry)
+            if (complete) {
+                File(fixture.directory, entry.file).writeBytes(byteArrayOf(1))
+                fixture.store.markComplete(id, bytes = 1L, at = at)
+            }
+        }
+        advanceUntilIdle()
+    }
+
+    /**
      * Waits for the store to satisfy [predicate], then drains the scheduler.
      *
      * [DownloadManager.remove], [DownloadManager.clearCompleted] and
@@ -224,6 +255,42 @@ class DownloadManagerTest {
         val entry = fixture.store.downloads.first().single()
         assertEquals(DownloadState.QUEUED, entry.state)
         assertEquals(2, fixture.started)
+    }
+
+    @Test
+    fun `start nudges the worker exactly once`() = runTest {
+        val fixture = fixture()
+
+        // The launch hook wakes the service through this seam; one call is one
+        // nudge, so a queued queue is resumed without any other side effect.
+        fixture.manager.start()
+
+        assertEquals(1, fixture.started)
+    }
+
+    @Test
+    fun `re-enqueueing a failed video keeps its original file and creation time`() = runTest {
+        var mime = "video/mp4"
+        val fixture = fixture(resolve = { id -> sourceFor(id).copy(mime = mime) })
+        fixture.now = 1_000L
+        fixture.manager.enqueue(video)
+        fixture.store.markFailed(video.id, "boom", at = fixture.now)
+
+        // A later attempt resolves a different container, but the record the
+        // user already has must keep the file it started under (and any `.part`
+        // already written next to it), and the time it joined the queue.
+        mime = "video/webm"
+        fixture.now = 5_000L
+        val result = fixture.manager.enqueue(video)
+        advanceUntilIdle()
+
+        assertEquals(EnqueueResult.Queued, result)
+        val entry = fixture.store.downloads.first().single()
+        assertEquals("dQw4w9WgXcQ.mp4", entry.file)
+        assertEquals("video/mp4", entry.mime)
+        assertEquals(1_000L, entry.createdAt)
+        assertEquals(5_000L, entry.updatedAt)
+        assertEquals(DownloadState.QUEUED, entry.state)
     }
 
     @Test
@@ -378,6 +445,84 @@ class DownloadManagerTest {
 
         assertEquals(EnqueueResult.Queued, result)
         assertEquals(listOf("b", "fresh"), fixture.store.downloads.first().map { it.video.id })
+    }
+
+    @Test
+    fun `applyStorageLimit trims immediately when the limit is lowered`() = runTest {
+        val fixture = fixture()
+        val a = video.copy(id = "a")
+        val b = video.copy(id = "b")
+        fixture.now = 1_000L; seedCompleted(fixture, a, bytes = 400L)
+        fixture.now = 2_000L; seedCompleted(fixture, b, bytes = 400L)
+
+        // Nothing else is being enqueued or finished; lowering the limit has to
+        // take effect on its own, which is what the Settings screen relies on.
+        fixture.limit = 400L
+        fixture.manager.applyStorageLimit()
+        awaitQueue(fixture) { entries -> entries.map { it.video.id } == listOf("b") }
+
+        assertEquals(listOf("b"), fixture.store.downloads.first().map { it.video.id })
+        assertFalse(File(fixture.directory, "a.mp4").exists())
+    }
+
+    @Test
+    fun `enqueue at the count cap evicts a finished entry and deletes its file`() = runTest {
+        val fixture = fixture()
+        val ids = (0 until DownloadStore.MAX_DOWNLOADS).map { "v$it" }
+        seedEntries(fixture, ids, complete = true)
+
+        val result = fixture.manager.enqueue(video.copy(id = "fresh"))
+        advanceUntilIdle()
+
+        assertEquals(EnqueueResult.Queued, result)
+        val remaining = fixture.store.downloads.first().map { it.video.id }
+        assertEquals(DownloadStore.MAX_DOWNLOADS, remaining.size)
+        // The oldest finished entry made room, and its bytes went with it.
+        assertFalse("v0" in remaining)
+        assertFalse(File(fixture.directory, "v0.mp4").exists())
+        assertTrue(File(fixture.directory, "v1.mp4").exists())
+        assertTrue("fresh" in remaining)
+    }
+
+    @Test
+    fun `enqueue at the count cap evicts an unfinished entry before a finished one`() = runTest {
+        val fixture = fixture()
+        val ids = (0 until DownloadStore.MAX_DOWNLOADS).map { "v$it" }
+        seedEntries(fixture, ids, complete = true)
+        // Put two entries back in the queue after the finished front, so the
+        // oldest unfinished record is not the front of the list.
+        fixture.store.requeue("v1", at = 1L)
+        fixture.store.requeue("v2", at = 2L)
+
+        fixture.manager.enqueue(video.copy(id = "fresh"))
+        advanceUntilIdle()
+
+        val remaining = fixture.store.downloads.first().map { it.video.id }
+        // The oldest unfinished entry went, not the finished front.
+        assertFalse("v1" in remaining)
+        assertFalse(File(fixture.directory, "v1.mp4").exists())
+        assertTrue("v0" in remaining)
+        assertTrue(File(fixture.directory, "v0.mp4").exists())
+    }
+
+    @Test
+    fun `enqueue at the count cap does not evict the download in flight`() = runTest {
+        val fixture = fixture()
+        val ids = (0 until DownloadStore.MAX_DOWNLOADS).map { "v$it" }
+        seedEntries(fixture, ids, complete = true)
+        // v0 is downloading right now: its live progress is what names it, and
+        // its record reads back as queued like any other unfinished one.
+        fixture.store.requeue("v0", at = 0L)
+        fixture.manager.reportProgress("v0", bytes = 5L, total = 100L)
+
+        fixture.manager.enqueue(video.copy(id = "fresh"))
+        advanceUntilIdle()
+
+        val remaining = fixture.store.downloads.first().map { it.video.id }
+        // The active transfer survives; a finished entry made room instead.
+        assertTrue("v0" in remaining)
+        assertFalse("v1" in remaining)
+        assertFalse(File(fixture.directory, "v1.mp4").exists())
     }
 
     @Test

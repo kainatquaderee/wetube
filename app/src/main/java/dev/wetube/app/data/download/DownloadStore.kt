@@ -84,13 +84,19 @@ class DownloadStore internal constructor(
      * A video already queued or downloading is left exactly as it is, so a
      * double tap cannot restart work in progress. A video whose last attempt
      * failed is re-queued *in place* — its position in the FIFO queue is kept —
-     * with the failure cleared. A new video is appended at the end.
+     * with the failure cleared. The re-queue keeps the original [DownloadEntry.file],
+     * [DownloadEntry.createdAt] and [DownloadEntry.mime]: the entry already names
+     * a file (and a `.part` may already sit under it) from the attempt that
+     * started, and a freshly resolved container must not rename it out from
+     * under that partial file. `video` metadata is kept too, matching [requeue].
+     * A new video is appended at the end.
      *
-     * The queue is capped at [MAX_DOWNLOADS] by dropping from the front (the
-     * oldest entries) regardless of their state. A 200-deep download queue is
-     * already absurd, so the bound is allowed to evict a queued item rather than
-     * grow without limit; in practice the front of a 200-long queue is old
-     * enough that it is not the download the user just asked for.
+     * The queue is capped at [MAX_DOWNLOADS] as a last-resort backstop — a store
+     * has no directory to delete a file from, so it can only drop the front of
+     * the list. [DownloadManager] evicts with the file in hand *before* calling
+     * this, so in practice the bound is never what removes a record; the cap is
+     * here only so a caller writing the store directly cannot grow it without
+     * limit.
      */
     suspend fun enqueue(entry: DownloadEntry): Boolean {
         var changed = false
@@ -100,7 +106,11 @@ class DownloadStore internal constructor(
             val next = when {
                 index < 0 -> (current + entry).takeLast(MAX_DOWNLOADS)
                 current[index].state == DownloadState.FAILED -> current.toMutableList().apply {
-                    this[index] = entry.copy(state = DownloadState.QUEUED, error = null)
+                    this[index] = current[index].copy(
+                        state = DownloadState.QUEUED,
+                        error = null,
+                        updatedAt = entry.updatedAt,
+                    )
                 }
                 // Already queued, running or complete: leave it alone.
                 else -> return@edit
@@ -198,10 +208,12 @@ class DownloadStore internal constructor(
             entry
         }
 
-    private companion object {
+    internal companion object {
         /**
          * Bound on how many download records are kept. A cap on storage growth,
          * not a UX limit; the oldest entry is dropped when it is exceeded.
+         * Visible so [DownloadManager] can make room, and delete the media of
+         * whatever it evicts, before this store would have to drop it blind.
          */
         const val MAX_DOWNLOADS = 200
     }

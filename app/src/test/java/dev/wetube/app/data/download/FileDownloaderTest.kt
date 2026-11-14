@@ -120,7 +120,13 @@ class FileDownloaderTest {
 
     @Test
     fun `a 416 on a complete part still yields the whole file`() = runTest {
-        TestServer { response(416, "Range Not Satisfiable") }.use { server ->
+        TestServer {
+            response(
+                code = 416,
+                reason = "Range Not Satisfiable",
+                headers = listOf("Content-Range" to "bytes */${payload.size}"),
+            )
+        }.use { server ->
             val dir = folder.newFolder("already-complete")
             val target = File(dir, "video.mp4")
             partOf(target).writeBytes(payload)
@@ -129,6 +135,129 @@ class FileDownloaderTest {
 
             assertArrayEquals(payload, target.readBytes())
             assertFalse(partOf(target).exists())
+        }
+    }
+
+    @Test
+    fun `a 416 on a short part is not promoted and is discarded`() = runTest {
+        TestServer {
+            response(
+                code = 416,
+                reason = "Range Not Satisfiable",
+                headers = listOf("Content-Range" to "bytes */${payload.size}"),
+            )
+        }.use { server ->
+            val dir = folder.newFolder("short-416")
+            val target = File(dir, "video.mp4")
+            val part = partOf(target)
+            part.writeBytes(payload.copyOfRange(0, 100))
+
+            var thrown: IOException? = null
+            try {
+                downloader.download(server.url, target)
+            } catch (e: IOException) {
+                thrown = e
+            }
+
+            // A part smaller than the stated total is not a finished file, so
+            // nothing is handed to the player and the stale part is dropped so
+            // the next attempt starts over.
+            assertNotNull(thrown)
+            assertFalse(target.exists())
+            assertFalse(part.exists())
+        }
+    }
+
+    @Test
+    fun `a 206 from the wrong offset is not appended onto the part`() = runTest {
+        // The server answers a resume with the whole body from zero. Appending
+        // that to the 1000-byte part would duplicate the prefix; the downloader
+        // must start the part over from the response's own first byte.
+        TestServer {
+            response(
+                code = 206,
+                reason = "Partial Content",
+                body = payload,
+                headers = listOf(
+                    "Content-Range" to "bytes 0-${payload.size - 1}/${payload.size}",
+                ),
+            )
+        }.use { server ->
+            val dir = folder.newFolder("wrong-offset")
+            val target = File(dir, "video.mp4")
+            partOf(target).writeBytes(payload.copyOfRange(0, 1000))
+
+            downloader.download(server.url, target)
+
+            assertEquals("bytes=1000-", server.lastRange)
+            assertArrayEquals(payload, target.readBytes())
+            assertEquals(payload.size.toLong(), target.length())
+            assertFalse(partOf(target).exists())
+        }
+    }
+
+    @Test
+    fun `a 206 from an unplaceable offset fails instead of splicing bytes`() = runTest {
+        val start = 2_000
+        TestServer {
+            response(
+                code = 206,
+                reason = "Partial Content",
+                body = payload.copyOfRange(start, payload.size),
+                headers = listOf(
+                    "Content-Range" to "bytes $start-${payload.size - 1}/${payload.size}",
+                ),
+            )
+        }.use { server ->
+            val dir = folder.newFolder("unplaceable-offset")
+            val target = File(dir, "video.mp4")
+            val part = partOf(target)
+            part.writeBytes(payload.copyOfRange(0, 1_000))
+
+            var thrown: IOException? = null
+            try {
+                downloader.download(server.url, target)
+            } catch (e: IOException) {
+                thrown = e
+            }
+
+            assertNotNull(thrown)
+            assertFalse(target.exists())
+            // The part cannot be reconciled with the response, so it is dropped
+            // rather than resumed onto bytes that do not line up.
+            assertFalse(part.exists())
+        }
+    }
+
+    @Test
+    fun `a body shorter than the stated total is not promoted`() = runTest {
+        val sent = payload.copyOfRange(0, 2_000)
+        TestServer {
+            response(
+                code = 206,
+                reason = "Partial Content",
+                body = sent,
+                headers = listOf(
+                    "Content-Range" to "bytes 0-${sent.size - 1}/${payload.size}",
+                ),
+            )
+        }.use { server ->
+            val dir = folder.newFolder("short-body")
+            val target = File(dir, "video.mp4")
+            val part = partOf(target)
+
+            var thrown: IOException? = null
+            try {
+                downloader.download(server.url, target)
+            } catch (e: IOException) {
+                thrown = e
+            }
+
+            // The stated whole-file size is larger than what arrived, so the
+            // part is left for a resume and never renamed to the target.
+            assertNotNull(thrown)
+            assertFalse(target.exists())
+            assertArrayEquals(sent, part.readBytes())
         }
     }
 

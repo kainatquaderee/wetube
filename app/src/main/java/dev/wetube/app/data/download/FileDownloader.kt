@@ -21,13 +21,23 @@ import java.io.IOException
  * handed to the player as if it were whole. A failure leaves the part file (and
  * the bytes already on disk) in place, so the next attempt continues with a
  * `Range` request instead of starting over.
+ *
+ * A resume is verified rather than assumed: a `206` is appended only when its
+ * `Content-Range` begins exactly where the part ends, a `416` promotes the part
+ * only when it matches the whole-file size the server states, and the finished
+ * file is moved onto [File] only when its length matches that size. Anything
+ * that disagrees is restarted or discarded, never spliced in or presented as
+ * complete.
  */
 class FileDownloader(private val http: OkHttpClient) {
 
     /**
      * Downloads [url] into [target], resuming a leftover `<target>.part`.
-     * Returns [target] once complete. Throws on failure, leaving the part file
-     * (and its byte count) in place so the next attempt resumes.
+     * Returns [target] once complete. Throws on failure, normally leaving the
+     * part file (and its byte count) in place so the next attempt resumes —
+     * except when the part cannot be trusted (a `206` from a different offset,
+     * or a `416` on an under-sized part), where it is discarded so the next
+     * attempt restarts clean rather than resuming onto bad bytes.
      *
      * [onProgress] is called as bytes land, with the running count and the total
      * when the server states one (`null` otherwise). It is called on the IO
@@ -59,19 +69,48 @@ class FileDownloader(private val http: OkHttpClient) {
         call.execute().use { response ->
             when (response.code) {
                 // The server says the range is unsatisfiable: with a range sent
-                // it means the part already holds the whole file, so there is
-                // nothing left to fetch.
+                // it means the part already holds as much as the server has, and
+                // the Content-Range total says how big the whole file is. Only a
+                // part that actually matches that total is whole; promoting a
+                // shorter one would hand the player a file with a green check
+                // that stops early. Otherwise drop it and fail, so the next
+                // attempt starts over instead of resuming an under-sized part.
                 416 -> {
-                    complete(part, target)
-                    return@withContext target
+                    val total = totalFromContentRange(response.header("Content-Range"))
+                    if (total != null && part.length() == total) {
+                        complete(part, target)
+                        return@withContext target
+                    }
+                    part.delete()
+                    throw IOException("Download failed: incomplete resume (HTTP 416) for $url")
                 }
 
                 // Range ignored (or no range was sent): whatever is in the part
                 // cannot be trusted to line up with the body, so restart.
                 200 -> offset = 0L
 
-                // Appended to the part at the offset already on disk.
-                206 -> Unit
+                // Appended to the part at the offset already on disk — but only
+                // when the body really does begin where the part ends.
+                206 -> {
+                    val start = startFromContentRange(response.header("Content-Range"))
+                    when {
+                        start == offset -> Unit
+                        // The server sent the whole file from the beginning, so
+                        // start the part over from its first byte rather than
+                        // appending a full body onto a partial one.
+                        start == 0L -> offset = 0L
+                        // Anything else cannot be placed: writing it where the
+                        // part ends would splice two different regions into one
+                        // file. Drop the part so the next attempt restarts clean.
+                        else -> {
+                            part.delete()
+                            throw IOException(
+                                "Download failed: unexpected Content-Range " +
+                                    "${response.header("Content-Range")} for $url",
+                            )
+                        }
+                    }
+                }
 
                 else -> {
                     if (!response.isSuccessful) {
@@ -114,6 +153,15 @@ class FileDownloader(private val http: OkHttpClient) {
             // Report the final value even when the body was short or empty, so a
             // UI never ends up mid-bar on completion.
             onProgress(offset + written, total)
+            // A body that stopped early leaves a file smaller than the size the
+            // server stated. Promoting it would show a finished download that
+            // stops mid-video, so leave the part (with its bytes, for a resume)
+            // and fail this attempt instead.
+            if (total != null && part.length() != total) {
+                throw IOException(
+                    "Download failed: got ${part.length()} of $total bytes for $url",
+                )
+            }
             complete(part, target)
         }
         target

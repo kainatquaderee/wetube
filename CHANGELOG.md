@@ -1,9 +1,51 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.3 (versionCode 13).
+Security. This release is 0.2.4 (versionCode 14).
 
-## Unreleased
+## 0.2.4 — 2026-11-14
+
+A fix-up for **offline downloads**, found by reviewing the feature end to end: a
+queued transfer now survives a restart, a resume that disagrees with the server is
+no longer trusted, a finished download that lost its file can be saved again, and
+the rough edges around the queue and the storage cap are closed.
+
+### Fixed
+- **A queued download resumes after a restart.** A transfer left waiting when the
+  app's process was killed now picks up on the next launch; before, it sat at
+  "Waiting to download" until the user happened to start another download.
+- **A resumed download is verified, not trusted.** The downloader now checks the
+  server's `Content-Range` start against the byte offset it asked for, accepts a
+  `416` completion only when the part matches the whole-file size the server
+  states, and refuses to move a file into place unless its length matches. A
+  proxy or server that answers from the wrong offset can no longer be spliced
+  into a corrupt file that is then shown as a finished download.
+- **"Downloaded ✓" is no longer a dead end when the file is gone.** If a finished
+  download's media is removed outside the app — a storage clean-up, a manual
+  delete — the player offers **Download again** and re-queues it in place,
+  instead of a disabled label while playback silently streams from the network.
+- **Changing the storage limit takes effect immediately.** Lowering the cap now
+  trims the oldest finished downloads at once, matching the Settings subtitle,
+  rather than waiting for the next download to finish.
+- **A finished download is no longer dropped, and its file leaked, at the queue
+  cap.** When the 200-record queue filled, the oldest entry was dropped whatever
+  its state, stranding a finished download's file on disk where nothing could
+  reclaim it. Eviction is now file-aware, deletes what it removes, and prefers a
+  record nobody is waiting for over one that is finished or in flight.
+- **Player errors are surfaced instead of swallowed.** A corrupt or undecodable
+  file used to leave a stuck player with no message. A failure a retry cannot
+  clear now says so, and playback recovery re-opens a downloaded file from disk
+  before reaching for the network.
+- **Retrying a failed download behaves consistently.** A re-queue keeps the
+  entry's original file name, timestamps and container, so a retry cannot orphan
+  a half-fetched part file.
+
+### Changed
+- **The storage limit is measured in the units it is labelled with.** "1 GB" now
+  means 1,000,000,000 bytes, matching the Library's size readout, instead of a
+  slightly larger 1024-based ceiling.
+
+## 0.2.3 — 2026-11-14
 
 ### Added
 - **Offline downloads in the app.** A video's More menu now offers **Download**,

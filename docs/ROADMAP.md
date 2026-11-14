@@ -105,6 +105,21 @@ easy to demo.
 - [x] Import subscriptions from Google Takeout CSV / OPML (0.2.2)
 - [x] Subscription feed (local, newest-first) (0.2.2)
 
+## 0.2.4 — download hardening (shipped in this tree)
+- [x] Resume a queued download on the next launch instead of waiting for another
+      download to be started
+- [x] Verify a resumed transfer: a `Content-Range` start must match the requested
+      offset, a `416` promotes only a part matching the stated total, and a file
+      is moved into place only when its length matches
+- [x] Re-download a finished video whose file was removed outside the app
+- [x] Enforce a lowered storage cap immediately
+- [x] File-aware queue-cap eviction, so a dropped finished record cannot strand
+      its media on disk
+- [x] Surface player errors a retry cannot clear, and re-open a downloaded file
+      from disk when playback recovers
+- [x] Consistent re-queue of a failed download (keeps its file name, timestamps
+      and container)
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

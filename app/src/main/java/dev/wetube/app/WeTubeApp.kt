@@ -13,6 +13,10 @@ class WeTubeApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         locator = ServiceLocator(this)
+        // Work left queued by a process that stopped is picked up here: the
+        // download service is not restarted by the platform, so without this a
+        // record stranded mid-queue would wait for the user's next download.
+        locator.resumePendingDownloads()
     }
 
     /**

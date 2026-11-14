@@ -332,6 +332,7 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | Comments | Native top/newest feed with paging, likes, reply counts and avatars; browser fallback |
 | Shorts | Dedicated swipe feed, own progress bar, captions, like/dislike/comment counts, tappable channel, pause indicator |
 | Library | History, favourites, resume points, local subscriptions, Watch Later, play queue, local playlists, video metadata cache |
+| Downloads | Save a video's muxed file for offline play, a Library **Downloads** tab with live progress, retry and remove, play-from-disk with an offline metadata fallback, and a storage cap that trims the oldest finished download first |
 | Accounts | Optional, multiple, removable; cookies excluded from backups |
 | Data portability | Versioned JSON backup through the system file picker |
 | Extras | SponsorBlock auto-skip, Return YouTube Dislike |
@@ -382,7 +383,7 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
   networks. The original captions are shown instead.
 - Comments are read-only: liking, replying and reading replies need a signed-in
   session. The sheet offers the watch page in the browser instead.
-- Downloads and live chat are not implemented yet; see `ROADMAP.md`. Account
+- Live chat is not implemented yet; see `ROADMAP.md`. Account
   sync (§12) pulls subscriptions and a favourites mirror down from the account
   and pushes local changes only after the user consents on the first sync; watch
   history is never synced, and neither are Watch Later, the play queue, local
