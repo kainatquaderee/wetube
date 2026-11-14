@@ -1,7 +1,21 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.4 (versionCode 24).
+Security. This release is 0.3.5 (versionCode 25).
+
+## 0.3.5 — pull-to-refresh and always-on screen (2026-11-14)
+
+Refreshing should not require finding a button, and the phone should not sleep
+while the app is open.
+
+### Added
+- **Pull down to refresh.** The feed is now a pull-to-refresh surface: drag down
+  from the top and it reloads, with the standard spinner. This works on the
+  Trending and Subscriptions feeds, and on the empty and error states too.
+- **The screen stays on while the app is open.** The window now holds the display
+  awake from launch, so browsing, reading a channel or waiting on a feed no longer
+  lets the phone sleep. The flag is dropped automatically when the app is not in
+  the foreground, so it never keeps the screen on from behind another app.
 
 ## 0.3.4 — 2026-11-14
 

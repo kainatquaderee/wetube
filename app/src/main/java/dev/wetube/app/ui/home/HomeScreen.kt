@@ -2,6 +2,7 @@ package dev.wetube.app.ui.home
 
 import android.os.SystemClock
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,10 +17,10 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -283,42 +284,58 @@ fun HomeScreen(
             )
         }
 
-        // A resume-triggered refresh runs in the background of the list the
-        // viewer is already reading, so it would otherwise be invisible. A slim
-        // bar over the content is the feedback that the feed is updating. It is
-        // hidden during the initial load, where LoadingBox already owns the
-        // screen, and during the empty/error states, which carry their own copy.
-        if (state.refreshing && !state.loading && state.videos.isNotEmpty()) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        }
-
-        when {
-            state.loading -> LoadingBox()
-            state.error != null && state.videos.isEmpty() -> MessageBox(
-                title = "Couldn't load the feed",
-                body = state.error,
+        if (state.loading) {
+            LoadingBox()
+        } else {
+            // Pull down from the top of the feed to refresh — the same action the
+            // toolbar button and the resume observer perform — so a refresh never
+            // requires hunting for a button. The indicator also covers a resume
+            // refresh, so a silent update is visible. The empty and error states
+            // sit inside the same list so the pull gesture works there too.
+            PullToRefreshBox(
+                isRefreshing = state.refreshing,
+                onRefresh = { viewModel.load() },
+                modifier = Modifier.fillMaxSize(),
             ) {
-                Button(onClick = { viewModel.load() }) { Text("Retry") }
-            }
-            state.videos.isEmpty() -> MessageBox(
-                title = "Nothing to show yet",
-                body = if (state.feed == Feed.SUBSCRIPTIONS) {
-                    "No subscriptions yet. Open a channel and tap Subscribe, or import a " +
-                        "list from Settings → Import subscriptions."
-                } else {
-                    "No trending videos came back for ${state.region}. Check your connection, " +
-                        "or pick another region in Settings."
-                },
-            )
-            else -> LazyColumn(modifier = Modifier.fillMaxSize().padding(bottom = 8.dp)) {
-                items(state.videos, key = { it.id }) { video ->
-                    VideoCard(
-                        video = video,
-                        onClick = { onVideoClick(video.id) },
-                        onChannelClick = {
-                            if (video.channelId.isNotBlank()) onChannelClick(video.channelId)
-                        },
-                    )
+                LazyColumn(modifier = Modifier.fillMaxSize().padding(bottom = 8.dp)) {
+                    if (state.videos.isEmpty()) {
+                        item {
+                            // Fill the viewport so the message stays centred while
+                            // the list is still a scrollable target for the gesture.
+                            Box(Modifier.fillParentMaxSize()) {
+                                val error = state.error
+                                if (error != null) {
+                                    MessageBox(
+                                        title = "Couldn't load the feed",
+                                        body = error,
+                                    ) {
+                                        Button(onClick = { viewModel.load() }) { Text("Retry") }
+                                    }
+                                } else {
+                                    MessageBox(
+                                        title = "Nothing to show yet",
+                                        body = if (state.feed == Feed.SUBSCRIPTIONS) {
+                                            "No subscriptions yet. Open a channel and tap Subscribe, or import a " +
+                                                "list from Settings → Import subscriptions."
+                                        } else {
+                                            "No trending videos came back for ${state.region}. Check your connection, " +
+                                                "or pick another region in Settings."
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        items(state.videos, key = { it.id }) { video ->
+                            VideoCard(
+                                video = video,
+                                onClick = { onVideoClick(video.id) },
+                                onChannelClick = {
+                                    if (video.channelId.isNotBlank()) onChannelClick(video.channelId)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }

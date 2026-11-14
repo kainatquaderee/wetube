@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,6 +27,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Keep the display on for as long as the app is in the foreground. This
+        // is the cheapest fix for the screen sleeping under a viewer: the flag
+        // lives on the window, so Android drops it the moment the window is not
+        // visible and it can never hold the screen on from behind another app.
+        // The player still does its own finer-grained hold for the surfaces it
+        // owns; this simply covers every screen, including the feeds.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val locator = (application as WeTubeApp).locator
         locator.playback.connect()

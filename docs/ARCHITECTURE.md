@@ -295,9 +295,11 @@ the screen's own back-stack entry refreshes it whenever the entry becomes
 `RESUMED` — returning from a video, another tab, or the background. A monotonic
 "last loaded" stamp with a one-minute floor keeps the observer from doubling the
 cold-start request or re-fetching on a quick tab switch, which matters most for
-Subscriptions, where one load costs a request per channel. Because that refresh
-runs behind the list already on screen, a slim progress bar is shown while it is
-in flight so a silent update is still visible.
+Subscriptions, where one load costs a request per channel. The same reload is
+reachable by hand: the feed is a pull-to-refresh surface (`PullToRefreshBox`), and
+the list sits inside it for every state — videos, empty and error — so the pull
+gesture always has a scrollable target. The pull indicator also covers a resume
+refresh, so a silent update is still visible.
 
 **One writer, one transaction.** A preference change goes through
 `SettingsStore.update { … }`, which runs the read-modify-write *inside* the
@@ -352,13 +354,15 @@ to avoid), a cast or a live stream (both owned by something else), and a video
 with no separate audio rendition to switch to. It also requires **Keep playing in
 the background** to be on, since a paused player has no picture to drop.
 
-**The screen stays on while a video plays.** Both the full player and the Shorts
-reel set the view-level `keepScreenOn` flag on their `PlayerView` whenever
-playback intends to play (`playWhenReady` while playing or buffering). The flag is
-per-view: the window holds the display only while that surface is in the
-foreground, and Android clears it when the surface leaves the window, so there is
-no wake lock to leak. Audio-only playback and casting deliberately do not hold the
-phone's screen — in those cases the phone is in a pocket or the TV is the display.
+**The screen stays on while the app is open.** `MainActivity` adds
+`FLAG_KEEP_SCREEN_ON` to its window at launch, so every screen — feeds, channels,
+settings — holds the display awake and browsing never lets the phone sleep. The
+flag lives on the window, so Android drops it the moment the window is not
+visible: it can never hold the screen on from behind another app or with the phone
+in a pocket. The player and the Shorts reel still manage the view-level
+`keepScreenOn` flag on their `PlayerView` while playback has an intent to play;
+that is redundant next to the window flag but keeps each surface self-contained
+and would matter again if the window-wide hold were ever removed.
 
 ## 7. Permissions
 

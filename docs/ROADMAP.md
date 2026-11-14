@@ -209,6 +209,12 @@ easy to demo.
       full player does, and releases it on leave
 - [x] A resume refresh shows a slim progress bar, so a silent update is visible
 
+## 0.3.5 — pull-to-refresh and always-on screen (shipped in this tree)
+- [x] The feed is a pull-to-refresh surface: drag down from the top to reload,
+      on Trending and Subscriptions and on the empty/error states
+- [x] The window holds the display awake from launch, so the phone no longer
+      sleeps while the app is open; the flag drops when the app is backgrounded
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

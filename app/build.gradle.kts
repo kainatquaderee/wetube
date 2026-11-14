@@ -25,8 +25,8 @@ android {
         applicationId = "dev.wetube.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 24
-        versionName = "0.3.4"
+        versionCode = 25
+        versionName = "0.3.5"
     }
 
     // Keep the APK free of the dependency metadata block; nothing in the app
