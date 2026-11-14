@@ -1,7 +1,32 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.8 (versionCode 18).
+Security. This release is 0.2.9 (versionCode 19).
+
+## 0.2.9 — 2026-11-14
+
+Two fixes found on a real device: a refused Short never tried to recover, and a
+local change made outside the Library tab never reached the account.
+
+### Fixed
+- **A Short that YouTube refuses now recovers, instead of giving up.** The Shorts
+  feed showed "YouTube refused this clip (403). Swipe to another one." and stopped,
+  even though the same clip usually plays when the stream is re-resolved. A played
+  Short that fails on a refused or expired URL now re-resolves through the next
+  playback profile, exactly as the full player already did (0.2.5), and only shows
+  the message after three attempts — so a one-off 403 heals itself.
+- **Favourites and subscriptions made outside the Library are pushed to the
+  account.** Only unsubscribing from the Library tab scheduled a sync, so
+  favouriting a video or subscribing to a channel from the player, a Short, or a
+  channel page updated this device and never reached YouTube — the account's
+  Favourites mirror stayed behind. Every local change to a synced entity now
+  schedules the debounced push the engine was built to receive. Nothing is sent
+  until the first sync has been consented and the sync switch is on.
+
+### Changed
+- **The sync note says what does not sync.** Settings now states plainly that
+  playlists you create in WeTube stay on the device, so the account's Favourites
+  mirror is not mistaken for a two-way playlist sync.
 
 ## 0.2.8 — 2026-11-14
 

@@ -155,6 +155,13 @@ easy to demo.
 - [x] Plainer wording when a backend address is rejected on save
 - [x] Share a Short with the same canonical watch URL the player shares
 
+## 0.2.9 — on-device fixes (shipped in this tree)
+- [x] A refused Short recovers through the next playback profile before it is
+      reported, matching the full player's failover
+- [x] Favourites and subscriptions changed in the player, a Short or a channel
+      page schedule the debounced push, so they reach the account's mirror
+- [x] Settings states that playlists created in WeTube stay on the device
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

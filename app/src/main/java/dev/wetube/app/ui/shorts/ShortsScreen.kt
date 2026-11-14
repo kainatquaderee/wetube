@@ -82,6 +82,8 @@ import dev.wetube.app.ui.comments.CommentsSheet
 import dev.wetube.app.ui.compactCount
 import dev.wetube.app.ui.friendlyError
 import dev.wetube.app.ui.holdToSpeed
+import dev.wetube.app.ui.player.PlaybackErrorAction
+import dev.wetube.app.ui.player.playbackErrorAction
 import dev.wetube.app.ui.rememberIsBuffering
 import dev.wetube.app.ui.rememberIsPlaying
 import dev.wetube.app.ui.rememberPlayerDuration
@@ -113,6 +115,12 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     /** Guards against a slow response for an old page overwriting a newer one. */
     private var generation = 0
+
+    /**
+     * Recovery attempts for the clip on screen. Reset whenever a genuinely new
+     * clip is resolved, so a clip that is merely unplayable cannot loop.
+     */
+    private var recoveries = 0
 
     init {
         load()
@@ -151,27 +159,43 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
         }
     }
 
-    /** Resolves and starts the clip on [index]. Repeated calls for the same page are ignored. */
-    fun play(index: Int) {
+    /**
+     * Resolves and starts the clip on [index]. Repeated calls for the same page
+     * are ignored.
+     *
+     * [recover] is set by [playbackFailed] after a stream URL was refused: it
+     * skips the "same clip already loaded" short-circuit and asks the backend
+     * to drop the profile whose URL just failed, exactly like the full player.
+     */
+    fun play(index: Int, recover: Boolean = false) {
         val video = state.videos.getOrNull(index) ?: return
-        // The shared player may have been taken over by the normal player (the
-        // Shorts screen is kept alive on the back stack). In that case the page
-        // index alone is not enough: check that the loaded media really is this
-        // clip, and resume it when coming back to the section.
-        if (index == playing) {
-            val player = locator.playback.controller.value ?: return
-            val loaded = player.currentMediaItem?.mediaId
-            if (loaded == video.id) {
-                if (!player.isPlaying) player.play()
-                return
+        if (!recover) {
+            // A genuinely new clip gets a fresh recovery budget.
+            recoveries = 0
+            // The shared player may have been taken over by the normal player
+            // (the Shorts screen is kept alive on the back stack). In that case
+            // the page index alone is not enough: check that the loaded media
+            // really is this clip, and resume it when coming back to the
+            // section.
+            if (index == playing) {
+                val player = locator.playback.controller.value ?: return
+                val loaded = player.currentMediaItem?.mediaId
+                if (loaded == video.id) {
+                    if (!player.isPlaying) player.play()
+                    return
+                }
+                if (loaded == null) return
             }
-            if (loaded == null) return
         }
         playing = index
         val request = ++generation
         viewModelScope.launch {
             val result = runCatching {
                 val settings = locator.settings.settings.first()
+                // The URL that just failed came from the leading profile; ask
+                // the backend to start from the next one so the retry is not
+                // the same request that was already rejected.
+                if (recover) locator.backend().forcePlaybackFallback()
                 val detail = locator.backend().video(video.id)
                 val item = StreamResolver.mediaItem(
                     detail,
@@ -205,7 +229,24 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
         if (state.videos.isEmpty()) load() else play(0)
     }
 
+    /**
+     * Handles a playback error on the shared player.
+     *
+     * A 403 or another IO failure is usually a refused or expired stream URL,
+     * which a fresh resolve through the next playback profile can clear — the
+     * same recovery the full player performs. Only errors a retry cannot fix (a
+     * decode or container failure) go straight to the message. Recovery is
+     * bounded so a clip that is genuinely unwatchable cannot loop.
+     */
     fun playbackFailed(error: PlaybackException) {
+        val canRecover = !locator.output.isRemote &&
+            playbackErrorAction(error.errorCode, localSource = false) == PlaybackErrorAction.RECOVER &&
+            recoveries < MAX_PLAYBACK_RECOVERIES
+        if (canRecover) {
+            recoveries += 1
+            play(playing, recover = true)
+            return
+        }
         state = state.copy(
             error = if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) {
                 "YouTube refused this clip (403). Swipe to another one."
@@ -216,6 +257,9 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
     }
 
     companion object {
+        /** How many times a refused clip is re-resolved before it is reported. */
+        private const val MAX_PLAYBACK_RECOVERIES = 3
+
         fun factory(locator: ServiceLocator) = viewModelFactory {
             initializer { ShortsViewModel(locator) }
         }
@@ -386,7 +430,16 @@ fun ShortsScreen(
                         dislikes = if (currentDetail != null) state.dislikes else null,
                         saved = saved,
                         commentCount = commentCount,
-                        onSave = { scope.launch { locator.library.toggleFavourite(subject) } },
+                        onSave = {
+                            scope.launch {
+                                locator.library.toggleFavourite(subject)
+                                // A favourite feeds the account's mirror
+                                // playlist; the engine debounces this and
+                                // refuses to push until the first sync has
+                                // been consented, so it is safe to call.
+                                locator.syncEngine.onLocalChange()
+                            }
+                        },
                         onComments = { showComments = true },
                         onShare = {
                             val send = Intent(Intent.ACTION_SEND).apply {

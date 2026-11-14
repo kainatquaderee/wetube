@@ -119,6 +119,9 @@ asks the backend to drop its leading profile, and the next resolve starts at the
 through to `ANDROID_VR`. A failure a retry cannot clear (a decode or container
 error) is shown to the viewer with an explanation instead of being swallowed, and
 a download being played is re-opened from disk before the network is consulted.
+The Shorts feed shares this recovery for the clip on screen: a refused or expired
+Short URL is re-resolved through the next profile before the "YouTube refused
+this clip" message is shown, and the attempt budget resets on each new clip.
 
 **In-place reloads.** Re-resolving the same video — after a quality or audio-only
 change, or on retry — replaces the `MediaItem` without forcing playback to start
@@ -527,6 +530,11 @@ Library and Settings render the same `FirstSyncConsentDialog`; `confirmFirstSync
 runs exactly the plan the preview described and `dismissFirstSync` writes
 nothing. A change made before consent queues as a `pendingOp`, and `onLocalChange`
 refuses to push it, because `firstSyncDone` gates the incremental path too.
+`onLocalChange` is called from every surface that mutates a synced entity — a
+favourite or a subscription from the player, a Short, a channel page, or an
+unsubscribe from the Library — and debounces a burst of them into one push, so a
+change made anywhere reaches the account rather than only one made in the Library
+tab.
 
 **The push.** `SyncWritePlanner` orders and batches the ops (creates, renames,
 adds, subscribes, removes, unsubscribes) under a per-sync cap, so a flurry of

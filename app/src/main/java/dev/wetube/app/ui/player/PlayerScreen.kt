@@ -525,6 +525,10 @@ class PlayerViewModel(
         viewModelScope.launch {
             val added = locator.library.toggleFavourite(detail.item)
             state = state.copy(favourite = added)
+            // A favourite feeds the account's mirror playlist. The engine
+            // debounces this and refuses to push until the first sync has been
+            // consented, so calling it unconditionally is safe.
+            locator.syncEngine.onLocalChange()
         }
     }
 
@@ -987,6 +991,10 @@ class PlayerViewModel(
                     thumbnail = "",
                 ),
             )
+            // A subscription is a change the account does not know about yet.
+            // The engine debounces this and refuses to push until the first
+            // sync has been consented, so calling it unconditionally is safe.
+            locator.syncEngine.onLocalChange()
         }
     }
 
