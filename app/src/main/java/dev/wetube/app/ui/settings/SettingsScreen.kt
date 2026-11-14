@@ -426,9 +426,9 @@ fun SettingsScreen(
 
         Section("Backend")
         Text(
-            "WeTube talks to YouTube directly by default, with no account and no " +
-                "attestation. If you would rather route metadata through an independent " +
-                "instance, pick Invidious or Piped below.",
+            "WeTube talks to YouTube directly by default, with no account and nothing to " +
+                "set up. If you would rather route it through an independent server, pick " +
+                "Invidious or Piped below.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -485,6 +485,7 @@ fun SettingsScreen(
             label = "Trending region",
             value = regionDraft,
             onValueChange = { regionDraft = it },
+            supportingText = "Two-letter region code, e.g. US.",
         )
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -519,6 +520,18 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+
+        // Only meaningful while an instance is actually in use, so it sits with
+        // the backend choice rather than in a separate section of its own.
+        if (customHostsEnabled) {
+            SwitchRow(
+                title = "Proxy streams through your server",
+                subtitle = "Send media links through your Invidious or Piped server instead of " +
+                    "YouTube. Uses more server bandwidth and can be slower.",
+                checked = settings.proxyStreams,
+                onChange = { value -> viewModel.update { it.copy(proxyStreams = value) } },
+            )
         }
 
         Section("Playback")
@@ -580,8 +593,6 @@ fun SettingsScreen(
             checked = settings.showMature,
             onChange = { value -> viewModel.update { it.copy(showMature = value) } },
         )
-
-        Section("Clean-up")
         SwitchRow(
             title = "SponsorBlock",
             subtitle = "Skip sponsor, intro and interaction segments automatically.",
@@ -593,13 +604,6 @@ fun SettingsScreen(
             subtitle = "Show the community like and dislike counts.",
             checked = settings.showDislikes,
             onChange = { value -> viewModel.update { it.copy(showDislikes = value) } },
-        )
-        SwitchRow(
-            title = "Proxy streams through the instance",
-            subtitle = "Send media links through your Invidious instance instead of YouTube. " +
-                "Uses more instance bandwidth and can be slower.",
-            checked = settings.proxyStreams,
-            onChange = { value -> viewModel.update { it.copy(proxyStreams = value) } },
         )
 
         Section("About")
@@ -633,7 +637,7 @@ fun SettingsScreen(
                 "History, favourites, subscriptions and resume points stay on this device " +
                 "unless you save a backup. Account cookies stay in this app's private storage " +
                 "and are deliberately left out of backup files. Requests go to YouTube in " +
-                "direct mode, or to the instance you choose — nothing else.",
+                "direct mode, or to the server you choose — nothing else.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -858,7 +862,7 @@ private fun AccountsSection(
     Spacer(Modifier.height(6.dp))
     Text(
         "Feeds and subscriptions follow the active account immediately. Age-restricted videos " +
-            "still depend on YouTube's browser challenge, which WeTube does not fake.",
+            "still depend on a browser check that WeTube does not fake.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -1003,6 +1007,7 @@ private fun HostEditor(
     value: String,
     onValueChange: (String) -> Unit,
     enabled: Boolean = true,
+    supportingText: String? = null,
 ) {
     OutlinedTextField(
         value = value,
@@ -1010,6 +1015,7 @@ private fun HostEditor(
         label = { Text(label) },
         singleLine = true,
         enabled = enabled,
+        supportingText = supportingText?.let { { Text(it) } },
         modifier = Modifier.fillMaxWidth(),
     )
 }

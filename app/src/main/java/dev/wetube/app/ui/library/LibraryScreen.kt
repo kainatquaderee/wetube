@@ -190,7 +190,7 @@ private val libraryTabOrder =
 /** The label shown for a tab id. */
 private fun libraryTabLabel(tab: Int): String = when (tab) {
     TAB_HISTORY -> "History"
-    TAB_SAVED -> "Saved"
+    TAB_SAVED -> "Favourites"
     TAB_WATCH_LATER -> "Watch Later"
     TAB_PLAYLISTS -> "Playlists"
     TAB_DOWNLOADS -> "Downloads"
@@ -224,6 +224,9 @@ fun LibraryScreen(
     val syncEnabled by viewModel.syncEnabled.collectAsStateWithLifecycle()
     val account by viewModel.account.collectAsStateWithLifecycle()
     var tab by remember { mutableIntStateOf(TAB_HISTORY) }
+    // Clearing history wipes every resume point, so it asks first; the tab's
+    // button only raises this flag.
+    var confirmClearHistory by remember { mutableStateOf(false) }
 
     Column(modifier.fillMaxSize()) {
         ScrollableTabRow(selectedTabIndex = libraryTabOrder.indexOf(tab)) {
@@ -305,12 +308,12 @@ fun LibraryScreen(
                 title = when (tab) {
                     TAB_HISTORY -> "No watch history"
                     TAB_WATCH_LATER -> "Nothing in Watch Later"
-                    else -> "Nothing saved yet"
+                    else -> "No favourites yet"
                 },
                 body = when (tab) {
                     TAB_HISTORY -> "Videos you watch show up here, stored only on this device."
                     TAB_WATCH_LATER -> "Open a video, tap More → Save to Watch Later."
-                    else -> "Tap Save on a video to keep it here."
+                    else -> "Tap Favourite on a video to keep it here. Watch Later is a separate list."
                 },
             )
         } else {
@@ -329,13 +332,40 @@ fun LibraryScreen(
                 if (tab == TAB_HISTORY) {
                     item {
                         TextButton(
-                            onClick = viewModel::clearHistory,
+                            onClick = { confirmClearHistory = true },
                             modifier = Modifier.fillMaxWidth().padding(16.dp),
                         ) { Text("Clear watch history") }
                     }
                 }
             }
         }
+    }
+
+    // Clearing history is irreversible and takes every resume point with it, so
+    // it asks first — the same guard the playlist delete uses. Nothing is
+    // removed until the dialog is confirmed.
+    if (confirmClearHistory) {
+        AlertDialog(
+            onDismissRequest = { confirmClearHistory = false },
+            title = { Text("Clear watch history?") },
+            text = {
+                Text(
+                    "Every video in your history will be removed from this device, along " +
+                        "with its resume point. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.clearHistory()
+                        confirmClearHistory = false
+                    },
+                ) { Text("Clear") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearHistory = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

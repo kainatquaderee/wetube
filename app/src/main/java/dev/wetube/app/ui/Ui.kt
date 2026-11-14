@@ -59,17 +59,17 @@ fun friendlyError(t: Throwable): String {
         // an attestation token. It is per video and often clears by itself.
         raw.contains("confirm your age", ignoreCase = true) ||
             raw.contains("inappropriate for some users", ignoreCase = true) ->
-            "This video is age-restricted. YouTube only streams it to a browser session that " +
-                "can pass its JavaScript challenge; being signed in is not enough, and WeTube " +
-                "does not fake that challenge. Everything else plays normally."
+            "This video is age-restricted, and YouTube will not stream it here. Signing in " +
+                "is not enough — YouTube requires a browser check that WeTube will not fake. " +
+                "Everything else plays normally."
         raw.contains("not a bot", ignoreCase = true) ->
             "YouTube asked this network to sign in before playing this video. " +
                 "It usually clears in a few minutes; try again, pick another video, " +
                 "or switch to Invidious in Settings."
-        raw.contains("HTTP 404") -> "Not found on this instance."
-        raw.contains("HTTP 5") -> "The instance is having trouble. Try another one in Settings."
+        raw.contains("HTTP 404") -> "Not found. It may have been removed."
+        raw.contains("HTTP 5") -> "The server is having trouble. Try again, or switch to another server in Settings."
         raw.contains("Unable to resolve host") || raw.contains("UnknownHost") ->
-            "Can't reach the instance. Check your connection or change it in Settings."
+            "Can't reach the server. Check your connection, or change it in Settings."
         raw.contains("timeout", ignoreCase = true) -> "The request timed out."
         raw.isBlank() -> "Something went wrong."
         else -> raw.take(220)

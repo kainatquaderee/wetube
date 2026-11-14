@@ -639,7 +639,7 @@ private fun ShortActions(
         )
         RailAction(
             icon = if (saved) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-            label = if (saved) "Saved" else "Save",
+            label = if (saved) "Favourited" else "Favourite",
             tint = if (saved) Color(0xFFFF2D55) else Color.White,
             onClick = onSave,
         )

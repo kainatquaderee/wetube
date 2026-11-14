@@ -1,7 +1,36 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.5 (versionCode 15).
+Security. This release is 0.2.6 (versionCode 16).
+
+## 0.2.6 — 2026-11-14
+
+A clarity pass, driven by reading the app as a first-time user: destructive
+actions ask before they act, two lists that looked alike are named apart, and the
+last of the developer vocabulary is gone from anything on screen.
+
+### Changed
+- **Clearing watch history asks first.** The button in the History tab now opens a
+  confirmation that spells out what is lost — every video in the list and its
+  resume point — instead of wiping it on a single tap. It matches the guard the
+  playlist delete already had.
+- **Favourites and Watch Later read as different things.** The Library tab that
+  holds liked videos is now called **Favourites**, and the control that adds one
+  says **Favourite** — on the player and on the Shorts rail — rather than "Save",
+  which was too easily read as "Save to Watch Later". The favourites empty state
+  points out that Watch Later is a separate list.
+- **Settings is grouped by what each control affects.** The grab-bag **Clean-up**
+  section is gone: **SponsorBlock** and **Show likes and dislikes** now sit under
+  **Content** next to the mature-content switch, and the stream-proxy toggle moved
+  to **Backend**, where it appears only when an Invidious or Piped backend is
+  selected and can actually apply.
+- **Messages are written for people, not developers.** Errors no longer say
+  "instance", "attestation" or "JavaScript challenge"; an empty trending feed
+  explains itself and points at the region setting; the Backend and sign-in notes
+  drop the same jargon; and the first-sync prompt now says what a "removal" is —
+  an item you deleted here that would also be deleted from the account.
+- **The trending-region field explains itself**, with a hint under it: "Two-letter
+  region code, e.g. US."
 
 ## 0.2.5 — 2026-11-14
 

@@ -32,10 +32,11 @@ fun FirstSyncConsentDialog(
         text = {
             Text(
                 "Your account has ${preview.subscriptionsOnAccount} subscriptions and " +
-                    "${preview.favouritesOnAccount} favourites. WeTube has " +
+                    "${preview.favouritesOnAccount} favourites. This device has " +
                     "${preview.subscriptionsToPush} subscription(s) and " +
-                    "${preview.favouritesToPush} favourite(s) to add, and " +
-                    "${preview.removalsToPush} removal(s). Merge them?",
+                    "${preview.favouritesToPush} favourite(s) to add. " +
+                    "${preview.removalsToPush} item(s) you removed here would also be removed " +
+                    "from the account. Merge them?",
             )
         },
         confirmButton = { TextButton(onClick = onMerge) { Text("Merge") } },

@@ -172,6 +172,14 @@ design, and why the direct backend is the default.
 
 ## Status
 
+0.2.6 is a **clarity pass**. Clearing watch history now asks first, so a stray
+tap cannot wipe the list and every resume point with it; the liked-videos list and
+the control that fills it are both called **Favourite**, so they read as distinct
+from **Watch Later**; Settings is regrouped by what each control affects — the
+stream-proxy toggle moves to Backend and only appears for a non-direct backend;
+and developer vocabulary ("instance", "attestation", "challenge") is gone from
+everything on screen.
+
 0.2.5 makes playback recovery **fail over between client profiles**. When a
 stream URL is refused mid-playback the player re-resolves the video and resumes
 where the viewer was, and it now asks the backend to drop its leading client

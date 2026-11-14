@@ -131,6 +131,18 @@ easy to demo.
 - [x] Consistent re-queue of a failed download (keeps its file name, timestamps
       and container)
 
+## 0.2.6 — clarity & polish (shipped in this tree)
+- [x] Confirm before clearing watch history, matching the playlist-delete guard
+- [x] Name the liked-videos list **Favourites** and its control **Favourite**, on
+      the player and the Shorts rail, so it is distinct from Watch Later
+- [x] Merge the Clean-up section away: SponsorBlock and Show likes/dislikes join
+      Content; the stream-proxy toggle joins Backend, shown only for a non-direct
+      backend
+- [x] Replace developer vocabulary in errors and notes ("instance",
+      "attestation", "JavaScript challenge") with plain wording
+- [x] Explain an empty trending feed and hint the Trending-region field
+- [x] Spell out what a first-sync "removal" is in the consent prompt
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

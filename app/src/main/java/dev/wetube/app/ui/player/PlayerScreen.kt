@@ -401,7 +401,7 @@ class PlayerViewModel(
                 val item = local
                     ?.let { StreamResolver.localItem(detail.item, it.file, it.mime) }
                     ?: (StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
-                        ?: error("This instance returned no playable streams."))
+                        ?: error("No playable stream was available for this video."))
                 // Remembered here, at the one place the local-vs-network choice
                 // is made, so an error later knows whether the bytes it is
                 // playing came from the file or the stream.
@@ -1662,7 +1662,7 @@ private fun PlayerInfo(
                 }
                 AssistChip(
                     onClick = onToggleFavourite,
-                    label = { Text("Save") },
+                    label = { Text(if (favourite) "Favourited" else "Favourite") },
                     leadingIcon = {
                         Icon(
                             if (favourite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,

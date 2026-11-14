@@ -230,12 +230,13 @@ fun HomeScreen(
                 Button(onClick = { viewModel.load() }) { Text("Retry") }
             }
             state.videos.isEmpty() -> MessageBox(
-                title = "Nothing here",
+                title = "Nothing to show yet",
                 body = if (state.feed == Feed.SUBSCRIPTIONS) {
                     "No subscriptions yet. Open a channel and tap Subscribe, or import a " +
                         "list from Settings → Import subscriptions."
                 } else {
-                    "This instance returned no trending videos for ${state.region}."
+                    "No trending videos came back for ${state.region}. Check your connection, " +
+                        "or pick another region in Settings."
                 },
             )
             else -> LazyColumn(modifier = Modifier.fillMaxSize().padding(bottom = 8.dp)) {
