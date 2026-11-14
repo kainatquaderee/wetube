@@ -1,7 +1,36 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.2 (versionCode 12).
+Security. This release is 0.2.3 (versionCode 13).
+
+## Unreleased
+
+### Added
+- **Offline downloads in the app.** A video's More menu now offers **Download**,
+  and a **Downloads** tab in the Library lists everything saved — each row's live
+  progress or saved size, with retry and remove, and the total space it uses. Once
+  a video is saved, the player prefers the local file, so it plays with no
+  connection instead of streaming.
+- **A storage cap for downloads.** A Downloads section in Settings limits how
+  much finished media is kept. When the limit is exceeded, the oldest finished
+  download is removed first; the newest is never removed, so a single download
+  larger than the cap still completes and stays.
+- **Downloaded videos play from disk, well or poorly connected.** The local file
+  is used whenever one exists and playback is not being cast; if fetching a
+  video's details then fails, the player falls back to the thin metadata saved
+  with the download rather than refusing to play.
+- **Offline download core.** A device-local record per video the user asks to
+  keep, and a resumable downloader that fetches one muxed progressive file. It
+  streams into a `.part` file and renames it into place only once complete, so a
+  half-finished download is never presented as a playable file. The records are
+  never synced and are not part of a backup.
+- **The download service and controller.** A foreground service of type
+  `dataSync` drains the queue one file at a time, front to back, resuming each
+  `.part` file and showing one aggregate progress notification with a Cancel; the
+  process-scoped `DownloadManager` is the UI's handle on the queue and the
+  service's progress sink. Removing an entry stops its download and deletes its
+  files, and the service stops once the queue is empty. No WorkManager — the work
+  is a single visible, cancellable transfer, not a scheduled job.
 
 ## 0.2.2 — 2026-11-14
 

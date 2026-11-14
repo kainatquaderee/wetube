@@ -6,4 +6,14 @@
     <string name="cast_notification_title">Casting to %1$s</string>
     <string name="cast_notification_text">Your phone can sleep; the device keeps playing.</string>
     <string name="cast_notification_unknown_device">a device</string>
+    <string name="notification_channel_downloads">Downloads</string>
+    <string name="notification_channel_downloads_description">Shows progress while videos are saved to this device.</string>
+    <string name="download_notification_title_idle">Preparing downloads…</string>
+    <string name="download_notification_title_single">Downloading %1$s</string>
+    <string name="download_notification_title_progress">Downloading %1$d of %2$d</string>
+    <string name="download_notification_text_single">Saving to this device</string>
+    <string name="download_notification_text_progress">%1$s</string>
+    <string name="download_notification_cancel">Cancel</string>
+    <string name="download_error_unavailable">Not available for download</string>
+    <string name="download_error_failed">Download failed</string>
 </resources>

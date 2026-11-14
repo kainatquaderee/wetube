@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -15,8 +16,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
@@ -33,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -43,6 +51,10 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
 import dev.wetube.app.data.auth.Account
+import dev.wetube.app.data.download.DownloadEntry
+import dev.wetube.app.data.download.DownloadProgress
+import dev.wetube.app.data.download.DownloadState
+import dev.wetube.app.data.download.formatBytes
 import dev.wetube.app.data.local.LocalPlaylist
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
@@ -51,6 +63,7 @@ import dev.wetube.app.sync.SyncStatus
 import dev.wetube.app.ui.FirstSyncConsentDialog
 import dev.wetube.app.ui.MessageBox
 import dev.wetube.app.ui.VideoCard
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -162,16 +175,17 @@ private const val TAB_SAVED = 1
 private const val TAB_SUBS = 2
 private const val TAB_WATCH_LATER = 3
 private const val TAB_PLAYLISTS = 4
+private const val TAB_DOWNLOADS = 5
 
 /**
  * Tab order as drawn. The `TAB_*` values are stable identifiers, not positions:
  * Watch Later was appended last (`= 3`) but is presented third, so the row maps
  * them through this list rather than assuming id == index. Playlists likewise
  * sits between Watch Later and Subscriptions even though it was added after
- * both.
+ * both, and Downloads was added last again.
  */
 private val libraryTabOrder =
-    listOf(TAB_HISTORY, TAB_SAVED, TAB_WATCH_LATER, TAB_PLAYLISTS, TAB_SUBS)
+    listOf(TAB_HISTORY, TAB_SAVED, TAB_WATCH_LATER, TAB_PLAYLISTS, TAB_SUBS, TAB_DOWNLOADS)
 
 /** The label shown for a tab id. */
 private fun libraryTabLabel(tab: Int): String = when (tab) {
@@ -179,6 +193,7 @@ private fun libraryTabLabel(tab: Int): String = when (tab) {
     TAB_SAVED -> "Saved"
     TAB_WATCH_LATER -> "Watch Later"
     TAB_PLAYLISTS -> "Playlists"
+    TAB_DOWNLOADS -> "Downloads"
     else -> "Subscriptions"
 }
 
@@ -269,6 +284,14 @@ fun LibraryScreen(
                 // returns its id, so there is no need to look it up by name.
                 onCreate = { name, onCreated -> viewModel.createPlaylist(name, onCreated) },
             )
+            return@Column
+        }
+
+        if (tab == TAB_DOWNLOADS) {
+            // The manager is only reached from here, not from the ViewModel, so
+            // a viewer who never opens this tab never builds the downloader or
+            // wakes the service.
+            DownloadsTab(locator = locator, onVideoClick = onVideoClick)
             return@Column
         }
 
@@ -394,6 +417,163 @@ private fun PlaylistRow(playlist: LocalPlaylist, onClick: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * The status line for one download row.
+ *
+ * A running download shows a percentage whenever the server has said how big
+ * the file is, and a plain word when it has not; the other states read a field
+ * already on the entry. Pure and top-level so the wording is unit-tested rather
+ * than buried in the composable.
+ */
+internal fun downloadStatusLine(entry: DownloadEntry, progress: DownloadProgress?): String =
+    when (entry.state) {
+        DownloadState.QUEUED -> "Waiting to download"
+        DownloadState.RUNNING ->
+            progress?.fraction?.let { "${(it * 100).roundToInt()}%" } ?: "Downloading…"
+        DownloadState.COMPLETE -> "Saved · ${formatBytes(entry.bytes)}"
+        DownloadState.FAILED -> entry.error ?: "Download failed"
+    }
+
+/**
+ * The Downloads tab: the saved videos, their live progress and the controls to
+ * retry or forget them.
+ *
+ * It talks to the `DownloadManager` directly, with no ViewModel of its own:
+ * removing and retrying are fire-and-forget calls on a process-scoped
+ * controller, and the three flows it renders are already long-lived. Reading
+ * the manager here — rather than in [LibraryViewModel] — is deliberate, so the
+ * download graph is built only when this tab is actually opened.
+ */
+@Composable
+private fun DownloadsTab(
+    locator: ServiceLocator,
+    onVideoClick: (String) -> Unit,
+) {
+    val entries by locator.downloads.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
+    val progress by locator.downloads.progress.collectAsStateWithLifecycle()
+    val storedBytes by locator.downloads.storageBytes.collectAsStateWithLifecycle(initialValue = 0L)
+
+    if (entries.isEmpty()) {
+        MessageBox(
+            title = "No downloads yet",
+            body = "Open a video, tap More → Download, and it is saved here. Downloaded " +
+                "videos play with no connection.",
+        )
+        return
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Using ${formatBytes(storedBytes)} on this device",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            if (entries.any { it.state == DownloadState.COMPLETE }) {
+                TextButton(onClick = { locator.downloads.clearCompleted() }) {
+                    Text("Clear finished")
+                }
+            }
+        }
+        LazyColumn(Modifier.weight(1f)) {
+            items(entries, key = { it.video.id }) { entry ->
+                DownloadRow(
+                    entry = entry,
+                    progress = progress[entry.video.id],
+                    onClick = { onVideoClick(entry.video.id) },
+                    onRemove = { locator.downloads.remove(entry.video.id) },
+                    onRetry = { locator.downloads.retry(entry.video.id) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One download: a thumbnail and its text, with a single trailing action chosen
+ * by the entry's state — retry a failure, forget anything else.
+ */
+@Composable
+private fun DownloadRow(
+    entry: DownloadEntry,
+    progress: DownloadProgress?,
+    onClick: () -> Unit,
+    onRemove: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(112.dp)
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            AsyncImage(
+                model = entry.video.thumbnail,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                entry.video.title,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (entry.video.channelName.isNotBlank()) {
+                Text(
+                    entry.video.channelName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                downloadStatusLine(entry, progress),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (entry.state == DownloadState.FAILED) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        if (entry.state == DownloadState.FAILED) {
+            IconButton(onClick = onRetry) {
+                Icon(Icons.Default.Refresh, contentDescription = "Retry download")
+            }
+        } else {
+            IconButton(onClick = onRemove) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = if (entry.state == DownloadState.COMPLETE) {
+                        "Remove download"
+                    } else {
+                        "Cancel download"
+                    },
+                )
+            }
         }
     }
 }

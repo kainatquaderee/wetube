@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CastConnected
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Fullscreen
@@ -95,8 +96,11 @@ import android.os.Looper
 import android.view.MotionEvent
 import android.view.ViewGroup
 import coil.compose.AsyncImage
+import dev.wetube.app.data.download.DownloadState
+import dev.wetube.app.data.download.EnqueueResult
 import dev.wetube.app.data.extras.SponsorSegment
 import dev.wetube.app.data.local.LocalPlaylist
+import dev.wetube.app.data.model.Playback
 import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
@@ -167,6 +171,12 @@ data class PlayerUiState(
      * still-offline network visibly do something before it reports the reason.
      */
     val casting: Boolean = false,
+    /**
+     * A one-line answer to the last download tap — queued, refused, or already
+     * saved. Transient: the screen clears it after a few seconds, so it cannot
+     * linger as stale state the next time this video is opened.
+     */
+    val downloadMessage: String? = null,
 )
 
 /**
@@ -220,6 +230,18 @@ class PlayerViewModel(
     ) { list, id -> list.any { it.id == id } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    /**
+     * Where the current video's offline download stands, or `null` when none
+     * exists. Derived from the store, like [watchLater], so the More-menu label
+     * can never disagree with the Downloads tab; [snapshotFlow] carries the id
+     * across an end-screen swap that the store flow on its own would miss.
+     */
+    val downloadState: StateFlow<DownloadState?> = combine(
+        locator.downloads.downloads,
+        snapshotFlow { currentVideoId },
+    ) { list, id -> list.firstOrNull { it.video.id == id }?.state }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     /** How many items are waiting to play; shown on the queue button. */
     val queueCount: StateFlow<Int> = locator.library.queue
         .map { it.size }
@@ -241,12 +263,29 @@ class PlayerViewModel(
             state = state.copy(loading = true, error = null)
             runCatching {
                 val settings = locator.settings.settings.first()
-                val detail = locator.backend().video(id)
+                // A finished download is preferred over the network even when
+                // the network is up: the bytes are already here, so playing them
+                // costs a request the user has already paid for and keeps
+                // working with no connection at all. Casting is the exception —
+                // a renderer cannot open a file that lives on this phone — so a
+                // cast session keeps using the stream.
+                val local = locator.downloads.localMedia(id).takeIf { !locator.output.isRemote }
+
+                val detail = runCatching { locator.backend().video(id) }.getOrElse { failure ->
+                    // The watch-page call is the first thing being offline
+                    // breaks. With a saved file there is still a video to play,
+                    // using the metadata the download recorded; with nothing
+                    // saved there is no way to start it, so the failure stands.
+                    local?.let { offlineDetail(id) } ?: throw failure
+                }
                 // A "play next" tap can land while this request is in flight;
                 // the stale answer must not replace the newer video.
                 if (id != currentVideoId) return@runCatching
-                val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
-                    ?: error("This instance returned no playable streams.")
+
+                val item = local
+                    ?.let { StreamResolver.localItem(detail.item, it.file, it.mime) }
+                    ?: (StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
+                        ?: error("This instance returned no playable streams."))
 
                 val resumeAt = runCatching {
                     locator.library.resumePoints.first()[id]?.positionMs
@@ -313,6 +352,31 @@ class PlayerViewModel(
         }
     }
 
+    /**
+     * A minimal [VideoDetail] for a video whose file is already saved.
+     *
+     * Built from the entry the download recorded, because the watch-page call
+     * that would normally supply the title, channel, likes and related videos is
+     * exactly what being offline breaks. The metadata the player chrome reads —
+     * title, channel and artwork — travels with the entry, so those are filled
+     * in and the extras are left empty. A completed record is required: a
+     * queued or failed entry has no file to back it up, and the caller only
+     * reaches here when `DownloadManager.localMedia` found one.
+     */
+    private suspend fun offlineDetail(videoId: String): VideoDetail? =
+        locator.downloads.downloads.first()
+            .firstOrNull { it.video.id == videoId && it.state == DownloadState.COMPLETE }
+            ?.let { entry ->
+                VideoDetail(
+                    item = entry.video,
+                    description = "",
+                    likes = 0,
+                    subscribersText = "",
+                    playback = Playback(),
+                    related = emptyList(),
+                )
+            }
+
     /** Called once a second from the UI while playback is visible. */
     fun onTick(positionMs: Long) {
         val detail = state.detail ?: return
@@ -347,6 +411,35 @@ class PlayerViewModel(
     fun toggleWatchLater() {
         val item = state.detail?.item ?: return
         viewModelScope.launch { locator.library.toggleWatchLater(item) }
+    }
+
+    /**
+     * Asks for the current video to be saved for offline playback.
+     *
+     * The More menu disables this while a download is queued, running or done,
+     * so the only states that reach here are "nothing asked yet" and "the last
+     * attempt failed". [DownloadManager.enqueue] answers both, re-queuing a
+     * failure in place. The outcome becomes [PlayerUiState.downloadMessage]
+     * because the queue drains in a background service, so without a word here
+     * the tap would look like it did nothing.
+     */
+    fun toggleDownload() {
+        val item = state.detail?.item ?: return
+        viewModelScope.launch {
+            val result = locator.downloads.enqueue(item)
+            state = state.copy(
+                downloadMessage = when (result) {
+                    EnqueueResult.Queued -> "Saving for offline playback…"
+                    EnqueueResult.Already -> "This video is already saved."
+                    EnqueueResult.NotAvailable -> "This video cannot be downloaded."
+                },
+            )
+        }
+    }
+
+    /** Dismisses the transient download message once it has been read. */
+    fun clearDownloadMessage() {
+        state = state.copy(downloadMessage = null)
     }
 
     /** Appends the current video to the play queue; a duplicate is ignored. */
@@ -772,6 +865,8 @@ fun PlayerScreen(
     val inWatchLater by viewModel.watchLater.collectAsStateWithLifecycle()
     val queueCount by viewModel.queueCount.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    // Where this video's offline download stands; drives the More-menu label.
+    val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
     // The single source of "where playback is". Reading it is what constructs
     // the lazy casting graph, so a viewer who never opens the cast sheet pays
     // nothing for it beyond this StateFlow.
@@ -1149,6 +1244,8 @@ fun PlayerScreen(
                 segmentCount = state.segments.size,
                 favourite = state.favourite,
                 watchLater = inWatchLater,
+                downloadState = downloadState,
+                downloadMessage = state.downloadMessage,
                 descriptionExpanded = state.descriptionExpanded,
                 speed = state.speed,
                 captionsEnabled = viewModel.captions.enabled,
@@ -1160,6 +1257,8 @@ fun PlayerScreen(
                 onToggleDescription = viewModel::toggleDescription,
                 onToggleFavourite = viewModel::toggleFavourite,
                 onToggleWatchLater = viewModel::toggleWatchLater,
+                onDownload = viewModel::toggleDownload,
+                onClearDownloadMessage = viewModel::clearDownloadMessage,
                 onAddToQueue = viewModel::addToQueue,
                 onOpenPlaylistSheet = { showPlaylistSheet = true },
                 onToggleSubscription = viewModel::toggleSubscription,
@@ -1285,6 +1384,8 @@ private fun PlayerInfo(
     segmentCount: Int,
     favourite: Boolean,
     watchLater: Boolean,
+    downloadState: DownloadState?,
+    downloadMessage: String?,
     descriptionExpanded: Boolean,
     speed: Float,
     captionsEnabled: Boolean,
@@ -1296,6 +1397,8 @@ private fun PlayerInfo(
     onToggleDescription: () -> Unit,
     onToggleFavourite: () -> Unit,
     onToggleWatchLater: () -> Unit,
+    onDownload: () -> Unit,
+    onClearDownloadMessage: () -> Unit,
     onAddToQueue: () -> Unit,
     onOpenPlaylistSheet: () -> Unit,
     onToggleSubscription: () -> Unit,
@@ -1319,6 +1422,21 @@ private fun PlayerInfo(
     val chapters = remember(detail.item.id) { parseChapters(detail.description) }
     val scroll = rememberScrollState()
     val chipsScroll = rememberScrollState()
+    val downloadLabel = when (downloadState) {
+        null -> "Download"
+        DownloadState.QUEUED, DownloadState.RUNNING -> "Downloading…"
+        DownloadState.COMPLETE -> "Downloaded ✓"
+        DownloadState.FAILED -> "Retry download"
+    }
+    // The download answer is a toast-like line under the actions, not a menu
+    // entry that stays open; it clears itself so the next video never inherits
+    // a stale message.
+    LaunchedEffect(downloadMessage) {
+        if (downloadMessage != null) {
+            delay(4_000)
+            onClearDownloadMessage()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -1428,6 +1546,19 @@ private fun PlayerInfo(
                         },
                     )
                     DropdownMenuItem(
+                        text = { Text(downloadLabel) },
+                        leadingIcon = { Icon(Icons.Default.Download, null) },
+                        // Saving is a one-way action: while a download is
+                        // waiting, running or done there is nothing more to do
+                        // from here, so only an idle or failed state stays
+                        // tappable (a failed one as a retry).
+                        enabled = downloadState == null || downloadState == DownloadState.FAILED,
+                        onClick = {
+                            moreMenu = false
+                            onDownload()
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Playback speed: ${formatSpeed(speed)}") },
                         leadingIcon = { Icon(Icons.Default.Speed, null) },
                         onClick = {
@@ -1501,6 +1632,15 @@ private fun PlayerInfo(
                     }
                 }
             }
+        }
+
+        if (downloadMessage != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                downloadMessage,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
 
         if (segmentCount > 0) {

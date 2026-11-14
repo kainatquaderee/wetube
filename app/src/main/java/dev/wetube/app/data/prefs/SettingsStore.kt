@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.wetube.app.core.DEFAULT_INVIDIOUS_HOST
@@ -30,6 +31,12 @@ data class AppSettings(
     val videoQuality: Int = 0,
     /** Keep audio alive when the app goes to the background. */
     val backgroundPlayback: Boolean = true,
+    /**
+     * How much storage finished downloads may occupy, in megabytes. `0` means
+     * unlimited; otherwise the downloads the app keeps should total no more
+     * than this, with the oldest finished ones removed first as new ones arrive.
+     */
+    val downloadLimitMb: Int = 0,
     /** Subtitle preferences, shared by the player and Shorts. */
     val captionsEnabled: Boolean = false,
     val captionLanguage: String = "",
@@ -71,6 +78,7 @@ class SettingsStore internal constructor(
         val audioOnly = booleanPreferencesKey("audio_only")
         val videoQuality = stringPreferencesKey("video_quality")
         val backgroundPlayback = booleanPreferencesKey("background_playback")
+        val downloadLimitMb = intPreferencesKey("download_limit_mb")
         val captions = booleanPreferencesKey("captions")
         val captionLanguage = stringPreferencesKey("caption_language")
         val captionTranslate = stringPreferencesKey("caption_translate")
@@ -102,6 +110,7 @@ class SettingsStore internal constructor(
             prefs[Keys.audioOnly] = next.audioOnly
             prefs[Keys.videoQuality] = next.videoQuality.toString()
             prefs[Keys.backgroundPlayback] = next.backgroundPlayback
+            prefs[Keys.downloadLimitMb] = next.downloadLimitMb
             prefs[Keys.captions] = next.captionsEnabled
             prefs[Keys.captionLanguage] = next.captionLanguage
             prefs[Keys.captionTranslate] = next.captionTranslateTo
@@ -127,6 +136,7 @@ class SettingsStore internal constructor(
         audioOnly = this[Keys.audioOnly] ?: false,
         videoQuality = this[Keys.videoQuality]?.toIntOrNull() ?: 0,
         backgroundPlayback = this[Keys.backgroundPlayback] ?: true,
+        downloadLimitMb = this[Keys.downloadLimitMb] ?: 0,
         captionsEnabled = this[Keys.captions] ?: false,
         captionLanguage = this[Keys.captionLanguage].orEmpty(),
         captionTranslateTo = this[Keys.captionTranslate].orEmpty(),

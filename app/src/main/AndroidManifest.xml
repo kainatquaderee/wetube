@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Held only while the cast sheet is open: an M-SEARCH is sent from a normal
          socket, and Android drops its unicast answers without this normal-level
@@ -73,6 +74,13 @@
             android:name=".player.CastKeepAliveService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- One file at a time from the device-local queue, with a progress
+             notification and a Cancel while the queue is non-empty. -->
+        <service
+            android:name=".data.download.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
     </application>
 </manifest>

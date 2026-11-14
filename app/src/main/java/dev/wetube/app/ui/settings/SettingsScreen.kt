@@ -559,6 +559,12 @@ fun SettingsScreen(
             steps = 14,
         )
 
+        Section("Downloads")
+        DownloadLimitRow(
+            limitMb = settings.downloadLimitMb,
+            onChange = { value -> viewModel.update { it.copy(downloadLimitMb = value) } },
+        )
+
         Section("Content")
         SwitchRow(
             title = "Show mature content",
@@ -903,6 +909,61 @@ private fun QualityRow(quality: Int, onChange: (Int) -> Unit) {
         }
     }
 }
+
+/**
+ * The storage-limit choices the dropdown offers: megabytes, with `0` meaning
+ * unlimited.
+ */
+private val downloadLimitChoices = listOf(0, 1_000, 2_000, 5_000, 10_000)
+
+/**
+ * The storage limit for downloads, as a dropdown row.
+ *
+ * Mirrors [QualityRow]: the current value on the button, the choices in the
+ * menu. The subtitle is where the eviction rule lives, because "10 GB" alone
+ * does not say what happens when a new download would cross it.
+ */
+@Composable
+private fun DownloadLimitRow(limitMb: Int, onChange: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Storage limit", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "How much space downloads may use on this device. When the limit is reached, " +
+                    "the oldest finished downloads are removed first.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Box {
+            OutlinedButton(onClick = { open = true }) { Text(downloadLimitLabel(limitMb)) }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                downloadLimitChoices.forEach { value ->
+                    DropdownMenuItem(
+                        text = {
+                            val label = downloadLimitLabel(value)
+                            Text(if (value == limitMb) "$label  ✓" else label)
+                        },
+                        onClick = {
+                            open = false
+                            onChange(value)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The label for a stored megabyte limit; `0` or less reads as unlimited. */
+private fun downloadLimitLabel(limitMb: Int): String =
+    if (limitMb <= 0) "Unlimited" else "${limitMb / 1000} GB"
 
 @Composable
 private fun SwitchRow(

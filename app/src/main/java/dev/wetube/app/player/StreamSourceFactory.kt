@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.drm.DrmSessionManagerProvider
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -31,10 +32,19 @@ class StreamSourceFactory(
     private val dataSourceFactory = OkHttpDataSource.Factory(httpClient)
     private val progressive = ProgressiveMediaSource.Factory(dataSourceFactory)
     private val hls = HlsMediaSource.Factory(dataSourceFactory)
+    // A downloaded file is read straight off the disk: `DefaultDataSource`
+    // understands `file:` and `content:` URIs where `OkHttpDataSource` does not.
+    private val files = ProgressiveMediaSource.Factory(DefaultDataSource.Factory(context))
     private val delegate = DefaultMediaSourceFactory(context)
 
     override fun createMediaSource(mediaItem: MediaItem): MediaSource {
         val uri = mediaItem.localConfiguration?.uri
+
+        // A local path never touches OkHttp; it is the whole point of having
+        // saved the file, and OkHttp cannot open a `file:` URI at all.
+        if (uri != null && (uri.scheme == "file" || uri.scheme == "content")) {
+            return files.createMediaSource(mediaItem)
+        }
 
         if (uri != null && uri.scheme == StreamResolver.MERGE_SCHEME) {
             val videoUrl = uri.getQueryParameter("video").orEmpty()

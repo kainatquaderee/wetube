@@ -7,6 +7,8 @@ import androidx.media3.common.MimeTypes
 import dev.wetube.app.data.model.Playback
 import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
+import dev.wetube.app.data.model.VideoItem
+import java.io.File
 
 /**
  * Turns a backend's [dev.wetube.app.data.model.Playback] into a Media3 item.
@@ -47,13 +49,7 @@ object StreamResolver {
         val p = detail.playback
         if (p.isEmpty) return null
 
-        val metadata = MediaMetadata.Builder()
-            .setTitle(detail.item.title)
-            .setArtist(detail.item.channelName)
-            .apply {
-                if (detail.item.thumbnail.isNotBlank()) setArtworkUri(Uri.parse(detail.item.thumbnail))
-            }
-            .build()
+        val metadata = metadataFor(detail.item)
 
         // HLS is one adaptive manifest — which is how live streams arrive — and
         // there is nothing to choose inside it at this layer, so the quality
@@ -101,6 +97,32 @@ object StreamResolver {
         val fallback = video?.format ?: bestAudio
         return fallback?.let { build(it.url, it.mime, detail.item.id, metadata) }
     }
+
+    /**
+     * The item for a video already saved to the device.
+     *
+     * [file] is a local path, so the item never touches the network — the point
+     * of a download. It carries the same metadata as the streaming item so the
+     * player UI looks identical whether the bytes came from the network or the
+     * disk.
+     */
+    fun localItem(video: VideoItem, file: File, mime: String): MediaItem =
+        MediaItem.Builder()
+            .setUri(Uri.fromFile(file))
+            .setMediaId(video.id)
+            .setMimeType(mime.ifBlank { MimeTypes.VIDEO_MP4 })
+            .setMediaMetadata(metadataFor(video))
+            .build()
+
+    /** The title/channel/artwork shared by the streaming and local items. */
+    private fun metadataFor(video: VideoItem): MediaMetadata =
+        MediaMetadata.Builder()
+            .setTitle(video.title)
+            .setArtist(video.channelName)
+            .apply {
+                if (video.thumbnail.isNotBlank()) setArtworkUri(Uri.parse(video.thumbnail))
+            }
+            .build()
 
     /**
      * The height [mediaItem] would actually play at, or `0` when that cannot be

@@ -95,8 +95,8 @@ easy to demo.
       recorded video)
 - [ ] Automatic backend failover: if the player URL fails, retry through another
       client profile or instance rather than showing an error
-- [ ] Offline downloads (video + audio merge, or muxed), resumable, with a
-      download manager UI and storage cap
+- [x] Offline downloads (video + audio merge, or muxed), resumable, with a
+      download manager UI and storage cap (0.2.3)
 - [x] Playlists: create, reorder, play all (local, device-only; 0.2.1)
 - [x] Watch Later (device-only; 0.2.1)
 - [x] Queue: add to queue, drag to reorder, autoplay from the queue (0.2.1)

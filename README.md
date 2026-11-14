@@ -48,6 +48,10 @@ resolves.
   final frame; one tap plays it in the same player
 - A playback failure keeps the title, channel, chips and comments usable below,
   with a retry on the player
+- **Offline downloads**: tap **More → Download** on a video to keep it on the
+  device. A **Downloads** tab in the Library lists what is saved with its live
+  progress and lets you retry or remove an item; a saved video plays with no
+  connection, and a Downloads section in Settings caps how much is kept
 
 **Discovery**
 - Home feed by region, or your own recommendations and subscriptions when signed in
@@ -167,6 +171,14 @@ one class. `docs/ARCHITECTURE.md` explains the transport, playback and subtitle
 design, and why the direct backend is the default.
 
 ## Status
+
+0.2.3 takes videos **offline**. A video's More menu offers **Download**, and a
+**Downloads** tab in the Library lists everything saved — live progress, saved
+size, retry and remove — with a Settings cap on how much finished media is kept.
+A saved video plays from the device with no connection, falling back to the thin
+metadata stored alongside the download if the watch page cannot be reached; the
+downloader resumes from a `.part` file, so an interrupted transfer picks up where
+it stopped rather than starting over.
 
 0.2.2 makes subscriptions work **without an account**. Import an existing list
 from a Google Takeout `subscriptions.csv` or an OPML file exported by another

@@ -141,6 +141,58 @@ is an `OnTouchListener` that does not consume the event, so the native controls
 keep working. In Shorts it is a Compose pointer-input modifier that also leaves
 the tap-to-pause and vertical pager untouched.
 
+### Offline downloads
+
+A video the user asks to keep is recorded in a device-local store — its own
+DataStore key, one entry per video, kept in enqueue order — and fetched as a
+**single muxed progressive file**: one request, one file, with no separate audio
+track to merge. The store is never synced and is deliberately left out of
+backups: the media bytes live in the downloads directory, which a backup does
+not carry, so a restored record could point at a file that is no longer there.
+
+The fetch is resumable. It streams into `<name>.part` and only renames that file
+onto the final name once the body is complete, so a partial download is never
+presented as a playable file. A resume sends `Range: bytes=<offset>-` from
+whatever the part file already holds, and a server that ignores the range simply
+restarts the part. A record left RUNNING by a process that stopped mid-download
+reads back as queued — in memory only — so the work is picked up again rather
+than stranded.
+
+The queue is drained by a foreground `Service` of type `dataSync`
+(`DownloadService`), not by a background scheduler. It walks the store front to
+back, **one file at a time**, skipping entries it cannot resolve and marking the
+rest failed rather than stopping, so one dead video cannot strand the queue
+behind it. A single aggregate notification shows the progress (determinate while
+the transfer's size is known, indeterminate until then) and offers one Cancel;
+cancelling stops the transfer and removes its records, and a download cancelled
+this way is never recorded as a failure. Progress itself is in memory only — the
+store records state transitions, nothing more, because a process that dies
+mid-download has no progress worth keeping. Removing an entry stops its download
+and deletes its files, part file included. When the queue is empty the service
+takes its notification away and stops.
+
+There is deliberately **no WorkManager**. The work is one user-driven,
+cancellable transfer whose progress the user is watching, not a set of
+constraints to satisfy later: a foreground service keeps the process alive and
+puts a live, cancellable notification in front of the user, with no scheduler
+dependency in the graph. The controller the UI talks to (`DownloadManager`) holds
+no `Context` and no UI, so it is tested against a real store and downloader with
+no device involved; only the directory to write into and the service start are
+supplied by the app.
+
+The UI half keeps the same separation. The player asks the manager for a
+completed file before it resolves a network source and plays the local one
+whenever it exists and output is not being cast; if the watch-details request
+then fails — the case a downloaded video is meant to survive — it falls back to
+the thin metadata saved with the entry rather than refusing to play. The
+Library's **Downloads** tab reads the manager's flows directly, with no
+ViewModel of its own, so the download graph is built only when that tab is
+opened. A storage cap in Settings is read through a supplier rather than
+captured as a value, so a limit changed there takes effect without rebuilding the
+manager; when finished media exceeds it, the oldest finished download is removed
+first and the newest is always kept, because evicting the file a user just waited
+for would be perverse.
+
 ## 3. Subtitles and auto-translation
 
 Caption tracks come from the player response of the video that is already being

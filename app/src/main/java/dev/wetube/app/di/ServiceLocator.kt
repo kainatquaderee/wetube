@@ -1,6 +1,8 @@
 package dev.wetube.app.di
 
 import android.content.Context
+import android.content.Intent
+import androidx.core.content.ContextCompat
 import dev.wetube.app.BuildConfig
 import dev.wetube.app.data.backend.BackendType
 import dev.wetube.app.data.backend.ContentFilterBackend
@@ -15,6 +17,11 @@ import dev.wetube.app.data.auth.AuthStore
 import dev.wetube.app.data.extras.DislikeClient
 import dev.wetube.app.data.extras.SponsorBlockClient
 import dev.wetube.app.data.content.AgeGateStore
+import dev.wetube.app.data.download.DownloadManager
+import dev.wetube.app.data.download.DownloadService
+import dev.wetube.app.data.download.DownloadStore
+import dev.wetube.app.data.download.FileDownloader
+import dev.wetube.app.data.download.mediaDirectory
 import dev.wetube.app.data.local.BackupStore
 import dev.wetube.app.data.local.AccountKeySource
 import dev.wetube.app.data.local.LibraryStore
@@ -101,6 +108,43 @@ class ServiceLocator(context: Context) {
         },
     )
     val backup = BackupStore(library, settings, json)
+
+    /**
+     * The download queue's own record, over the same `ktube_library` DataStore
+     * [library] uses; both resolve the one `Context.libraryStore` delegate.
+     */
+    val downloadStore = DownloadStore(appContext, json)
+
+    /**
+     * The UI's handle on offline downloads and the sink the download service
+     * reports progress to. Lazy, like the rest of the service-backed graph: a
+     * user who never downloads anything never builds the downloader or wakes the
+     * service.
+     */
+    val downloads: DownloadManager by lazy {
+        DownloadManager(
+            store = downloadStore,
+            downloader = FileDownloader(http),
+            directory = mediaDirectory(appContext),
+            resolveSource = { id -> backend().progressive(id) },
+            startWorker = {
+                // A foreground service start can be refused when the app is in
+                // the background; a failed nudge is not worth crashing over,
+                // because the queue is re-drained the next time the app is in
+                // front.
+                runCatching {
+                    ContextCompat.startForegroundService(
+                        appContext,
+                        Intent(appContext, DownloadService::class.java),
+                    )
+                }
+            },
+            scope = appScope,
+            // The stored limit is megabytes; the manager deals in bytes. A small
+            // read off the same DataStore the UI already observes.
+            limitBytes = { settings.settings.first().downloadLimitMb.toLong() * 1024L * 1024L },
+        )
+    }
     val ageGate = AgeGateStore(appContext)
     val sponsorBlock = SponsorBlockClient(jsonHttp)
     val dislikes = DislikeClient(jsonHttp)
