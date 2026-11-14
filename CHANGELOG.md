@@ -1,7 +1,27 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.5 (versionCode 25).
+Security. This release is 0.3.6 (versionCode 26).
+
+## 0.3.6 — infinite scroll (2026-11-14)
+
+The feed now keeps going instead of stopping at one screenful.
+
+### Added
+- **The Trending feed loads more as you reach the bottom.** Scrolling near the
+  end appends the next page automatically, with a small spinner at the foot of
+  the list while it loads — the way the real front page behaves. It keeps the
+  viewer's place, skips anything already shown, and stops cleanly when the feed
+  runs out.
+- **Paging follows the client that produced the page.** Continuation tokens are
+  handed back to the same client profile that minted them, so the signed-in
+  personal feed stays personal and the anonymous feed stays anonymous, without
+  a second request to work out which surface to use.
+
+### Changed
+- The Subscriptions feed is assembled from the device-local channel list, so it
+  does not paginate; the infinite scroll applies to Trending, where the server
+  actually offers a next page.
 
 ## 0.3.5 — pull-to-refresh and always-on screen (2026-11-14)
 

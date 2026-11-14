@@ -67,7 +67,9 @@ The default `InnerTubeBackend` speaks plain JSON over HTTP:
   bound to fixed DTOs. A field YouTube adds or removes does not break the app;
   the parser simply finds what it needs.
 - **Continuation tokens.** Search and feeds use the token the server returns,
-  not a fabricated "load more".
+  not a fabricated "load more". The front page's token is tagged with the client
+  profile that produced it, so a continuation is always sent back to the same
+  surface (signed-in personal or anonymous) instead of guessing again.
 - **The Shorts feed is a sequence, not a shelf.** It loads the reel watch
   sequence — the same recommendation surface the real Shorts tab uses — seeded
   around its opening clip and walked a few continuation pages deep, so it answers
@@ -300,6 +302,20 @@ reachable by hand: the feed is a pull-to-refresh surface (`PullToRefreshBox`), a
 the list sits inside it for every state — videos, empty and error — so the pull
 gesture always has a scrollable target. The pull indicator also covers a resume
 refresh, so a silent update is still visible.
+
+**Trending keeps loading at the bottom.** The backend returns a page plus an
+opaque next token, and the list watches its own scroll position: when the last
+visible card comes within a few rows of the end, the next page is requested and
+appended, with a spinner as the list's final item while it is in flight. The
+token is tagged with the client profile that produced it, so a continuation is
+sent back to the same surface; a blank, absent or unchanged token ends the feed
+instead of asking for the page just read. Appends merge by id against the items
+already shown, so a card repeated across pages is neither duplicated nor given
+the same list key. A page that finishes after a refresh or a feed switch is
+discarded, and a failed append stops pagination rather than retrying on every
+scroll frame; pulling to refresh starts it over. Subscriptions has no server
+continuation — it is assembled from the local channel list — so it stays a
+single, complete pass.
 
 **One writer, one transaction.** A preference change goes through
 `SettingsStore.update { … }`, which runs the read-modify-write *inside* the

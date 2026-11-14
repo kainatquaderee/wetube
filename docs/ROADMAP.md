@@ -215,6 +215,14 @@ easy to demo.
 - [x] The window holds the display awake from launch, so the phone no longer
       sleeps while the app is open; the flag drops when the app is backgrounded
 
+## 0.3.6 — infinite scroll (shipped in this tree)
+- [x] Trending appends the next page as the list nears its end, with a footer
+      spinner, and stops cleanly when the feed runs out
+- [x] Appended pages skip ids already shown, so a repeated card is never doubled
+      and no two list items share a key
+- [x] A continuation is sent back to the client profile that minted it, so the
+      signed-in personal feed and the anonymous feed never mix
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

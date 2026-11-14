@@ -3,6 +3,7 @@ package dev.wetube.app.data.backend
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
+import dev.wetube.app.data.model.FeedPage
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
@@ -22,6 +23,16 @@ interface TubeBackend {
     val displayName: String
 
     suspend fun trending(region: String): List<VideoItem>
+
+    /**
+     * One page of the front-page feed. [nextPage] is a token from a previous
+     * page, or `null` for the first page.
+     *
+     * Backends whose feed cannot be paged keep this default: one call to
+     * [trending] and no next page, so the feed simply ends at the first page.
+     */
+    suspend fun trendingPage(region: String, nextPage: String? = null): FeedPage =
+        FeedPage(trending(region))
 
     suspend fun search(query: String, nextPage: String? = null): SearchResult
 

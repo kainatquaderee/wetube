@@ -4,6 +4,7 @@ import dev.wetube.app.data.content.AgeGateStore
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
+import dev.wetube.app.data.model.FeedPage
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
@@ -50,6 +51,11 @@ class ContentFilterBackend(
     }
 
     override suspend fun trending(region: String): List<VideoItem> = visible(delegate.trending(region))
+
+    override suspend fun trendingPage(region: String, nextPage: String?): FeedPage {
+        val page = delegate.trendingPage(region, nextPage)
+        return FeedPage(videos = visible(page.videos), nextPage = page.nextPage)
+    }
 
     override suspend fun search(query: String, nextPage: String?): SearchResult {
         val result = delegate.search(query, nextPage)

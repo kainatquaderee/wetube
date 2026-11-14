@@ -131,3 +131,14 @@ data class SearchResult(
     val channels: List<ChannelInfo> = emptyList(),
     val nextPage: String? = null,
 )
+
+/**
+ * One page of the front-page feed, plus the token that asks for the next one.
+ *
+ * [nextPage] is opaque to the UI: it is whatever the backend needs to resume,
+ * and `null` means the feed has ended (or the backend cannot page it at all).
+ */
+data class FeedPage(
+    val videos: List<VideoItem>,
+    val nextPage: String? = null,
+)

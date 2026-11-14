@@ -8,11 +8,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -23,9 +26,12 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -43,6 +49,8 @@ import dev.wetube.app.ui.LoadingBox
 import dev.wetube.app.ui.MessageBox
 import dev.wetube.app.ui.VideoCard
 import dev.wetube.app.ui.friendlyError
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -57,7 +65,43 @@ data class HomeUiState(
     val feed: Feed = Feed.TRENDING,
     /** A one-line note under the chips, e.g. when not every subscription is fetched. */
     val feedNote: String? = null,
+    /**
+     * Token for the next Trending page, or `null` when the feed has ended (or
+     * the backend cannot page it). Never set for Subscriptions, which is
+     * assembled locally and has no continuation.
+     */
+    val nextPage: String? = null,
+    /** True while an extra page is being appended below the list. */
+    val appending: Boolean = false,
 )
+
+/**
+ * Appends [page] to [existing], keeping the order both lists arrived in and
+ * dropping ids already shown.
+ *
+ * YouTube can repeat an item across continuations, so appending blindly would
+ * duplicate cards and, worse, give two list entries the same Compose key. The
+ * page itself is de-duplicated too, in case a single response repeats an id.
+ */
+internal fun appendFeedPage(existing: List<VideoItem>, page: List<VideoItem>): List<VideoItem> {
+    if (page.isEmpty()) return existing
+    val seen = existing.mapTo(HashSet(existing.size)) { it.id }
+    val appended = ArrayList<VideoItem>(page.size)
+    for (item in page) if (seen.add(item.id)) appended += item
+    return if (appended.isEmpty()) existing else existing + appended
+}
+
+/**
+ * The token to keep for the next page, or `null` to stop paginating.
+ *
+ * A blank token, or the same token coming back unchanged, would ask for the
+ * page that was just read; both end the feed instead of looping on it.
+ */
+internal fun nextFeedToken(next: String?, pageJustRead: String?): String? =
+    next?.takeIf { it.isNotBlank() && it != pageJustRead }
+
+/** How many cards before the end the next page is requested. */
+private const val FEED_PREFETCH_DISTANCE = 6
 
 /**
  * Whether a feed last loaded at [lastLoadedAtMs] should be refreshed at [nowMs].
@@ -83,6 +127,13 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
      */
     private var lastLoadedAtMs = 0L
 
+    /**
+     * Bumped by every fresh load. A page that finishes appending after the feed
+     * has been refreshed or switched is dropped rather than glued onto the new
+     * list, which would mix two feeds' items and tokens.
+     */
+    private var generation = 0
+
     init {
         load()
     }
@@ -91,8 +142,14 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
         // Stamped on entry, not on success: a resume that lands while the first
         // request is still in flight must not start a second one.
         lastLoadedAtMs = SystemClock.elapsedRealtime()
+        generation++
         viewModelScope.launch {
-            state = state.copy(loading = state.videos.isEmpty(), refreshing = true, error = null)
+            state = state.copy(
+                loading = state.videos.isEmpty(),
+                refreshing = true,
+                error = null,
+                appending = false,
+            )
             runCatching {
                 val settings = locator.settings.settings.first()
                 state = state.copy(region = settings.region)
@@ -101,18 +158,58 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
                     // it works for a signed-out user exactly as for a signed-in one.
                     loadLocalSubscriptions()
                 } else {
-                    val videos = locator.backend().trending(settings.region)
+                    val page = locator.backend().trendingPage(settings.region)
                     state = state.copy(
                         loading = false,
                         refreshing = false,
                         // Backends that do not de-duplicate (Invidious, Piped)
                         // can repeat an item between the first page and its next.
-                        videos = videos.distinctBy { it.id },
+                        videos = page.videos.distinctBy { it.id },
+                        nextPage = page.nextPage,
+                        appending = false,
                         feedNote = null,
                     )
                 }
             }.onFailure {
                 state = state.copy(loading = false, refreshing = false, error = friendlyError(it))
+            }
+        }
+    }
+
+    /**
+     * Appends the next Trending page.
+     *
+     * Called as the list nears its end, so the feed grows the way the real
+     * front page does instead of stopping at one screenful. Guarded against
+     * overlapping calls because a scroll can fire the request before the footer
+     * has appeared, and against a stale result because the viewer may switch
+     * feeds while a page is in flight.
+     */
+    fun loadMore() {
+        if (state.feed != Feed.TRENDING) return
+        val token = state.nextPage ?: return
+        if (state.loading || state.refreshing || state.appending) return
+
+        state = state.copy(appending = true)
+        val startedGeneration = generation
+        viewModelScope.launch {
+            runCatching {
+                locator.backend().trendingPage(state.region, token)
+            }.onSuccess { page ->
+                // A refresh or feed switch landed while this page was loading;
+                // its own result owns the list now.
+                if (startedGeneration != generation) return@launch
+                state = state.copy(
+                    videos = appendFeedPage(state.videos, page.videos),
+                    nextPage = nextFeedToken(page.nextPage, token),
+                    appending = false,
+                )
+            }.onFailure {
+                if (startedGeneration != generation) return@launch
+                // Keep what is on screen. Releasing the token stops a failed
+                // append from being retried on every scroll frame; pulling to
+                // refresh starts pagination over.
+                state = state.copy(nextPage = null, appending = false)
             }
         }
     }
@@ -134,7 +231,14 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
 
         if (channels.isEmpty()) {
             // The empty-state MessageBox in the composable carries the guidance.
-            state = state.copy(videos = emptyList(), loading = false, refreshing = false, feedNote = null)
+            state = state.copy(
+                videos = emptyList(),
+                loading = false,
+                refreshing = false,
+                feedNote = null,
+                nextPage = null,
+                appending = false,
+            )
             return
         }
 
@@ -163,6 +267,8 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
             videos = feedOrder(working, MAX_FEED_ITEMS),
             loading = false,
             refreshing = false,
+            nextPage = null,
+            appending = false,
             feedNote = if (channels.size > MAX_FEED_CHANNELS) {
                 "Showing recent uploads from $MAX_FEED_CHANNELS of ${channels.size} subscriptions."
             } else {
@@ -173,7 +279,13 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     fun select(feed: Feed) {
         if (feed == state.feed) return
-        state = state.copy(feed = feed, videos = emptyList(), loading = true)
+        state = state.copy(
+            feed = feed,
+            videos = emptyList(),
+            loading = true,
+            nextPage = null,
+            appending = false,
+        )
         load()
     }
 
@@ -241,6 +353,24 @@ fun HomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // Infinite scroll: when the last visible card comes within a few rows of the
+    // end, ask for the next page. Keying the effect on the token re-arms the
+    // detector for every page; `distinctUntilChanged` keeps the request to one
+    // per crossing instead of one per scroll frame, and the view model guards
+    // overlapping calls.
+    val listState = rememberLazyListState()
+    LaunchedEffect(listState, state.nextPage) {
+        if (state.nextPage == null) return@LaunchedEffect
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            info.totalItemsCount > 0 && lastVisible >= info.totalItemsCount - FEED_PREFETCH_DISTANCE
+        }
+            .distinctUntilChanged()
+            .filter { it }
+            .collect { viewModel.loadMore() }
+    }
+
     Column(modifier.fillMaxSize()) {
         TopAppBar(
             title = {
@@ -297,7 +427,10 @@ fun HomeScreen(
                 onRefresh = { viewModel.load() },
                 modifier = Modifier.fillMaxSize(),
             ) {
-                LazyColumn(modifier = Modifier.fillMaxSize().padding(bottom = 8.dp)) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize().padding(bottom = 8.dp),
+                ) {
                     if (state.videos.isEmpty()) {
                         item {
                             // Fill the viewport so the message stays centred while
@@ -334,6 +467,21 @@ fun HomeScreen(
                                     if (video.channelId.isNotBlank()) onChannelClick(video.channelId)
                                 },
                             )
+                        }
+                        if (state.appending) {
+                            item(key = "feed-appending") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 20.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(28.dp),
+                                        strokeWidth = 2.5.dp,
+                                    )
+                                }
+                            }
                         }
                     }
                 }

@@ -13,6 +13,7 @@ import dev.wetube.app.data.model.CaptionTrack
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.CommentThreadInfo
+import dev.wetube.app.data.model.FeedPage
 import dev.wetube.app.data.model.Playback
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.StreamFormat
@@ -381,21 +382,69 @@ class InnerTubeBackend(
 
     // ---- TubeBackend ----------------------------------------------------
 
-    override suspend fun trending(region: String): List<VideoItem> {
+    override suspend fun trending(region: String): List<VideoItem> = trendingPage(region).videos
+
+    override suspend fun trendingPage(region: String, nextPage: String?): FeedPage {
+        // A continuation must be sent back to the same client that produced it:
+        // the token is minted per client profile, and the signed-in personal
+        // feed only exists on the web surface. The profile therefore travels
+        // inside the token rather than being guessed again later.
+        if (nextPage != null) {
+            val resumed = decodeFeedToken(nextPage) ?: return FeedPage(emptyList())
+            val response = call(
+                "browse",
+                resumed.profile,
+                buildJsonObject { put("continuation", resumed.token) },
+            )
+            return FeedPage(
+                videos = response.videos(),
+                nextPage = response.continuationToken()?.let { encodeFeedToken(resumed.profile, it) },
+            )
+        }
+
         // Signed in, the account's own recommendations only exist on the web
         // surface; the native home feed would be the anonymous one. Fall back
         // to the anonymous feed if the web response comes back empty.
         if (auth.headers().isNotEmpty()) {
             val personal = runCatching {
-                call("browse", web, buildJsonObject { put("browseId", "FEwhat_to_watch") }).videos()
-            }.getOrDefault(emptyList())
-            if (personal.isNotEmpty()) return personal
+                call("browse", web, buildJsonObject { put("browseId", "FEwhat_to_watch") })
+            }.getOrNull()
+            if (personal != null) {
+                val videos = personal.videos()
+                if (videos.isNotEmpty()) {
+                    return FeedPage(
+                        videos = videos,
+                        nextPage = personal.continuationToken()?.let { encodeFeedToken(web, it) },
+                    )
+                }
+            }
         }
         val response = call("browse", vr, buildJsonObject {
             put("browseId", "FEwhat_to_watch")
         })
-        return response.videos()
+        return FeedPage(
+            videos = response.videos(),
+            nextPage = response.continuationToken()?.let { encodeFeedToken(vr, it) },
+        )
     }
+
+    /** A feed page token, tagged with the client profile that minted it. */
+    private fun encodeFeedToken(profile: Profile, token: String): String =
+        "${profile.clientId}|$token"
+
+    private fun decodeFeedToken(page: String): ProfileToken? {
+        val bar = page.indexOf('|')
+        if (bar <= 0) return null
+        val profile = when (page.substring(0, bar)) {
+            web.clientId -> web
+            vr.clientId -> vr
+            else -> return null
+        }
+        val token = page.substring(bar + 1)
+        return if (token.isBlank()) null else ProfileToken(profile, token)
+    }
+
+    private data class ProfileToken(val profile: Profile, val token: String)
 
     /**
      * The account's own subscriptions feed. Empty without a session, because the
