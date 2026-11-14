@@ -1,0 +1,25 @@
+{
+  "onResponseReceivedActions": [
+    {
+      "appendContinuationItemsAction": {
+        "continuationItems": [
+          {
+            "playlistVideoRenderer": {
+              "videoId": "v3",
+              "setVideoId": "set-3",
+              "index": { "simpleText": "3" },
+              "title": { "simpleText": "Third song" }
+            }
+          },
+          {
+            "continuationItemRenderer": {
+              "continuationEndpoint": {
+                "continuationCommand": { "token": "tok-3" }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

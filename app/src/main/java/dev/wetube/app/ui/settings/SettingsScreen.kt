@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -36,6 +37,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -63,6 +65,10 @@ import dev.wetube.app.data.backend.BackendType
 import dev.wetube.app.data.local.MAX_BACKUP_BYTES
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.sync.CapabilityProbe
+import dev.wetube.app.sync.SyncCapabilityCheck
+import dev.wetube.app.sync.SyncStatus
+import dev.wetube.app.ui.FirstSyncConsentDialog
 import dev.wetube.app.ui.formatSpeed
 import dev.wetube.app.ui.friendlyError
 import dev.wetube.app.ui.qualityHeights
@@ -82,11 +88,57 @@ class SettingsViewModel(private val locator: ServiceLocator) : ViewModel() {
     val activeIndex: StateFlow<Int> = locator.auth.activeIndex
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
+    /** The engine's live state, so the section can show progress and failures. */
+    val syncStatus: StateFlow<SyncStatus> = locator.syncEngine.status
+
     /** Last backup/restore/account message, shown under the buttons. */
     var message by mutableStateOf<String?>(null)
 
+    /**
+     * The last capability-check result, or `null` before one has run. Lives in
+     * the ViewModel rather than a store because it is debug-only, ephemeral and
+     * never persisted.
+     */
+    var capabilityReport by mutableStateOf<List<CapabilityProbe>?>(null)
+
     fun update(block: (AppSettings) -> AppSettings) {
         viewModelScope.launch { locator.settings.update(block) }
+    }
+
+    fun syncNow() = viewModelScope.launch { locator.syncEngine.syncNow() }
+
+    /** The user approved the first push in the consent dialog. */
+    fun mergeFirstSync() = viewModelScope.launch { locator.syncEngine.confirmFirstSync() }
+
+    fun dismissFirstSync() = locator.syncEngine.dismissFirstSync()
+
+    /**
+     * Runs the read-only probes, and the create/delete write probe too when
+     * [writeProbe] is true. The report is stored so the section can render it.
+     *
+     * A `null` transport (signed out, or a non-Direct backend) becomes a single
+     * failed probe rather than an empty report, so the user is told *why*
+     * nothing ran.
+     */
+    fun runCapabilityCheck(writeProbe: Boolean) {
+        // Defense-in-depth: the write probe creates and deletes a real playlist,
+        // so it must never run from a release build even if a caller reaches it.
+        if (!BuildConfig.DEBUG) return
+        viewModelScope.launch {
+            val backend = locator.backend().sync
+            capabilityReport = if (backend == null) {
+                listOf(
+                    CapabilityProbe(
+                        name = "Transport",
+                        passed = false,
+                        detail = "Sync is unavailable on this backend or while signed out.",
+                    ),
+                )
+            } else {
+                val check = SyncCapabilityCheck(backend)
+                check.checkReads() + if (writeProbe) check.checkWriteProbe() else emptyList()
+            }
+        }
     }
 
     fun switchTo(index: Int) {
@@ -139,6 +191,7 @@ fun SettingsScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
     val activeIndex by viewModel.activeIndex.collectAsStateWithLifecycle()
+    val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     val saveBackup = rememberLauncherForActivityResult(
@@ -205,6 +258,18 @@ fun SettingsScreen(
             onSignIn = onSignIn,
             onSwitch = viewModel::switchTo,
             onRemove = viewModel::removeActive,
+        )
+
+        Section("Account sync")
+        AccountSyncSection(
+            signedIn = accounts.isNotEmpty(),
+            settings = settings,
+            status = syncStatus,
+            capabilityReport = viewModel.capabilityReport,
+            onToggleSync = { value -> viewModel.update { it.copy(syncEnabled = value) } },
+            onToggleMirror = { value -> viewModel.update { it.copy(mirrorRemovals = value) } },
+            onSyncNow = viewModel::syncNow,
+            onRunCapabilityCheck = viewModel::runCapabilityCheck,
         )
 
         Section("Backup & restore")
@@ -438,6 +503,163 @@ fun SettingsScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(32.dp))
+    }
+
+    // The first sync can be triggered from here too, so the same consent prompt
+    // is needed on this screen.
+    (syncStatus as? SyncStatus.AwaitingConsent)?.let { awaiting ->
+        FirstSyncConsentDialog(
+            preview = awaiting.preview,
+            onMerge = viewModel::mergeFirstSync,
+            onDismiss = viewModel::dismissFirstSync,
+        )
+    }
+}
+
+/**
+ * The "Account sync" block, between Accounts and Backup.
+ *
+ * Signed out it is a single line, because sync has nothing to talk to. Signed
+ * in and switched on it exposes the two independent policies — the master
+ * switch and "mirror removals" — plus a manual run and the live status. The
+ * capability check is debug-only: it creates and deletes a real playlist, which
+ * is fine for a developer working against a test account but must never be
+ * reachable in a release build.
+ */
+@Composable
+private fun AccountSyncSection(
+    signedIn: Boolean,
+    settings: AppSettings,
+    status: SyncStatus,
+    capabilityReport: List<CapabilityProbe>?,
+    onToggleSync: (Boolean) -> Unit,
+    onToggleMirror: (Boolean) -> Unit,
+    onSyncNow: () -> Unit,
+    onRunCapabilityCheck: (Boolean) -> Unit,
+) {
+    if (!signedIn) {
+        Text(
+            "Sign in to sync your subscriptions and favourites with YouTube.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+
+    SwitchRow(
+        title = "Sync with YouTube",
+        subtitle = "Keep your subscriptions and Favourites in step with your account, " +
+            "in both directions.",
+        checked = settings.syncEnabled,
+        onChange = onToggleSync,
+    )
+    if (!settings.syncEnabled) return
+
+    Text(
+        "Subscriptions and the Favourites playlist sync two ways. Your watch history " +
+            "is never uploaded.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    SwitchRow(
+        title = "Mirror removals",
+        subtitle = "Apply deletions made on the account to this device. When off, a remote " +
+            "removal is surfaced but not applied.",
+        checked = settings.mirrorRemovals,
+        onChange = onToggleMirror,
+    )
+
+    Spacer(Modifier.height(8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Button(onClick = onSyncNow) { Text("Sync now") }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            syncStatusLine(status),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (status is SyncStatus.Failed) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+
+    if (settings.backend != BackendType.INNERTUBE) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Sync needs the Direct backend, so it is unavailable on Invidious or Piped.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    if (BuildConfig.DEBUG) {
+        Spacer(Modifier.height(10.dp))
+        CapabilityCheck(report = capabilityReport, onRun = onRunCapabilityCheck)
+    }
+}
+
+/** A concise, display-ready line for a [SyncStatus]. */
+private fun syncStatusLine(status: SyncStatus): String = when (status) {
+    SyncStatus.Disabled -> "Sync is unavailable."
+    SyncStatus.Idle -> "Not synced yet."
+    is SyncStatus.Running -> "Syncing..."
+    is SyncStatus.AwaitingConsent -> "Waiting for you to merge."
+    is SyncStatus.Done -> "Synced just now."
+    is SyncStatus.Failed -> status.message
+}
+
+/**
+ * The debug-only capability check: a button that opens a confirmation dialog
+ * (because the write probe really does create and delete a playlist) and the
+ * report lines below it.
+ */
+@Composable
+private fun CapabilityCheck(
+    report: List<CapabilityProbe>?,
+    onRun: (Boolean) -> Unit,
+) {
+    var confirming by remember { mutableStateOf(false) }
+
+    OutlinedButton(onClick = { confirming = true }) { Text("Run sync capability check") }
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Run sync capability check?") },
+            text = {
+                Text(
+                    "This reads your account's subscriptions and playlists, then creates and " +
+                        "immediately deletes a private playlist named \"${SyncCapabilityCheck.WRITE_PROBE_TITLE}\". " +
+                        "It changes nothing else on your account.",
+                )
+            },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = { confirming = false; onRun(false) }) { Text("Run read check") }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { confirming = false; onRun(true) }) {
+                        Text("Run read + write check")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    report?.forEach { probe ->
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "${probe.name} · ${if (probe.passed) "pass" else "fail"} · ${probe.detail}",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (probe.passed) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+        )
     }
 }
 

@@ -1,0 +1,30 @@
+{
+  "contents": {
+    "richGridRenderer": {
+      "contents": [
+        {
+          "richItemRenderer": {
+            "content": {
+              "videoRenderer": {
+                "videoId": "vid-1",
+                "shortBylineText": {
+                  "runs": [
+                    {
+                      "text": "Gamma",
+                      "navigationEndpoint": {
+                        "browseEndpoint": {
+                          "browseId": "UCMMMMNNNNOOOOPPPPQQQQRR",
+                          "canonicalBaseUrl": "/channel/UCMMMMNNNNOOOOPPPPQQQQRR"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

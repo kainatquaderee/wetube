@@ -66,7 +66,12 @@ resolves.
 - Multiple accounts, switch or remove them at any time
 - Signed in, the home feed follows your YouTube history and the
   **Subscriptions** chip shows the channels you follow on YouTube
-- Nothing is uploaded: cookies stay in the app's private storage
+- **Sync (optional, off by default).** Reconcile your subscriptions and a
+  favourites mirror with the account, pull-first. The first sync pulls the
+  account down and then stops to ask before it writes anything — showing only
+  counts — so nothing changes on your account unless you tap Merge
+- Nothing is uploaded unless you turn sync on and consent; cookies stay in the
+  app's private storage
 
 **Your data, wherever you want it**
 - History, favourites, resume points, local subscriptions and preferences are
@@ -95,7 +100,9 @@ resolves.
 - No ads, ad SDKs, trackers, or telemetry — the release dependency graph has none
 - No account needed; sign-in exists only for people who want their own feed
 - Only playback-related permissions
-- History, favourites and preferences never leave the device unless you export a backup
+- History and preferences never leave the device unless you export a backup;
+  favourites and subscriptions leave only if you turn on account sync and tap
+  Merge
 - Account cookies live in the app's private storage and are excluded from backups
 - Backend hosts are validated — https only, no loopback, private, link-local or
   credential-bearing URLs — and cleartext traffic is refused app-wide
@@ -161,6 +168,24 @@ design, and why the direct backend is the default.
 
 ## Status
 
+0.2.0 adds **account sync**: your subscriptions and a favourites mirror reconcile
+with a signed-in YouTube account, pull-first and consent-gated. The first sync
+pulls the account down and then stops *before* writing anything, showing only
+counts — nothing on the account changes until you tap **Merge**. The merge is
+presence-based (InnerTube returns no per-item timestamp), keyed by a
+non-reversible per-account key, and the only playlist it will ever delete is one
+WeTube itself created; the user's own likes are never written. Removals are
+mirrored onto the phone only if you opt in. The account-write endpoints are
+hand-rolled against the web client and ship `UNVERIFIED` behind that gate, so a
+debug-only capability check — invoked explicitly — is how the write path is
+proven. Sync is off by default and unavailable on Invidious/Piped.
+
+0.1.8 added **casting** to a DLNA/UPnP renderer on your own Wi-Fi: find a device,
+play there, and use the phone as a remote for transport, seek and volume. Quality
+re-casts at the TV's live position and "Play here instead" brings playback back at
+the same spot; a short-lived foreground service keeps the cast alive across
+screen-off.
+
 0.1.7 — playback, feeds and accounts work on a real device against live
 endpoints. The playback path prefers the plain IOS client, whose adaptive links
 are not throttled and cover every resolution up to 2160p; the Android and Android
@@ -215,8 +240,9 @@ Known limits: age-restricted videos need YouTube's JavaScript `n` challenge,
 which WeTube does not fake, so they can refuse to play even when signed in.
 Some networks also get a bot check regardless of client. Neither is bypassed —
 the player reports which wall it hit. Downloads, live chat, Google Cast (which
-needs a registered receiver app id), in-app audio output routing, and two-way
-YouTube playlist and subscription sync are tracked in `docs/ROADMAP.md`.
+needs a registered receiver app id) and in-app audio output routing are tracked
+in `docs/ROADMAP.md`. Sync's write path is implemented but `UNVERIFIED` against a
+live account until the capability check is run — see `docs/SYNC_PROTOCOL.md`.
 
 ## Licence
 

@@ -24,6 +24,7 @@ app/src/main/java/dev/wetube/app/
 │   ├── model/     UI-facing models (no transport DTOs leak out)
 │   └── prefs/     settings
 ├── player/        MediaSessionService, stream resolver, captions, controller
+├── sync/          account sync: reconciler, write planner, engine, capability check
 └── ui/            Compose screens, one package per feature
 ```
 
@@ -307,9 +308,11 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
   networks. The original captions are shown instead.
 - Comments are read-only: liking, replying and reading replies need a signed-in
   session. The sheet offers the watch page in the browser instead.
-- Downloads, live chat, and two-way YouTube playlist/subscription sync are not
-  implemented yet; see `ROADMAP.md`. Casting covers DLNA/UPnP renderers on the
-  local network only — Google Cast needs a registered receiver app id, and audio
+- Downloads and live chat are not implemented yet; see `ROADMAP.md`. Account
+  sync (§12) pulls subscriptions and a favourites mirror down from the account
+  and pushes local changes only after the user consents on the first sync; watch
+  history is never synced. Casting covers DLNA/UPnP renderers on the local
+  network only — Google Cast needs a registered receiver app id, and audio
   routing to Bluetooth/USB is left to the system output picker.
 
 ## 11. Casting / external devices
@@ -377,6 +380,93 @@ state; play/pause and the scrubber in the app are the authoritative controls.
 knows about a future runtime gate on local-network scanning. It returns `true`
 today; when `Build.VERSION.SDK_INT >= 37` the gate can be enforced there without
 touching discovery.
+
+## 12. Account sync
+
+Sync reconciles the local library with a signed-in YouTube account. It is
+two-way but **pull-first**: the account is fetched and applied before anything is
+ever written back, and the very first sync stops *before* its first write to ask
+the user. The worst a bug can do is then "we showed you the wrong list", never
+"we changed your account". Watch history is permanently out of scope — no history
+endpoint is called, researched or implemented.
+
+**Shape of the code.** The risky half is pure. `SyncReconciler` is a
+side-effect-free three-way merge, `SyncWritePlanner` orders and batches the ops
+it produces, and `SyncEngine` is the state machine that reads, applies, gates and
+pushes. Everything the engine reaches outside itself goes through two seams —
+`SyncDeps` for local reads (the account key, settings, consent) and `SyncBackend`
+for the transport — so the whole engine runs in unit tests against fakes, with no
+account, socket or `Context`.
+
+**Identity without identity.** Sync state is keyed by `accountKey`, a salted
+SHA-256 of the account's own channel id (or, when that cannot be read, of the
+SAPISID value), truncated to 128 bits (`core/AccountKeys.kt`). The raw account id
+is never stored beside it and the key cannot be reversed into it; every
+`SyncEntry` and `Tombstone` carries the key of the account it belongs to, so a
+change queued by one account is *quarantined* rather than leaked into another
+after a switch.
+
+**Presence, not time.** InnerTube returns no per-subscription or per-membership
+timestamp, so the merge reasons about presence only. For each id the reconciler
+reads three booleans — was it in the last baseline (`SyncEntry.basePresent`), is
+it local (and not tombstoned), is it remote — and applies one decision table
+(`SyncReconciler.diff`). `SyncEntry.localUpdatedAt` is recorded but never used to
+resolve a conflict, because there is nothing authoritative to compare it to; a
+locally edited playlist title instead wins outright. After a successful apply the
+baseline is restamped (`LibraryStore.markSynced` and the `applyPull` helpers) so
+the next merge knows what the account had.
+
+**Three streams, one namespace rule.** Subscriptions, favourites and playlists
+reconcile independently, because a channel, a video and a playlist can share a
+string id. Each record is namespaced by kind through `subscriptionKey` /
+`favouriteKey` / `playlistKey` (`sub:`/`fav:`/`pl:`) — the same helpers the store
+uses — so the merge namespace and the on-disk namespace cannot drift apart.
+
+**The gate.** `SyncEngine.runSync` pulls, merges and applies the pull locally,
+then, if the account has never consented (`AccountSyncState.firstSyncDone`),
+parks in `SyncStatus.AwaitingConsent` with a `SyncPreview` of counts only —
+nothing about the account beyond "N subscriptions, M favourites". Both the
+Library and Settings render the same `FirstSyncConsentDialog`; `confirmFirstSync`
+runs exactly the plan the preview described and `dismissFirstSync` writes
+nothing. A change made before consent queues as a `pendingOp`, and `onLocalChange`
+refuses to push it, because `firstSyncDone` gates the incremental path too.
+
+**The push.** `SyncWritePlanner` orders and batches the ops (creates, renames,
+adds, subscribes, removes, unsubscribes) under a per-sync cap, so a flurry of
+local edits cannot become an unbounded burst. Each op is retried only while its
+result is `OpResult.Retryable` (0.5s / 2s / 8s); a `Terminal` or `AuthRequired`
+result pauses the whole push and keeps the op's `pendingOp` rather than losing the
+change. `OpResult.classify` maps a status code to that policy and never guesses
+`Terminal` for an unknown code, so a queued change is not stranded.
+
+**Never deleting what we did not make.** The only playlist sync will delete is
+the private "Favourites" mirror WeTube itself created, identified solely by the
+id remembered in `AccountSyncState.favouritesPlaylistId` — never by a title — so
+a playlist the user made is never adopted or removed. Favourites have no native
+YouTube playlist, so the first consented push creates one, seeded with the current
+favourites in the create call itself; every later push reuses that same remembered
+id, and re-creates only if the user deleted the mirror. The transport never
+offers a candidate mirror to adopt — `SyncDeps.favouriteTarget` always answers
+"create on first push", and the pull side consults the persisted id rather than
+scanning the account's playlists for a matching title.
+Liked videos (`LL`) are never written, because adding to `LL` is a *like*: the
+mirror is a separate private playlist and the user's real likes are untouched. A
+removal needs the membership's `setVideoId`; without it the item is pull-only
+rather than guessed at. Whether a video or channel that vanished from the account
+is removed locally is opt-in (`mirrorRemovals`, off by default), so a sync can
+never silently drop something from the phone.
+
+**Transport and honesty.** `InnerTubeSync` owns the request shapes (recorded in
+`SYNC_PROTOCOL.md`) and all session plumbing — context envelope, auth headers,
+visitor id, endpoint URL — lives behind the injectable `SyncTransport`, so the
+interpreter is testable against no account at all. The write endpoints are the
+least verifiable part: they are hand-rolled against the web client and can change
+without notice, so they ship `UNVERIFIED`, behind the consent gate. In debug
+builds only, `SyncCapabilityCheck` answers "are they live for this account?" with
+non-mutating read probes and an explicitly-tapped write probe that creates and
+immediately deletes one private playlist of its own. Sync is off by default
+(`syncEnabled=false`) and unavailable on the Invidious/Piped backends, which have
+no account API; the two toggles travel in the v3 backup.
 
 ## Legal note
 

@@ -1,7 +1,63 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.1.8 (versionCode 9).
+Security. This release is 0.2.0 (versionCode 10).
+
+## 0.2.0 — 2026-11-14
+
+Sync your YouTube subscriptions and a favourites mirror with a signed-in
+account — pull-first, consent-gated and off until you turn it on.
+
+### Added
+- **Account sync.** The Library gains a sync bar and Settings an "Account sync"
+  section. Turning it on lets WeTube reconcile your local subscriptions and
+  favourites with a signed-in Google account. Sync is off by default and
+  unavailable on the Invidious/Piped backends, which have no account API.
+- **Pull-first, consent-gated first sync.** The very first sync pulls the account
+  down and then stops *before* writing anything, showing only counts — "your
+  account has N subscriptions and M favourites; WeTube has X to add and Y
+  removals". Nothing is sent until you tap **Merge**; **Not now** writes nothing
+  and keeps the pull. No change made before you consent can be pushed.
+- **A favourites mirror you own.** Favourites have no native YouTube playlist, so
+  the first consented push creates a private "Favourites" playlist, seeded in the
+  create call, and later pushes reuse that remembered id — never a playlist
+  adopted by its title. Liked videos are never touched — the mirror is a separate
+  private playlist, so your real likes are not rewritten.
+- **Honest sync status.** The bar shows pulling, merging and per-op push progress,
+  the last result, and a specific reason with a **Retry** when a sync fails.
+- **Capability check (debug builds).** A confirmation-gated tool that probes the
+  account reads without changing anything and can create-and-immediately-delete
+  one private "WeTube sync probe" playlist of its own to prove the write path.
+
+### Changed
+- **Sync state is keyed by a non-reversible account key.** `accountKey` is a
+  salted SHA-256 of the account's own channel id (or the SAPISID value), truncated
+  to 128 bits; the raw account id is never stored with sync state, and a change
+  queued by one account is quarantined rather than leaked into another after a
+  switch.
+- **Removals are opt-in.** A video or channel removed on the account is reported
+  but kept on the phone unless "mirror removals" is on, so a sync cannot silently
+  drop something locally.
+- **Backups are schema v3.** The file now also carries the two sync toggles;
+  v1/v2 files are still accepted.
+- The merge is presence-based, because InnerTube returns no per-subscription or
+  per-membership timestamp; a locally edited playlist title wins outright.
+- At most 200 remote mutations are sent per sync, batched and ordered
+  (creates, renames, adds, subscribes, removes, unsubscribes); transient failures
+  retry with 0.5s/2s/8s backoff, and anything else pauses the push and keeps the
+  queued change rather than losing it.
+
+### Security
+- **Write endpoints ship unverified, behind the gate.** The account-write calls
+  are hand-rolled against the web client and can change without notice, so they
+  are marked `UNVERIFIED` and never run until a user has consented on the first
+  sync; the capability check is debug-only and never mutates a playlist it did
+  not itself create.
+- **Presence-only, id-scoped merge.** Every entity, tombstone and diff is
+  namespaced by kind and owned by an account key, so one account's queued change
+  can neither be pushed to nor deleted from another.
+- **Watch history is never synced.** No history endpoint is used, researched or
+  implemented.
 
 ## 0.1.8 — 2026-11-14
 

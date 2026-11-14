@@ -63,6 +63,25 @@ class InnerTubeBackend(
 
     override val displayName: String = "Direct (InnerTube)"
 
+    /**
+     * The account-write transport, built lazily from the same WEB session the
+     * signed-in feeds already use.
+     *
+     * `by lazy` makes it stable for the lifetime of this backend instance: the
+     * engine holds one [SyncBackend] reference and the transport closure stays
+     * bound to *this* backend's visitor, auth headers and HTTP client. Because
+     * [InnerTubeSync] owns only interpretation, this is the single place that
+     * re-implements the session envelope, and it mirrors [call]'s WEB branch
+     * exactly so a read and a write can never disagree about who is signed in.
+     */
+    override val sync: SyncBackend by lazy {
+        InnerTubeSync(
+            display = displayName,
+            transport = SyncTransport { path, extra -> postForSync(path, extra) },
+            json = http.json,
+        )
+    }
+
     private data class Profile(
         val userAgent: String,
         val context: JsonObject,
@@ -311,6 +330,53 @@ class InnerTubeBackend(
             ?.takeIf { it.isNotBlank() }
             ?.let { visitorCache = it }
         return response
+    }
+
+    /**
+     * The real [SyncTransport] body: one signed WEB request, returned as data.
+     *
+     * This mirrors the envelope and headers [call] builds instead of calling
+     * [call] itself, for two deliberate reasons. [call] throws on a non-2xx and
+     * discards the body, while sync needs the status and the body *together*
+     * because a sign-in wall is a 2xx body, not a status code. And keeping
+     * [call]'s feed behaviour untouched means a change here cannot alter
+     * trending, subscriptions or playback.
+     *
+     * `X-Goog-Api-Key` is intentionally omitted: docs/SYNC_PROTOCOL.md §1 records
+     * it as uncertain for writes and the read path does not send it, so adding
+     * it would be an unverifiable guess. An [IOException] is mapped to
+     * [SyncReply.Unreachable] so the sync class never sees a transport
+     * exception; any HTTP answer (including 4xx/5xx) is passed through verbatim
+     * for [InnerTubeSync] to classify.
+     */
+    private suspend fun postForSync(path: String, extra: JsonObject): SyncReply = try {
+        val visitor = visitor()
+        val client = web.context["client"]!!.jsonObject.toMutableMap().apply {
+            if (visitor.isNotBlank()) put("visitorData", JsonPrimitive(visitor))
+        }
+        val payload = buildJsonObject {
+            put("context", buildJsonObject { put("client", JsonObject(client)) })
+            extra.forEach { (key, value) -> put(key, value) }
+        }
+        // Signed in, these turn an anonymous call into an account call; only the
+        // WEB profile accepts a session, which is why sync uses it and not the
+        // native profiles.
+        val session = auth.headers()
+        val headers = buildMap {
+            put("User-Agent", web.userAgent)
+            put("X-Goog-Api-Format-Version", "2")
+            put("X-Youtube-Client-Name", web.clientId)
+            put("X-Youtube-Client-Version", web.version)
+            put("Origin", "https://www.youtube.com")
+            if (visitor.isNotBlank()) put("X-Goog-Visitor-Id", visitor)
+            putAll(session)
+            if (session.isNotEmpty()) put("X-Youtube-Bootstrap-Logged-In", "true")
+        }
+        val (code, body) = http.postJsonRaw("$endpoint/$path?prettyPrint=false", payload, headers)
+        SyncReply.Http(code, body)
+    } catch (e: IOException) {
+        val reason = e.message?.takeIf { it.isNotBlank() } ?: e::class.simpleName ?: "network error"
+        SyncReply.Unreachable(reason)
     }
 
     // ---- TubeBackend ----------------------------------------------------
@@ -1049,16 +1115,7 @@ class InnerTubeBackend(
     private fun JsonObject.continuationToken(): String? =
         findAll("continuationCommand").firstOrNull()?.str("token")
 
-    private fun parseLength(text: String?): Int {
-        if (text.isNullOrBlank()) return 0
-        val parts = text.split(':').mapNotNull { it.trim().toIntOrNull() }
-        return when (parts.size) {
-            3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
-            2 -> parts[0] * 60 + parts[1]
-            1 -> parts[0]
-            else -> 0
-        }
-    }
+    private fun parseLength(text: String?): Int = parseDurationLabel(text)
 
     /** Leaves non-numeric labels ("Comments are turned off") untouched. */
     private fun compactCountLabel(text: String): String =
@@ -1072,9 +1129,9 @@ class InnerTubeBackend(
 
 // ---- small JSON helpers -------------------------------------------------
 
-private fun JsonElement?.obj(): JsonObject? = this as? JsonObject
+internal fun JsonElement?.obj(): JsonObject? = this as? JsonObject
 
-private fun JsonObject?.str(key: String): String? = this?.get(key).text()
+internal fun JsonObject?.str(key: String): String? = this?.get(key).text()
 
 /**
  * Human-readable text, decoded at the JSON→model boundary.
@@ -1085,7 +1142,7 @@ private fun JsonObject?.str(key: String): String? = this?.get(key).text()
  * multi-character reference across runs and leave it half-decoded; joining
  * first keeps whole references intact.
  */
-private fun JsonElement?.text(): String? = rawText()?.let(::decodeEntities)
+internal fun JsonElement?.text(): String? = rawText()?.let(::decodeEntities)
 
 /** The structural walker behind [text]: joins runs and arrays without decoding. */
 private fun JsonElement?.rawText(): String? = when (this) {
@@ -1098,12 +1155,12 @@ private fun JsonElement?.rawText(): String? = when (this) {
     else -> null
 }
 
-private fun JsonElement?.objects(): List<JsonObject> =
+internal fun JsonElement?.objects(): List<JsonObject> =
     (this as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
 
 private fun JsonElement?.asArray(): JsonArray? = this as? JsonArray
 
-private fun JsonElement?.thumbnailUrl(): String? {
+internal fun JsonElement?.thumbnailUrl(): String? {
     val object0 = this as? JsonObject ?: return null
     // Native renderers say `thumbnails`; web view models say `sources`.
     val thumbnails = (object0["thumbnails"] ?: object0["sources"]).objects()
@@ -1113,7 +1170,7 @@ private fun JsonElement?.thumbnailUrl(): String? {
 }
 
 /** Every object stored under [key], anywhere in the tree. */
-private fun JsonObject.findAll(key: String): List<JsonObject> {
+internal fun JsonObject.findAll(key: String): List<JsonObject> {
     val found = ArrayList<JsonObject>()
     fun walk(element: JsonElement) {
         when (element) {
@@ -1128,3 +1185,24 @@ private fun JsonObject.findAll(key: String): List<JsonObject> {
     walk(this)
     return found
 }
+
+/**
+ * Reads a renderer length label (`H:MM:SS`, `M:SS` or a bare `S`) into seconds.
+ *
+ * Shared by the feed cards and the sync playlist reader so a duration never
+ * means two different things on two surfaces. Only the colon forms YouTube
+ * actually prints are recognised; anything else is `0` rather than a guess.
+ * Top-level (not a member) because the sync reader lives in another file and
+ * both need the same answer.
+ */
+internal fun parseDurationLabel(text: String?): Int {
+    if (text.isNullOrBlank()) return 0
+    val parts = text.split(':').mapNotNull { it.trim().toIntOrNull() }
+    return when (parts.size) {
+        3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+        2 -> parts[0] * 60 + parts[1]
+        1 -> parts[0]
+        else -> 0
+    }
+}
+

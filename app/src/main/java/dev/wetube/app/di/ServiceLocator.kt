@@ -8,13 +8,17 @@ import dev.wetube.app.data.backend.InnerTubeBackend
 import dev.wetube.app.data.backend.InvidiousBackend
 import dev.wetube.app.data.backend.JsonHttp
 import dev.wetube.app.data.backend.PipedBackend
+import dev.wetube.app.data.backend.RemotePlaylist
+import dev.wetube.app.data.backend.SyncBackend
 import dev.wetube.app.data.backend.TubeBackend
 import dev.wetube.app.data.auth.AuthStore
 import dev.wetube.app.data.extras.DislikeClient
 import dev.wetube.app.data.extras.SponsorBlockClient
 import dev.wetube.app.data.content.AgeGateStore
 import dev.wetube.app.data.local.BackupStore
+import dev.wetube.app.data.local.AccountKeySource
 import dev.wetube.app.data.local.LibraryStore
+import dev.wetube.app.data.local.SyncMetadataStore
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.data.prefs.SettingsStore
 import dev.wetube.app.player.CaptionLoader
@@ -23,6 +27,10 @@ import dev.wetube.app.player.OutputRouter
 import dev.wetube.app.player.PlaybackController
 import dev.wetube.app.player.remote.NetworkRemoteDiscovery
 import dev.wetube.app.player.remote.RemotePlaybackManager
+import dev.wetube.app.sync.DEFAULT_FAVOURITES_TITLE
+import dev.wetube.app.sync.PlaylistTarget
+import dev.wetube.app.sync.SyncDeps
+import dev.wetube.app.sync.SyncEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -79,7 +87,19 @@ class ServiceLocator(context: Context) {
     val auth = AuthStore(appContext, jsonHttp)
 
     val settings = SettingsStore(appContext)
-    val library = LibraryStore(appContext, json)
+    /**
+     * One metadata store over the same `ktube_library` DataStore [library]
+     * uses; both resolve the one `Context.libraryStore` delegate, so they
+     * share a single DataStore instance on the file.
+     */
+    val sync = SyncMetadataStore(appContext, json)
+    val library = LibraryStore(
+        appContext,
+        json,
+        object : AccountKeySource {
+            override suspend fun current(): String? = auth.accountKey.first()
+        },
+    )
     val backup = BackupStore(library, settings, json)
     val ageGate = AgeGateStore(appContext)
     val sponsorBlock = SponsorBlockClient(jsonHttp)
@@ -141,5 +161,52 @@ class ServiceLocator(context: Context) {
         )
         cached = key to backend
         return backend
+    }
+
+    /**
+     * The sync engine, wired to the live account, settings and transport.
+     *
+     * Lazy, and built only over *readers* of the rest of the graph ([auth],
+     * [settings], [backend]), so a user who never signs in never constructs a
+     * transport-backed engine. [SyncDeps] is an anonymous object rather than a
+     * named type because each method is a one-line adapter over an existing flow
+     * and there is exactly one production wiring; a test drives the engine with
+     * its own deps instead.
+     */
+    val syncEngine: SyncEngine by lazy {
+        SyncEngine(
+            library = library,
+            metadata = sync,
+            deps = object : SyncDeps {
+                // `this@ServiceLocator` is required: the anonymous object's own
+                // `backend()` would otherwise shadow and recurse into itself.
+                override suspend fun backend(): SyncBackend? = this@ServiceLocator.backend().sync
+
+                override suspend fun accountKey(): String? = auth.accountKey.first()
+
+                override suspend fun syncEnabled(): Boolean =
+                    settings.settings.first().syncEnabled
+
+                override suspend fun accountLabel(): String =
+                    auth.account.first()?.displayName.orEmpty()
+
+                override suspend fun mirrorRemovals(): Boolean =
+                    settings.settings.first().mirrorRemovals
+
+                /**
+                 * Favourites start on a playlist WeTube will create on the first
+                 * push. Reuse of an existing mirror is driven by the engine from
+                 * the persisted `AccountSyncState.favouritesPlaylistId`, so a
+                 * playlist is never adopted because of its title — a user's own
+                 * "Favourites" playlist can never be repurposed.
+                 */
+                override suspend fun favouriteTarget(remote: List<RemotePlaylist>): PlaylistTarget =
+                    PlaylistTarget.CreateOnFirstPush(DEFAULT_FAVOURITES_TITLE)
+
+                override suspend fun firstSyncDone(accountKey: String): Boolean =
+                    sync.state(accountKey).firstSyncDone
+            },
+            scope = appScope,
+        )
     }
 }

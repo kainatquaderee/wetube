@@ -1,0 +1,69 @@
+{
+  "contents": {
+    "twoColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "playlistVideoListRenderer": {
+                      "contents": [
+                        {
+                          "playlistVideoRenderer": {
+                            "videoId": "v1",
+                            "setVideoId": "set-1",
+                            "index": { "simpleText": "1" },
+                            "title": { "runs": [ { "text": "First song" } ] },
+                            "shortBylineText": {
+                              "runs": [
+                                {
+                                  "text": "Dana",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "UCAAAABBBBCCCCDDDDEEEEFF" }
+                                  }
+                                }
+                              ]
+                            },
+                            "thumbnail": {
+                              "thumbnails": [
+                                { "url": "https://example.com/v1.jpg", "width": 120, "height": 68 }
+                              ]
+                            },
+                            "lengthText": { "simpleText": "1:02:03" }
+                          }
+                        },
+                        {
+                          "playlistVideoRenderer": {
+                            "videoId": "v2",
+                            "index": { "simpleText": "2" },
+                            "title": { "simpleText": "Second song" },
+                            "longBylineText": {
+                              "runs": [
+                                {
+                                  "text": "Rick",
+                                  "navigationEndpoint": {
+                                    "browseEndpoint": { "browseId": "UCGGGGHHHHIIIIJJJJKKKKLL" }
+                                  }
+                                }
+                              ]
+                            },
+                            "lengthText": { "simpleText": "3:45" }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "continuations": [
+    { "nextContinuationData": { "continuation": "tok-2" } }
+  ]
+}

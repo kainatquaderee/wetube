@@ -1,0 +1,56 @@
+{
+  "contents": {
+    "sectionListRenderer": {
+      "contents": [
+        {
+          "gridRenderer": {
+            "items": [
+              {
+                "gridPlaylistRenderer": {
+                  "playlistId": "PLroadtrip0000000000000000",
+                  "title": { "simpleText": "Road trip" },
+                  "videoCountText": { "simpleText": "12 videos" }
+                }
+              },
+              {
+                "gridPlaylistRenderer": {
+                  "playlistId": "PLfavourites00000000000",
+                  "title": { "simpleText": "Favourites" },
+                  "videoCountText": { "simpleText": "3 videos" }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "itemSectionRenderer": {
+            "contents": [
+              {
+                "lockupViewModel": {
+                  "contentType": "PLAYLIST",
+                  "contentId": "PLlockup000000000000000000",
+                  "metadata": {
+                    "lockupMetadataViewModel": {
+                      "title": { "simpleText": "Saved mix" },
+                      "metadata": {
+                        "contentMetadataViewModel": {
+                          "metadataRows": [
+                            {
+                              "metadataParts": [
+                                { "text": { "simpleText": "7 videos" } }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -5,10 +5,12 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.wetube.app.BuildConfig
+import dev.wetube.app.core.accountKey as deriveAccountKey
 import dev.wetube.app.core.decodeEntities
 import dev.wetube.app.data.backend.JsonHttp
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
@@ -45,6 +47,20 @@ private data class StoredAccount(
     val name: String = "",
     val avatar: String = "",
     val cookies: String = "",
+    /**
+     * The account's own channel id (`UC...`), read from `account/account_menu`
+     * at sign-in. Blank on records written before channel capture, and
+     * back-filled from the SAPISID fallback on first read. Never leaves this
+     * class: callers only ever see its [dev.wetube.app.core.accountKey].
+     */
+    val accountId: String = "",
+)
+
+/** The bits of an `account/account_menu` response this store needs. */
+private data class AccountInfo(
+    val name: String = "",
+    val avatar: String = "",
+    val channelId: String = "",
 )
 
 /**
@@ -100,6 +116,28 @@ class AuthStore(
 
     val signedIn: Flow<Boolean> = account.map { it != null }
 
+    /**
+     * The non-reversible key of the signed-in account, or `null` when signed
+     * out. Only this 32-character hash is ever exposed; the underlying channel
+     * id (or SAPISID fallback) stays inside this class.
+     *
+     * The public [Account] deliberately does *not* carry the raw id, so the key
+     * is derived from the private [StoredAccount]. A record written before
+     * channel capture has a blank `accountId`; it is derived lazily from the
+     * cookie jar and written back once, so the key stays stable across launches
+     * instead of changing when the form the id took changes.
+     */
+    val accountKey: Flow<String?> = combine(
+        context.authDataStore.data.map { stored(it) },
+        activeIndex,
+    ) { list, index ->
+        val stored = list.getOrNull(index) ?: return@combine null
+        val identity = stored.accountId.takeIf(String::isNotBlank)
+            ?: sapisid(stored.cookies)?.also { persistAccountId(stored.cookies, it) }
+            ?: return@combine null
+        deriveAccountKey(identity)
+    }.distinctUntilChanged()
+
     private fun stored(prefs: androidx.datastore.preferences.core.Preferences): List<StoredAccount> {
         prefs[Keys.accounts]?.takeIf { it.isNotBlank() }?.let { raw ->
             runCatching { json.decodeFromString(listSerializer, raw) }.getOrNull()?.let { return it }
@@ -151,9 +189,10 @@ class AuthStore(
         val info = runCatching { fetchAccount(cookies) }.getOrNull()
         context.authDataStore.edit { prefs ->
             val next = stored(prefs) + StoredAccount(
-                name = info?.first.orEmpty(),
-                avatar = info?.second.orEmpty(),
+                name = info?.name.orEmpty(),
+                avatar = info?.avatar.orEmpty(),
                 cookies = cookies,
+                accountId = info?.channelId.orEmpty(),
             )
             prefs[Keys.accounts] = json.encodeToString(listSerializer, next)
             prefs[Keys.active] = next.lastIndex.toString()
@@ -195,8 +234,25 @@ class AuthStore(
         }
     }
 
+    /**
+     * Writes a lazily derived account id back onto the account with [cookies].
+     *
+     * Only fills a blank `accountId`, so it cannot overwrite the channel id
+     * captured at sign-in, and does nothing if the account has since gone.
+     */
+    private suspend fun persistAccountId(cookies: String, accountId: String) {
+        context.authDataStore.edit { prefs ->
+            val current = stored(prefs)
+            val index = current.indexOfFirst { it.cookies == cookies }
+            if (index < 0 || current[index].accountId.isNotBlank()) return@edit
+            val next = current.toMutableList()
+            next[index] = next[index].copy(accountId = accountId)
+            prefs[Keys.accounts] = json.encodeToString(listSerializer, next)
+        }
+    }
+
     /** Reads the account name and avatar so Settings can show who is signed in. */
-    private suspend fun fetchAccount(cookies: String): Pair<String, String>? {
+    private suspend fun fetchAccount(cookies: String): AccountInfo? {
         val authHeaders = headersFor(cookies)
         if (authHeaders.isEmpty()) return null
         val body = buildJsonObject {
@@ -224,10 +280,16 @@ class AuthStore(
         // Settings shows the real characters.
         val name = decodeEntities(firstText(response, "accountName").orEmpty())
         val avatar = firstThumbnail(response, "accountPhoto").orEmpty()
+        // The account's own channel id feeds the non-reversible `accountKey`;
+        // if it is absent the caller falls back to hashing the SAPISID.
+        val channelId = extractAccountChannelId(response).orEmpty()
         if (BuildConfig.DEBUG) {
-            android.util.Log.d("WeTube", "auth: account loaded=${name.isNotBlank()}")
+            android.util.Log.d(
+                "WeTube",
+                "auth: account loaded=${name.isNotBlank()} channel=${channelId.isNotBlank()}",
+            )
         }
-        return name to avatar
+        return AccountInfo(name = name, avatar = avatar, channelId = channelId)
     }
 
     private companion object {
@@ -337,4 +399,45 @@ private fun firstThumbnail(root: JsonObject, key: String): String? {
     }
     walk(root)
     return found
+}
+
+/** A YouTube channel id: `UC` followed by 22 id characters. */
+private val CHANNEL_ID_PATTERN = Regex("^UC[A-Za-z0-9_-]{22}$")
+
+/**
+ * Pulls the signed-in account's own channel id out of an `account/account_menu`
+ * response.
+ *
+ * The response is a renderer tree, so the id is found by walking it. More than
+ * one entry can carry a channel — the active account, "Your channel", and the
+ * other accounts in the "switch account" list — so a `browseEndpoint` whose
+ * `canonicalBaseUrl` is a `/channel/<id>` link wins, and otherwise the first
+ * valid `UC...` `browseId` in document order is used (the active account sorts
+ * first). Returning `null` is expected and handled: the caller falls back to
+ * hashing the SAPISID.
+ *
+ * Pure and transport-free, so it is unit-testable without a `Context`.
+ */
+internal fun extractAccountChannelId(root: JsonObject): String? {
+    var first: String? = null
+    var canonical: String? = null
+    fun walk(element: JsonElement) {
+        if (canonical != null) return
+        when (element) {
+            is JsonObject -> {
+                val endpoint = element["browseEndpoint"] as? JsonObject
+                val id = (endpoint?.get("browseId") as? JsonPrimitive)?.contentOrNull
+                if (id != null && CHANNEL_ID_PATTERN.matches(id)) {
+                    if (first == null) first = id
+                    val base = (endpoint["canonicalBaseUrl"] as? JsonPrimitive)?.contentOrNull
+                    if (base != null && base.startsWith("/channel/")) canonical = id
+                }
+                element.values.forEach(::walk)
+            }
+            is JsonArray -> element.forEach(::walk)
+            else -> Unit
+        }
+    }
+    walk(root)
+    return canonical ?: first
 }

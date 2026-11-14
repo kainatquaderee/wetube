@@ -61,4 +61,16 @@ interface TubeBackend {
      * the caller reports "not castable" instead of guessing at an adaptive URL.
      */
     suspend fun progressive(id: String): StreamFormat? = null
+
+    /**
+     * The account-write transport, when this backend has one.
+     *
+     * Sync is a capability, not a requirement: a public-feed transport such as
+     * Invidious or Piped has no way to write to an account, and the default
+     * `null` lets the engine report itself disabled rather than fail at runtime.
+     * Only the InnerTube transport can grow a real implementation (a later
+     * batch), and [ContentFilterBackend] forwards whatever the delegate offers
+     * so the filter layer never hides the capability.
+     */
+    val sync: SyncBackend? get() = null
 }

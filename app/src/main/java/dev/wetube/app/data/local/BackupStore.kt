@@ -48,8 +48,14 @@ data class BackupFile(
          * Schema version written by this build. Readers accept every value in
          * `1..VERSION`; a file that omits the field deserialises to this value
          * and is therefore still accepted.
+         *
+         * v3 adds the account-sync opt-ins ([BackupSettings.syncEnabled] and
+         * [BackupSettings.mirrorRemovals]). A v2 file simply lacks both fields,
+         * so they decode to their declared defaults and restore stays
+         * deterministic: the outcome depends only on the file, never on what the
+         * live store happened to hold.
          */
-        const val VERSION = 2
+        const val VERSION = 3
     }
 }
 
@@ -71,6 +77,14 @@ data class BackupSettings(
     val captionTranslateTo: String = "",
     val sponsorBlockEnabled: Boolean = true,
     val showDislikes: Boolean = true,
+    /**
+     * Carried so a phone that is set up from a backup keeps the user's sync
+     * choice. Default false matches [AppSettings.syncEnabled]: an older file
+     * (v2 and below) has no such field, so restoring one leaves sync off rather
+     * than silently opting the new device in.
+     */
+    val syncEnabled: Boolean = false,
+    val mirrorRemovals: Boolean = false,
 )
 
 /** The portable subset of [AppSettings] that a backup carries. */
@@ -91,6 +105,8 @@ internal fun AppSettings.toBackupSettings(): BackupSettings = BackupSettings(
     captionTranslateTo = captionTranslateTo,
     sponsorBlockEnabled = sponsorBlockEnabled,
     showDislikes = showDislikes,
+    syncEnabled = syncEnabled,
+    mirrorRemovals = mirrorRemovals,
 )
 
 /**
@@ -120,6 +136,8 @@ internal fun BackupSettings.restoreOnto(current: AppSettings): AppSettings = cur
     captionTranslateTo = captionTranslateTo,
     sponsorBlockEnabled = sponsorBlockEnabled,
     showDislikes = showDislikes,
+    syncEnabled = syncEnabled,
+    mirrorRemovals = mirrorRemovals,
 )
 
 /**

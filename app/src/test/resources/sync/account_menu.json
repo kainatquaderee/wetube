@@ -1,0 +1,42 @@
+{
+  "actions": [
+    {
+      "openPopupAction": {
+        "popup": {
+          "multiPageMenuRenderer": {
+            "sections": [
+              {
+                "accountSectionListRenderer": {
+                  "contents": [
+                    {
+                      "accountItemSectionRenderer": {
+                        "contents": [
+                          {
+                            "accountItem": {
+                              "accountName": { "simpleText": "Ada" },
+                              "accountPhoto": {
+                                "thumbnails": [
+                                  { "url": "https://example.com/avatar.jpg", "width": 88, "height": 88 }
+                                ]
+                              },
+                              "navigationEndpoint": {
+                                "browseEndpoint": {
+                                  "browseId": "UCAAAABBBBCCCCDDDDEEEEFF",
+                                  "canonicalBaseUrl": "/channel/UCAAAABBBBCCCCDDDDEEEEFF"
+                                }
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

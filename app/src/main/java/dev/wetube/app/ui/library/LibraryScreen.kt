@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -36,13 +38,18 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
+import dev.wetube.app.data.auth.Account
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.sync.SyncPhase
+import dev.wetube.app.sync.SyncStatus
+import dev.wetube.app.ui.FirstSyncConsentDialog
 import dev.wetube.app.ui.MessageBox
 import dev.wetube.app.ui.VideoCard
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -57,14 +64,45 @@ class LibraryViewModel(private val locator: ServiceLocator) : ViewModel() {
     val subscriptions: StateFlow<List<VideoItem>> = locator.library.subscriptions
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** The engine's live state; already a [StateFlow], so no collection is needed. */
+    val syncStatus: StateFlow<SyncStatus> = locator.syncEngine.status
+
+    /** Whether the user has opted into sync at all; drives the whole sync bar. */
+    val syncEnabled: StateFlow<Boolean> = locator.settings.settings
+        .map { it.syncEnabled }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** The active account, or `null` when signed out; the bar only shows signed in. */
+    val account: StateFlow<Account?> = locator.auth.account
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     fun clearHistory() = viewModelScope.launch { locator.library.clearHistory() }
 
     fun unsubscribe(channel: VideoItem) {
         viewModelScope.launch {
             val current = locator.library.subscriptions.first().firstOrNull { it.id == channel.id }
-            if (current != null) locator.library.toggleSubscription(current)
+            if (current != null) {
+                locator.library.toggleSubscription(current)
+                // A local unsubscribe is a change the account does not know
+                // about. The engine debounces this and refuses to push until the
+                // first sync has been consented, so calling it unconditionally is
+                // safe.
+                onLocalChange()
+            }
         }
     }
+
+    /** Turns the master sync switch on from the library bar. */
+    fun enableSync() = viewModelScope.launch { locator.settings.update { it.copy(syncEnabled = true) } }
+
+    fun syncNow() = viewModelScope.launch { locator.syncEngine.syncNow() }
+
+    /** The user approved the first push in the consent dialog. */
+    fun mergeFirstSync() = viewModelScope.launch { locator.syncEngine.confirmFirstSync() }
+
+    fun dismissFirstSync() = locator.syncEngine.dismissFirstSync()
+
+    fun onLocalChange() = locator.syncEngine.onLocalChange()
 
     companion object {
         fun factory(locator: ServiceLocator) = viewModelFactory {
@@ -88,6 +126,9 @@ fun LibraryScreen(
     val history by viewModel.history.collectAsStateWithLifecycle()
     val favourites by viewModel.favourites.collectAsStateWithLifecycle()
     val subscriptions by viewModel.subscriptions.collectAsStateWithLifecycle()
+    val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
+    val syncEnabled by viewModel.syncEnabled.collectAsStateWithLifecycle()
+    val account by viewModel.account.collectAsStateWithLifecycle()
     var tab by remember { mutableIntStateOf(TAB_HISTORY) }
 
     Column(modifier.fillMaxSize()) {
@@ -95,6 +136,25 @@ fun LibraryScreen(
             Tab(selected = tab == TAB_HISTORY, onClick = { tab = TAB_HISTORY }, text = { Text("History") })
             Tab(selected = tab == TAB_SAVED, onClick = { tab = TAB_SAVED }, text = { Text("Saved") })
             Tab(selected = tab == TAB_SUBS, onClick = { tab = TAB_SUBS }, text = { Text("Subscriptions") })
+        }
+
+        // Sync only exists for a signed-in account; a signed-out user sees the
+        // library exactly as before.
+        if (account != null) {
+            SyncBar(
+                enabled = syncEnabled,
+                status = syncStatus,
+                onEnable = viewModel::enableSync,
+                onSync = viewModel::syncNow,
+            )
+        }
+
+        (syncStatus as? SyncStatus.AwaitingConsent)?.let { awaiting ->
+            FirstSyncConsentDialog(
+                preview = awaiting.preview,
+                onMerge = viewModel::mergeFirstSync,
+                onDismiss = viewModel::dismissFirstSync,
+            )
         }
 
         if (tab == TAB_SUBS) {
@@ -144,6 +204,73 @@ fun LibraryScreen(
             }
         }
     }
+}
+
+/**
+ * The small status strip under the tabs, shown only for a signed-in account.
+ *
+ * It renders nothing once sync is on but the transport is unavailable
+ * ([SyncStatus.Disabled]) — a persistent "sync is broken" banner would be noise
+ * for a state the user cannot act on from here. Everything it displays is driven
+ * by the engine's single [SyncStatus] value, so it is a pure projection of state
+ * rather than a second source of truth.
+ */
+@Composable
+private fun SyncBar(
+    enabled: Boolean,
+    status: SyncStatus,
+    onEnable: () -> Unit,
+    onSync: () -> Unit,
+) {
+    if (enabled && status is SyncStatus.Disabled) return
+
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!enabled) {
+                Text(
+                    "Sync with YouTube",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onEnable) { Text("Turn on") }
+            } else {
+                Text(
+                    syncBarLabel(status),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (status is SyncStatus.Failed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                when (status) {
+                    is SyncStatus.Running, is SyncStatus.AwaitingConsent -> Unit
+                    is SyncStatus.Failed -> Button(onClick = onSync) { Text("Retry") }
+                    else -> Button(onClick = onSync) { Text("Sync now") }
+                }
+            }
+        }
+    }
+}
+
+/** A concise, display-ready line for a [SyncStatus]. */
+private fun syncBarLabel(status: SyncStatus): String = when (status) {
+    SyncStatus.Disabled -> "Sync is unavailable."
+    SyncStatus.Idle -> "Not synced yet."
+    is SyncStatus.Running -> when (status.phase) {
+        SyncPhase.PULLING -> "Syncing from your account..."
+        SyncPhase.MERGING -> "Merging..."
+        SyncPhase.PUSHING -> if (status.total > 0) "Syncing ${status.done}/${status.total}..." else "Syncing..."
+    }
+    is SyncStatus.AwaitingConsent -> "Waiting for you to merge."
+    is SyncStatus.Done -> "Synced just now."
+    is SyncStatus.Failed -> status.message
 }
 
 @Composable

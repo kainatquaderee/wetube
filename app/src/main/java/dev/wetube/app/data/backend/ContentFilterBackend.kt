@@ -93,6 +93,14 @@ class ContentFilterBackend(
      */
     override suspend fun progressive(id: String): StreamFormat? = delegate.progressive(id)
 
+    /**
+     * Sync is not a listing, so the mature-content filter has nothing to
+     * intercept; the capability is forwarded verbatim. Keeping it explicit
+     * (rather than relying on the `null` default) is what makes sync work when
+     * the InnerTube transport is wrapped by this filter.
+     */
+    override val sync: SyncBackend? get() = delegate.sync
+
     private fun isAgeWall(message: String?): Boolean {
         val text = message.orEmpty()
         return text.contains("confirm your age", ignoreCase = true) ||

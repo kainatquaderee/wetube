@@ -50,6 +50,33 @@ class BackupStoreTest {
     }
 
     @Test
+    fun `sync settings survive a backup round trip`() {
+        val original = AppSettings(syncEnabled = true, mirrorRemovals = true)
+
+        val restored = original.toBackupSettings().restoreOnto(AppSettings())
+
+        assertTrue(restored.syncEnabled)
+        assertTrue(restored.mirrorRemovals)
+    }
+
+    @Test
+    fun `a version 2 backup without the sync fields restores their defaults`() {
+        // A v2 file predates syncEnabled and mirrorRemovals, so it simply lacks
+        // them. Restoring must leave them false even when the live store had
+        // them on, because the outcome is defined by the file alone.
+        val text = """{"format":"${BackupFile.FORMAT}","version":2,"settings":{"region":"FR"}}"""
+
+        val decoded = json.parseBackup(text)
+        val restored = decoded.settings!!.restoreOnto(
+            AppSettings(syncEnabled = true, mirrorRemovals = true),
+        )
+
+        assertEquals("FR", restored.region)
+        assertFalse(restored.syncEnabled)
+        assertFalse(restored.mirrorRemovals)
+    }
+
+    @Test
     fun `restore uses backup defaults for fields an older file omits`() {
         val current = AppSettings(region = "JP", showMature = true, videoQuality = 1080)
         val restored = BackupSettings(region = "DE").restoreOnto(current)

@@ -65,6 +65,17 @@ class SettingsStoreTest {
         assertEquals(0, settings.videoQuality)
         assertEquals(1f, settings.playbackSpeed, 0f)
         assertEquals(setOf("sponsor", "selfpromo", "interaction"), settings.sponsorCategories)
+        assertFalse(settings.syncEnabled)
+        assertFalse(settings.mirrorRemovals)
+    }
+
+    @Test
+    fun `syncEnabled defaults to false and round-trips through update`() = runBlocking {
+        assertFalse(store.settings.first().syncEnabled)
+
+        store.update { it.copy(syncEnabled = true) }
+
+        assertTrue(store.settings.first().syncEnabled)
     }
 
     @Test

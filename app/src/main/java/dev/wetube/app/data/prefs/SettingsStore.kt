@@ -36,6 +36,20 @@ data class AppSettings(
     val captionTranslateTo: String = "",
     /** Age-gated videos are hidden from feeds while this is off. */
     val showMature: Boolean = false,
+    /**
+     * Master opt-in for account sync. Off by default: WeTube is fully usable
+     * without an account, and pushing anything to a signed-in account is a
+     * deliberate act. While this is false the entire sync UI is hidden and the
+     * engine is never asked to run, so a user who never touches the switch
+     * never has a request signed with their session cookies.
+     */
+    val syncEnabled: Boolean = false,
+    /**
+     * Whether a removal made on the account is mirrored into the local library
+     * on sync. Off by default: a remote deletion is surfaced, not silently
+     * applied, until the user opts in.
+     */
+    val mirrorRemovals: Boolean = false,
 )
 
 class SettingsStore internal constructor(
@@ -61,6 +75,8 @@ class SettingsStore internal constructor(
         val captionLanguage = stringPreferencesKey("caption_language")
         val captionTranslate = stringPreferencesKey("caption_translate")
         val showMature = booleanPreferencesKey("show_mature")
+        val syncEnabled = booleanPreferencesKey("sync_enabled")
+        val mirrorRemovals = booleanPreferencesKey("sync_mirror_removals")
     }
 
     val settings: Flow<AppSettings> = dataStore.data.map { it.toAppSettings() }
@@ -90,6 +106,8 @@ class SettingsStore internal constructor(
             prefs[Keys.captionLanguage] = next.captionLanguage
             prefs[Keys.captionTranslate] = next.captionTranslateTo
             prefs[Keys.showMature] = next.showMature
+            prefs[Keys.syncEnabled] = next.syncEnabled
+            prefs[Keys.mirrorRemovals] = next.mirrorRemovals
         }
     }
 
@@ -113,5 +131,7 @@ class SettingsStore internal constructor(
         captionLanguage = this[Keys.captionLanguage].orEmpty(),
         captionTranslateTo = this[Keys.captionTranslate].orEmpty(),
         showMature = this[Keys.showMature] ?: false,
+        syncEnabled = this[Keys.syncEnabled] ?: false,
+        mirrorRemovals = this[Keys.mirrorRemovals] ?: false,
     )
 }

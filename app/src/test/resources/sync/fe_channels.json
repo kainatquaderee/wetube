@@ -1,0 +1,50 @@
+{
+  "contents": {
+    "twoColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "gridRenderer": {
+                      "items": [
+                        {
+                          "gridChannelRenderer": {
+                            "channelId": "UCAAAABBBBCCCCDDDDEEEEFF",
+                            "title": { "simpleText": "Alpha Studio" },
+                            "thumbnail": {
+                              "thumbnails": [
+                                { "url": "https://example.com/alpha.jpg", "width": 88, "height": 88 }
+                              ]
+                            },
+                            "subscriberCountText": { "simpleText": "1.2M subscribers" }
+                          }
+                        },
+                        {
+                          "gridChannelRenderer": {
+                            "title": { "runs": [ { "text": "Beta Channel" } ] },
+                            "navigationEndpoint": {
+                              "browseEndpoint": { "browseId": "UCGGGGHHHHIIIIJJJJKKKKLL" }
+                            },
+                            "thumbnail": {
+                              "thumbnails": [
+                                { "url": "https://example.com/beta.jpg", "width": 88, "height": 88 }
+                              ]
+                            },
+                            "subscriberCountText": { "simpleText": "12K subscribers" }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

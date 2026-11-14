@@ -68,6 +68,27 @@ easy to demo.
 - [ ] Comment composer: post and reply from the app when signed in
 - [ ] Fullscreen auto-rotate for landscape video, with a portrait lock option
 
+## 0.2.0 — account sync (pull-first, shipped in this tree)
+- [x] Sync subscriptions with a signed-in account, both ways but pull-first: the
+      account is fetched and applied before anything is written
+- [x] Sync a favourites mirror: the first consented push creates a private
+      "Favourites" playlist WeTube owns (seeded in the create call) and later
+      pushes reuse that remembered id; the user's own likes (`LL`) are never written
+- [x] First sync stops before its first write and asks once, showing counts only;
+      a change made before consent can never be pushed
+- [x] Presence-based three-way merge, keyed by a non-reversible per-account key,
+      with tombstones and per-account quarantine so accounts cannot leak into
+      each other
+- [x] Ordering, batching (50) and a per-sync cap (200) on writes, with retry for
+      transient failures and a pause that keeps the queued change on anything else
+- [x] Removals only for playlists WeTube itself created; mirroring account
+      removals locally is opt-in (off by default)
+- [x] Sync status bar in the Library, an "Account sync" section in Settings, and a
+      debug-only capability check; backups bump to schema v3
+- [ ] Verify the write endpoints against a real account (the SYNC-0 capability
+      test in `docs/SYNC_PROTOCOL.md`); until then the push path is `UNVERIFIED`
+- [ ] Sync on the Invidious/Piped backends (they have no account API)
+
 ## 0.2 — player reliability & downloads
 - [ ] `n`-parameter transform for the fallback clients, so strictly throttled
       networks stop 403ing their URLs (IOS-first already avoids this for
@@ -79,8 +100,8 @@ easy to demo.
 - [ ] Playlists: create, reorder, play all
 - [ ] Watch Later
 - [ ] Queue: add to queue, drag to reorder, autoplay from related
-- [ ] YouTube playlist sync (both-way if feasible, otherwise one-way pull)
-- [ ] YouTube subscription sync (both-way if feasible, otherwise one-way pull)
+- [x] YouTube playlist sync (pull-first mirror shipped in 0.2.0)
+- [x] YouTube subscription sync (pull-first, both-way, shipped in 0.2.0)
 - [ ] Import subscriptions from Google Takeout CSV / OPML
 - [ ] Subscription feed (local, newest-first)
 
