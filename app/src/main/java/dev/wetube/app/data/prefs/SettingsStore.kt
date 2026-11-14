@@ -32,6 +32,16 @@ data class AppSettings(
     /** Keep audio alive when the app goes to the background. */
     val backgroundPlayback: Boolean = true,
     /**
+     * Drop the picture while the app is in the background.
+     *
+     * A visible video keeps fetching and decoding frames for a screen nobody can
+     * see, so by default backgrounded playback steps down to the audio track and
+     * restores the picture on return. This is transient: it never changes the
+     * user's own [audioOnly] choice, and casting, live streams, saved files and
+     * videos without a separate audio track are left alone.
+     */
+    val audioOnlyInBackground: Boolean = true,
+    /**
      * How much storage finished downloads may occupy, in megabytes. `0` means
      * unlimited; otherwise the downloads the app keeps should total no more
      * than this, with the oldest finished ones removed first as new ones arrive.
@@ -78,6 +88,7 @@ class SettingsStore internal constructor(
         val audioOnly = booleanPreferencesKey("audio_only")
         val videoQuality = stringPreferencesKey("video_quality")
         val backgroundPlayback = booleanPreferencesKey("background_playback")
+        val audioOnlyInBackground = booleanPreferencesKey("audio_only_in_background")
         val downloadLimitMb = intPreferencesKey("download_limit_mb")
         val captions = booleanPreferencesKey("captions")
         val captionLanguage = stringPreferencesKey("caption_language")
@@ -110,6 +121,7 @@ class SettingsStore internal constructor(
             prefs[Keys.audioOnly] = next.audioOnly
             prefs[Keys.videoQuality] = next.videoQuality.toString()
             prefs[Keys.backgroundPlayback] = next.backgroundPlayback
+            prefs[Keys.audioOnlyInBackground] = next.audioOnlyInBackground
             prefs[Keys.downloadLimitMb] = next.downloadLimitMb
             prefs[Keys.captions] = next.captionsEnabled
             prefs[Keys.captionLanguage] = next.captionLanguage
@@ -136,6 +148,7 @@ class SettingsStore internal constructor(
         audioOnly = this[Keys.audioOnly] ?: false,
         videoQuality = this[Keys.videoQuality]?.toIntOrNull() ?: 0,
         backgroundPlayback = this[Keys.backgroundPlayback] ?: true,
+        audioOnlyInBackground = this[Keys.audioOnlyInBackground] ?: true,
         downloadLimitMb = this[Keys.downloadLimitMb] ?: 0,
         captionsEnabled = this[Keys.captions] ?: false,
         captionLanguage = this[Keys.captionLanguage].orEmpty(),

@@ -145,9 +145,10 @@ the title, channel, chips and comments stay usable below with a single retry.
 **The player settings panel.** The control bar's gear opens a sheet modelled on
 the official player: Quality and Playback speed open second-level lists, Captions
 hands off to the CC sheet, and the remaining rows are switches (audio-only,
-background playback, SponsorBlock, dislike counts) with a door into the full
-Settings screen. It reads and writes the same preferences the player and Shorts
-already use, so a change made mid-video takes effect immediately.
+background playback, audio-only in the background, SponsorBlock, dislike counts)
+with a door into the full Settings screen. It reads and writes the same
+preferences the player and Shorts already use, so a change made mid-video takes
+effect immediately.
 
 The shared player is also used by Shorts. Every `MediaItem` carries the video id
 as its media id, so a screen can tell whether the player still holds the clip it
@@ -325,6 +326,19 @@ to the renderer instead of the local player (section 11), and the same `ON_STOP`
 handler pauses the TV through `OutputRouter` rather than the silent local
 player.
 
+**Audio only in the background.** A video that is playing while the app is out of
+sight would otherwise keep fetching and decoding frames for a screen nobody can
+see. The setting **Audio only in the background** (on by default) rebuilds the
+current stream as its audio track on `ON_STOP` and restores the picture on
+`ON_START`, both through the position-preserving in-place reload above. The
+choice is transient and never touches the user's own **Audio only** preference,
+so the player's switch keeps showing what the user set. The step-down declines
+any case it cannot improve on: a video the user already made audio-only, a saved
+file (one muxed track, and re-resolving it needs the network the download exists
+to avoid), a cast or a live stream (both owned by something else), and a video
+with no separate audio rendition to switch to. It also requires **Keep playing in
+the background** to be on, since a paused player has no picture to drop.
+
 ## 7. Permissions
 
 Internet, network state, wake lock, foreground media playback, notifications,
@@ -342,7 +356,7 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | UI | Hand-written Jetpack Compose, dark and light |
 | Transport | Direct InnerTube over JSON, plus Invidious and Piped |
 | Playback | Progressive, merged A/V, HLS live |
-| Player panel | In-player gear: quality, speed, captions, audio-only, background, SponsorBlock, dislikes |
+| Player panel | In-player gear: quality, speed, captions, audio-only, background, audio-only in the background, SponsorBlock, dislikes |
 | Player extras | Read-only dislike count, Share, Subscribe/Subscribed on the channel row, end screen with the next related video |
 | Casting | DLNA/UPnP `MediaRenderer` discovery and playback on the local network, with a remote-control page |
 | Search | Autocomplete and continuation paging; keyboard dismissed on submit, next page loaded at the end of the list |

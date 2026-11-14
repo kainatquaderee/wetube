@@ -1,7 +1,26 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.1 (versionCode 21).
+Security. This release is 0.3.2 (versionCode 22).
+
+## 0.3.2 — 2026-11-14
+
+Playback stops burning data and battery on frames you cannot see.
+
+### Added
+- **Audio only in the background.** When you leave the app while a video is
+  playing, WeTube now steps the stream down to its audio track and brings the
+  picture back the moment you return, so no video is fetched or decoded for a
+  screen nobody is looking at. It is on by default and can be switched off in
+  Settings or from the player's gear. It never changes your own **Audio only**
+  choice, and it leaves a video alone when dropping the picture cannot help: a
+  saved download, a live stream, something being cast to a TV, or a video with no
+  separate audio track.
+
+### Fixed
+- **The "Audio only" setting now says what it does.** Its subtitle claimed it
+  started videos in the background as audio, when it actually plays every video
+  without the picture.
 
 ## 0.3.1 — 2026-11-14
 

@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.HighQuality
@@ -82,6 +83,7 @@ fun PlayerSettingsSheet(
     captionsEnabled: Boolean,
     audioOnly: Boolean,
     backgroundPlayback: Boolean,
+    audioOnlyInBackground: Boolean,
     sponsorBlock: Boolean,
     showDislikes: Boolean,
     /** True while a renderer, not the phone, is playing. */
@@ -91,6 +93,7 @@ fun PlayerSettingsSheet(
     onOpenCaptions: () -> Unit,
     onAudioOnly: (Boolean) -> Unit,
     onBackgroundPlayback: (Boolean) -> Unit,
+    onAudioOnlyInBackground: (Boolean) -> Unit,
     onSponsorBlock: (Boolean) -> Unit,
     onShowDislikes: (Boolean) -> Unit,
     onOpenAllSettings: () -> Unit,
@@ -165,6 +168,12 @@ fun PlayerSettingsSheet(
                         title = "Keep playing in the background",
                         checked = backgroundPlayback,
                         onChange = onBackgroundPlayback,
+                    )
+                    SwitchRow(
+                        icon = Icons.AutoMirrored.Filled.VolumeUp,
+                        title = "Audio only in the background",
+                        checked = audioOnlyInBackground,
+                        onChange = onAudioOnlyInBackground,
                     )
                     SwitchRow(
                         icon = Icons.Default.FastForward,

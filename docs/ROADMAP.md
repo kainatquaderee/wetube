@@ -175,6 +175,16 @@ easy to demo.
       so it follows the signed-in account instead of falling back to a `#shorts`
       search when the home page omits its Shorts shelf
 
+## 0.3.2 — background audio (shipped in this tree)
+- [x] **Audio only in the background**: a streamed video steps down to its audio
+      track while the app is out of sight and restores the picture on return, so
+      no video is fetched or decoded for a screen nobody can see (on by default;
+      a toggle in Settings and the player panel). It declines saved files, live
+      streams, casts and videos with no separate audio track, and never changes
+      the user's own Audio-only choice
+- [x] Corrected the "Audio only" subtitle, which claimed it started videos in the
+      background as audio rather than playing every video without the picture
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

@@ -537,7 +537,7 @@ fun SettingsScreen(
         Section("Playback")
         SwitchRow(
             title = "Audio only",
-            subtitle = "Start videos in the background as audio.",
+            subtitle = "Play every video as audio, without the picture.",
             checked = settings.audioOnly,
             onChange = { value -> viewModel.update { it.copy(audioOnly = value) } },
         )
@@ -550,6 +550,13 @@ fun SettingsScreen(
             subtitle = "When off, playback pauses as soon as you leave the app.",
             checked = settings.backgroundPlayback,
             onChange = { value -> viewModel.update { it.copy(backgroundPlayback = value) } },
+        )
+        SwitchRow(
+            title = "Audio only in the background",
+            subtitle = "Drop the picture while you are elsewhere and bring it back when " +
+                "you return, so no video is fetched for a screen you cannot see.",
+            checked = settings.audioOnlyInBackground,
+            onChange = { value -> viewModel.update { it.copy(audioOnlyInBackground = value) } },
         )
         SwitchRow(
             title = "Captions on by default",

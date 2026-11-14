@@ -79,12 +79,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -157,6 +161,8 @@ data class PlayerUiState(
     val audioOnly: Boolean = false,
     /** Keep the media session alive while the app is in the background. */
     val backgroundPlayback: Boolean = true,
+    /** Drop the picture while the app is in the background. */
+    val audioOnlyInBackground: Boolean = true,
     val sponsorBlockEnabled: Boolean = true,
     val showDislikes: Boolean = true,
     /**
@@ -288,6 +294,33 @@ internal fun playbackErrorMessage(localSource: Boolean): String = if (localSourc
     "This video could not be played. Its stream is in a format this device cannot play."
 }
 
+/**
+ * Whether backgrounded playback may step down to the audio track alone.
+ *
+ * "Audio only in the background" is a convenience, not a rule that may break
+ * playback, so it declines every case it cannot improve on: the user asked for
+ * it ([enabled]), the picture is not already gone by the user's own choice
+ * ([userAudioOnly]), the bytes are a stream rather than a saved file
+ * ([localSource] — a download is one muxed file with no separate audio track, and
+ * re-resolving it needs the network), no TV owns the timeline ([casting]), the
+ * video has a dedicated audio rendition to switch to ([hasAudioTrack]), and it
+ * is not live ([live] — an HLS manifest carries no track choice, and reloading it
+ * would drop the live edge).
+ */
+internal fun canDropVideoInBackground(
+    enabled: Boolean,
+    userAudioOnly: Boolean,
+    localSource: Boolean,
+    casting: Boolean,
+    hasAudioTrack: Boolean,
+    live: Boolean,
+): Boolean = enabled &&
+    !userAudioOnly &&
+    !localSource &&
+    !casting &&
+    hasAudioTrack &&
+    !live
+
 class PlayerViewModel(
     private val locator: ServiceLocator,
     videoId: String,
@@ -370,6 +403,15 @@ class PlayerViewModel(
 
     private var lastSaved = 0L
 
+    /**
+     * True while the picture is dropped automatically because the app is in the
+     * background, as opposed to by the viewer's own audio-only choice. Kept
+     * separate from [PlayerUiState.audioOnly] so the sheet's switch keeps
+     * reflecting the persisted preference and never flickers for a state the
+     * viewer did not set.
+     */
+    private var backgroundAudioOnly = false
+
     init {
         load()
     }
@@ -401,8 +443,11 @@ class PlayerViewModel(
 
                 val item = local
                     ?.let { StreamResolver.localItem(detail.item, it.file, it.mime) }
-                    ?: (StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
-                        ?: error("No playable stream was available for this video."))
+                    ?: (StreamResolver.mediaItem(
+                        detail,
+                        settings.audioOnly || backgroundAudioOnly,
+                        settings.videoQuality,
+                    ) ?: error("No playable stream was available for this video."))
                 // Remembered here, at the one place the local-vs-network choice
                 // is made, so an error later knows whether the bytes it is
                 // playing came from the file or the stream.
@@ -455,6 +500,7 @@ class PlayerViewModel(
                     ),
                     audioOnly = settings.audioOnly,
                     backgroundPlayback = settings.backgroundPlayback,
+                    audioOnlyInBackground = settings.audioOnlyInBackground,
                     sponsorBlockEnabled = settings.sponsorBlockEnabled,
                     showDislikes = settings.showDislikes,
                     castFailure = null,
@@ -724,6 +770,7 @@ class PlayerViewModel(
                 videoQuality = settings.videoQuality,
                 audioOnly = settings.audioOnly,
                 backgroundPlayback = settings.backgroundPlayback,
+                audioOnlyInBackground = settings.audioOnlyInBackground,
                 sponsorBlockEnabled = settings.sponsorBlockEnabled,
                 showDislikes = settings.showDislikes,
                 effectiveHeight = StreamResolver.effectiveHeight(
@@ -769,6 +816,86 @@ class PlayerViewModel(
             locator.settings.update { it.copy(audioOnly = value) }
             if (locator.output.isRemote) recastRemote() else applySettings()
         }
+    }
+
+    /**
+     * Reacts to the app entering or leaving the foreground.
+     *
+     * When "audio only in the background" is on, a streamed video that keeps
+     * playing out of sight is rebuilt from its audio rendition, so no video is
+     * fetched or decoded for a screen nobody can see; coming back restores the
+     * picture. The viewer's own audio-only choice is never written to the
+     * settings — this is a transient override held in [backgroundAudioOnly] —
+     * and the step-down declines casting, live streams, saved files and videos
+     * with no separate audio track ([canDropVideoInBackground]).
+     */
+    fun onBackgroundChanged(foreground: Boolean) {
+        if (backgroundAudioOnly) {
+            // Returning to the foreground undoes the step-down; the picture
+            // comes back from the detail already in hand, so no network call.
+            if (!foreground) return
+            backgroundAudioOnly = false
+            val detail = state.detail ?: return
+            viewModelScope.launch {
+                val settings = locator.settings.settings.first()
+                if (locator.output.isRemote) return@launch
+                val item = StreamResolver.mediaItem(
+                    detail,
+                    settings.audioOnly,
+                    settings.videoQuality,
+                ) ?: return@launch
+                if (dev.wetube.app.BuildConfig.DEBUG) {
+                    android.util.Log.d("WeTube", "player: background picture restored")
+                }
+                reloadInPlace(item, settings.playbackSpeed)
+            }
+            return
+        }
+        if (foreground) return
+        val detail = state.detail ?: return
+        val playback = detail.playback
+        viewModelScope.launch {
+            val settings = locator.settings.settings.first()
+            val canDrop = canDropVideoInBackground(
+                enabled = settings.audioOnlyInBackground && settings.backgroundPlayback,
+                userAudioOnly = state.audioOnly,
+                localSource = isLocalSource,
+                casting = locator.output.isRemote,
+                hasAudioTrack = playback.audioOnly.isNotEmpty(),
+                live = playback.hls?.isNotBlank() == true,
+            )
+            if (!canDrop) return@launch
+            val item = StreamResolver.mediaItem(
+                detail,
+                audioOnly = true,
+                preferredHeight = settings.videoQuality,
+            ) ?: return@launch
+            backgroundAudioOnly = true
+            if (dev.wetube.app.BuildConfig.DEBUG) {
+                android.util.Log.d("WeTube", "player: background step-down to audio-only")
+            }
+            reloadInPlace(item, settings.playbackSpeed)
+        }
+    }
+
+    /** Toggles the background step-down and remembers the choice. */
+    fun setAudioOnlyInBackground(value: Boolean) {
+        state = state.copy(audioOnlyInBackground = value)
+        viewModelScope.launch {
+            locator.settings.update { it.copy(audioOnlyInBackground = value) }
+        }
+    }
+
+    /**
+     * Replaces the current media at the same position without forcing playback,
+     * so a background step-down never un-pauses a video the viewer paused.
+     */
+    private fun reloadInPlace(item: MediaItem, speed: Float) {
+        // A rebuilt item always comes from the stream URLs, so the source is the
+        // network from here on even if the previous bytes were the saved file.
+        isLocalSource = false
+        val position = locator.playback.controller.value?.currentPosition ?: 0L
+        locator.playback.load(item = item, speed = speed, startAtMs = position)
     }
 
     // -- casting ------------------------------------------------------------
@@ -1057,6 +1184,23 @@ fun PlayerScreen(
     val isRemote = output is PlaybackOutput.Remote
     val context = LocalContext.current
     val view = LocalView.current
+
+    // While the app is out of sight, step the picture down to the audio track so
+    // no video is fetched or decoded for a screen nobody can see, and bring it
+    // back on return. The observer lives on the one screen where playback is
+    // started, so it never has to guess whether a video is playing.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> viewModel.onBackgroundChanged(foreground = false)
+                Lifecycle.Event.ON_START -> viewModel.onBackgroundChanged(foreground = true)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     var fullscreen by remember { mutableStateOf(false) }
     var showCaptionSheet by remember { mutableStateOf(false) }
@@ -1528,6 +1672,7 @@ fun PlayerScreen(
             captionsEnabled = viewModel.captions.enabled,
             audioOnly = state.audioOnly,
             backgroundPlayback = state.backgroundPlayback,
+            audioOnlyInBackground = state.audioOnlyInBackground,
             sponsorBlock = state.sponsorBlockEnabled,
             showDislikes = state.showDislikes,
             castActive = isRemote,
@@ -1539,6 +1684,7 @@ fun PlayerScreen(
             },
             onAudioOnly = viewModel::setAudioOnly,
             onBackgroundPlayback = viewModel::setBackgroundPlayback,
+            onAudioOnlyInBackground = viewModel::setAudioOnlyInBackground,
             onSponsorBlock = viewModel::setSponsorBlock,
             onShowDislikes = viewModel::setShowDislikes,
             onOpenAllSettings = {
