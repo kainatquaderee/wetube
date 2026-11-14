@@ -52,6 +52,17 @@ val qualityHeights: List<Int> = listOf(2160, 1440, 1080, 720, 480, 360, 240, 144
 /** "Auto" for the automatic choice, otherwise "720p". */
 fun qualityLabel(quality: Int): String = if (quality <= 0) "Auto" else "${quality}p"
 
+/**
+ * A count with the right noun form: `"0 subscriptions"`, `"1 subscription"`.
+ *
+ * Used where a number and its noun appear in user-facing copy that has to read
+ * as a sentence — notably the first-sync consent prompt, whose counts are what
+ * tell the user what a merge will actually change. `"2 removal(s)"` reads like a
+ * placeholder and undersells the action, so the noun is spelled out instead.
+ */
+fun countOf(count: Int, singular: String, plural: String = "${singular}s"): String =
+    "$count ${if (count == 1) singular else plural}"
+
 fun friendlyError(t: Throwable): String {
     val raw = t.message.orEmpty()
     return when {

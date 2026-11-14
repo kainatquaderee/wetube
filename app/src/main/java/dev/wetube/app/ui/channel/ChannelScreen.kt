@@ -138,7 +138,7 @@ fun ChannelScreen(
             state.loading -> LoadingBox()
             state.error != null || state.channel == null -> MessageBox(
                 title = "Couldn't load channel",
-                body = state.error ?: "Unknown error",
+                body = state.error ?: "Check your connection and try again.",
             ) {
                 Button(onClick = viewModel::load) { Text("Retry") }
             }

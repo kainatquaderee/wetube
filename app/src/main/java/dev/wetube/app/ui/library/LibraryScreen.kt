@@ -491,6 +491,7 @@ private fun DownloadsTab(
     val entries by locator.downloads.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
     val progress by locator.downloads.progress.collectAsStateWithLifecycle()
     val storedBytes by locator.downloads.storageBytes.collectAsStateWithLifecycle(initialValue = 0L)
+    var confirmClearFinished by remember { mutableStateOf(false) }
 
     if (entries.isEmpty()) {
         MessageBox(
@@ -515,7 +516,7 @@ private fun DownloadsTab(
                 modifier = Modifier.weight(1f),
             )
             if (entries.any { it.state == DownloadState.COMPLETE }) {
-                TextButton(onClick = { locator.downloads.clearCompleted() }) {
+                TextButton(onClick = { confirmClearFinished = true }) {
                     Text("Clear finished")
                 }
             }
@@ -531,6 +532,31 @@ private fun DownloadsTab(
                 )
             }
         }
+    }
+
+    // Clearing finished downloads deletes their files, so it asks first.
+    if (confirmClearFinished) {
+        AlertDialog(
+            onDismissRequest = { confirmClearFinished = false },
+            title = { Text("Delete finished downloads?") },
+            text = {
+                Text(
+                    "The saved files of every finished download will be deleted from this " +
+                        "device. Anything still downloading is kept. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        locator.downloads.clearCompleted()
+                        confirmClearFinished = false
+                    },
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearFinished = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

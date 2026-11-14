@@ -13,7 +13,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class BackendType(val label: String, val defaultHost: String) {
     /** Works out of the box; may break when YouTube changes the client profile. */
-    INNERTUBE("Direct (InnerTube)", ""),
+    INNERTUBE("Direct (built-in)", ""),
 
     /**
      * Independent instance; needs a reachable host. The host comes from the

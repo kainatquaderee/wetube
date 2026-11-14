@@ -142,7 +142,7 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
                 .onSuccess { videos ->
                     state = state.copy(loading = false, videos = videos)
                     if (videos.isEmpty()) {
-                        state = state.copy(error = "No Shorts came back from YouTube.")
+                        state = state.copy(error = "No Shorts right now.")
                     } else {
                         play(0)
                     }

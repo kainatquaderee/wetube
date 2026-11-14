@@ -31,12 +31,12 @@ fun FirstSyncConsentDialog(
         title = { Text("Merge with your account?") },
         text = {
             Text(
-                "Your account has ${preview.subscriptionsOnAccount} subscriptions and " +
-                    "${preview.favouritesOnAccount} favourites. This device has " +
-                    "${preview.subscriptionsToPush} subscription(s) and " +
-                    "${preview.favouritesToPush} favourite(s) to add. " +
-                    "${preview.removalsToPush} item(s) you removed here would also be removed " +
-                    "from the account. Merge them?",
+                "Your account has ${countOf(preview.subscriptionsOnAccount, "subscription")} " +
+                    "and ${countOf(preview.favouritesOnAccount, "favourite")}. This device " +
+                    "has ${countOf(preview.subscriptionsToPush, "subscription")} and " +
+                    "${countOf(preview.favouritesToPush, "favourite")} to add. " +
+                    "${countOf(preview.removalsToPush, "item")} you removed here would also " +
+                    "be removed from the account. Merge them?",
             )
         },
         confirmButton = { TextButton(onClick = onMerge) { Text("Merge") } },

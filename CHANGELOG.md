@@ -1,7 +1,26 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.6 (versionCode 16).
+Security. This release is 0.2.7 (versionCode 17).
+
+## 0.2.7 — 2026-11-14
+
+A second consistency pass: the remaining bulk actions that delete something now
+ask first, the counts in the sync prompt read as proper sentences, and the last
+strings that leaked an implementation name are plain again.
+
+### Changed
+- **Bulk actions that delete ask first.** Clearing the play queue, deleting every
+  finished download and removing the active account now confirm before they act —
+  the same guard clearing watch history gained in 0.2.6. Removing a single item is
+  still one tap, because a single row is easy to put back.
+- **The sync prompt reads as a sentence.** "2 subscription(s)" and "1 removal(s)"
+  are now "2 subscriptions" and "1 item", through a shared helper, so the
+  safety-boundary text is not mistaken for a placeholder.
+- **The last implementation names are gone from the screen.** The backend choice
+  reads **Direct (built-in)** rather than "Direct (InnerTube)"; an empty Shorts
+  feed and a channel that fails to load now say something a person can act on
+  instead of "Unknown error".
 
 ## 0.2.6 — 2026-11-14
 

@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -17,6 +18,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -99,6 +101,7 @@ fun QueueScreen(
 ) {
     val viewModel: QueueViewModel = viewModel(factory = QueueViewModel.factory(locator))
     val queue by viewModel.queue.collectAsStateWithLifecycle()
+    var confirmClear by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = modifier,
@@ -115,7 +118,7 @@ fun QueueScreen(
                     // they are absent on the empty state rather than disabled.
                     if (queue.isNotEmpty()) {
                         TextButton(onClick = { onVideoClick(queue.first().id) }) { Text("Play all") }
-                        TextButton(onClick = viewModel::clear) { Text("Clear") }
+                        TextButton(onClick = { confirmClear = true }) { Text("Clear") }
                     }
                 },
             )
@@ -136,6 +139,27 @@ fun QueueScreen(
                 modifier = Modifier.padding(padding),
             )
         }
+    }
+
+    // Clearing drops every row at once, so it asks first. Removing a single row
+    // stays a one-tap action; only the bulk clear needs the guard.
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Clear the queue?") },
+            text = { Text("Every video in the queue will be removed. This cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.clear()
+                        confirmClear = false
+                    },
+                ) { Text("Clear") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

@@ -810,6 +810,8 @@ private fun AccountsSection(
     onSwitch: (Int) -> Unit,
     onRemove: () -> Unit,
 ) {
+    var confirmRemove by remember { mutableStateOf(false) }
+
     if (accounts.isEmpty()) {
         Text(
             "Signing in is optional. It brings in your own recommendations and subscriptions. " +
@@ -857,7 +859,7 @@ private fun AccountsSection(
     Row(verticalAlignment = Alignment.CenterVertically) {
         Button(onClick = onSignIn) { Text("Add account") }
         Spacer(Modifier.width(8.dp))
-        OutlinedButton(onClick = onRemove) { Text("Remove active") }
+        OutlinedButton(onClick = { confirmRemove = true }) { Text("Remove active") }
     }
     Spacer(Modifier.height(6.dp))
     Text(
@@ -866,6 +868,33 @@ private fun AccountsSection(
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+
+    // Removing an account only drops its saved sign-in; the local library is
+    // untouched, but signing back in is real effort, so it asks first.
+    if (confirmRemove) {
+        AlertDialog(
+            onDismissRequest = { confirmRemove = false },
+            title = { Text("Remove this account?") },
+            text = {
+                Text(
+                    "Its saved sign-in is removed from this device and you are signed out. " +
+                        "Subscriptions, favourites and downloads stay, and you can sign in " +
+                        "again later.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRemove()
+                        confirmRemove = false
+                    },
+                ) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRemove = false }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
 @Composable

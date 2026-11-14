@@ -143,6 +143,13 @@ easy to demo.
 - [x] Explain an empty trending feed and hint the Trending-region field
 - [x] Spell out what a first-sync "removal" is in the consent prompt
 
+## 0.2.7 — consistency pass (shipped in this tree)
+- [x] Confirm before clearing the queue, deleting all finished downloads, and
+      removing the active account
+- [x] Pluralise the first-sync consent counts ("2 subscriptions", "1 item")
+- [x] Name the direct backend "Direct (built-in)"; give an empty Shorts feed and a
+      failed channel load wording a user can act on
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

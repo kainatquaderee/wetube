@@ -172,6 +172,13 @@ design, and why the direct backend is the default.
 
 ## Status
 
+0.2.7 is a second **consistency pass**. Bulk actions that delete something —
+clearing the play queue, deleting all finished downloads, removing the active
+account — now confirm first, matching the watch-history guard added in 0.2.6; the
+counts in the first-sync prompt read as proper sentences; and the last
+implementation names are gone from the screen, including the backend choice,
+which is now **Direct (built-in)**.
+
 0.2.6 is a **clarity pass**. Clearing watch history now asks first, so a stray
 tap cannot wipe the list and every resume point with it; the liked-videos list and
 the control that fills it are both called **Favourite**, so they read as distinct
