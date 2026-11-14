@@ -48,7 +48,8 @@ data class HomeUiState(
     val region: String = "US",
     val refreshing: Boolean = false,
     val feed: Feed = Feed.FOR_YOU,
-    val signedIn: Boolean = false,
+    /** A one-line note under the chips, e.g. when not every subscription is fetched. */
+    val feedNote: String? = null,
 )
 
 class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
@@ -65,27 +66,80 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
             state = state.copy(loading = state.videos.isEmpty(), refreshing = true, error = null)
             runCatching {
                 val settings = locator.settings.settings.first()
-                val signedIn = locator.auth.account.first() != null
-                val feed = if (signedIn) state.feed else Feed.FOR_YOU
-                val videos = if (feed == Feed.SUBSCRIPTIONS) {
-                    locator.backend().subscriptions()
+                state = state.copy(region = settings.region)
+                if (state.feed == Feed.SUBSCRIPTIONS) {
+                    // No sign-in gate: the Subscriptions feed is device-local, so
+                    // it works for a signed-out user exactly as for a signed-in one.
+                    loadLocalSubscriptions()
                 } else {
-                    locator.backend().trending(settings.region)
+                    val videos = locator.backend().trending(settings.region)
+                    state = state.copy(
+                        loading = false,
+                        refreshing = false,
+                        // Backends that do not de-duplicate (Invidious, Piped)
+                        // can repeat an item between the first page and its next.
+                        videos = videos.distinctBy { it.id },
+                        feedNote = null,
+                    )
                 }
-                state = state.copy(
-                    loading = false,
-                    refreshing = false,
-                    // Backends that do not de-duplicate (Invidious, Piped) can
-                    // repeat an item between the first page and its next one.
-                    videos = videos.distinctBy { it.id },
-                    region = settings.region,
-                    feed = feed,
-                    signedIn = signedIn,
-                )
             }.onFailure {
                 state = state.copy(loading = false, refreshing = false, error = friendlyError(it))
             }
         }
+    }
+
+    /**
+     * Builds the Subscriptions feed from the device-local channel list.
+     *
+     * Each subscribed channel's recent uploads are fetched with bounded
+     * concurrency and merged newest-first. Failures are isolated *per channel*:
+     * a channel that is dead, renamed or private simply contributes nothing,
+     * because blanking the whole feed over one bad subscription would hide
+     * every other one. The first results are published as soon as they arrive,
+     * so the list fills in rather than waiting on the slowest channel. This path
+     * still never throws out of viewModelScope — the caller's `runCatching`
+     * turns an overall failure (e.g. the library read) into an `error`.
+     */
+    private suspend fun loadLocalSubscriptions() {
+        val channels = locator.library.subscriptions.first()
+
+        if (channels.isEmpty()) {
+            // The empty-state MessageBox in the composable carries the guidance.
+            state = state.copy(videos = emptyList(), loading = false, refreshing = false, feedNote = null)
+            return
+        }
+
+        val selected = channels.take(MAX_FEED_CHANNELS)
+        // Accumulated in completion order, then re-ordered the one way the feed
+        // understands: by the parsed age of each item's relative `publishedText`.
+        val working = mutableListOf<VideoItem>()
+        collectBounded(
+            items = selected,
+            concurrency = FEED_CONCURRENCY,
+            block = { channel ->
+                runCatching { locator.backend().channel(channel.id).videos.take(PER_CHANNEL_LIMIT) }
+                    .getOrElse { emptyList() }
+            },
+            onResult = { videos ->
+                working += videos
+                state = state.copy(
+                    videos = feedOrder(working, MAX_FEED_ITEMS),
+                    loading = false,
+                    refreshing = true,
+                )
+            },
+        )
+
+        state = state.copy(
+            videos = feedOrder(working, MAX_FEED_ITEMS),
+            loading = false,
+            refreshing = false,
+            feedNote = if (channels.size > MAX_FEED_CHANNELS) {
+                "Showing recent uploads from $MAX_FEED_CHANNELS of ${channels.size} subscriptions."
+            } else {
+                null
+            },
+        )
     }
 
     fun select(feed: Feed) {
@@ -95,6 +149,18 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
     }
 
     companion object {
+        /** The most subscriptions one feed load fetches uploads for. */
+        private const val MAX_FEED_CHANNELS = 40
+
+        /** How many channels are fetched at once. */
+        private const val FEED_CONCURRENCY = 4
+
+        /** The channel page already lists newest first; keep its head only. */
+        private const val PER_CHANNEL_LIMIT = 8
+
+        /** How many merged items the feed keeps. */
+        private const val MAX_FEED_ITEMS = 200
+
         fun factory(locator: ServiceLocator) = viewModelFactory {
             initializer { HomeViewModel(locator) }
         }
@@ -128,24 +194,31 @@ fun HomeScreen(
             },
         )
 
-        if (state.signedIn) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilterChip(
-                    selected = state.feed == Feed.FOR_YOU,
-                    onClick = { viewModel.select(Feed.FOR_YOU) },
-                    label = { Text("For you") },
-                )
-                FilterChip(
-                    selected = state.feed == Feed.SUBSCRIPTIONS,
-                    onClick = { viewModel.select(Feed.SUBSCRIPTIONS) },
-                    label = { Text("Subscriptions") },
-                )
-            }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = state.feed == Feed.FOR_YOU,
+                onClick = { viewModel.select(Feed.FOR_YOU) },
+                label = { Text("For you") },
+            )
+            FilterChip(
+                selected = state.feed == Feed.SUBSCRIPTIONS,
+                onClick = { viewModel.select(Feed.SUBSCRIPTIONS) },
+                label = { Text("Subscriptions") },
+            )
+        }
+
+        if (state.feed == Feed.SUBSCRIPTIONS && state.feedNote != null) {
+            Text(
+                text = state.feedNote,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
         }
 
         when {
@@ -159,8 +232,8 @@ fun HomeScreen(
             state.videos.isEmpty() -> MessageBox(
                 title = "Nothing here",
                 body = if (state.feed == Feed.SUBSCRIPTIONS) {
-                    "No subscriptions yet. Subscribe to channels on YouTube and they will " +
-                        "show up here."
+                    "No subscriptions yet. Open a channel and tap Subscribe, or import a " +
+                        "list from Settings → Import subscriptions."
                 } else {
                     "This instance returned no trending videos for ${state.region}."
                 },

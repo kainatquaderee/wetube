@@ -168,6 +168,13 @@ design, and why the direct backend is the default.
 
 ## Status
 
+0.2.2 makes subscriptions work **without an account**. Import an existing list
+from a Google Takeout `subscriptions.csv` or an OPML file exported by another
+client (NewPipe, FreeTube, …) in Settings, and Home's **Subscriptions** chip
+builds its feed from that same device-local list — each channel's recent uploads
+fetched with bounded concurrency and merged newest-first, no sign-in required.
+A signed-in account still contributes through the list it syncs into.
+
 0.2.1 adds a **device-local library**: save videos to **Watch Later**, line them
 up in a **play queue** that auto-advances, and build **local playlists** you can
 rename, reorder and play in full. All three live only on the phone — a local

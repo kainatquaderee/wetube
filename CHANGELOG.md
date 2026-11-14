@@ -1,7 +1,30 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.2.1 (versionCode 11).
+Security. This release is 0.2.2 (versionCode 12).
+
+## 0.2.2 — 2026-11-14
+
+Bring your subscriptions with you, and see what they uploaded without signing in.
+
+### Added
+- **Subscription import.** Bring existing subscriptions to this device from a
+  Google Takeout `subscriptions.csv` or an OPML file exported by another YouTube
+  client (NewPipe, FreeTube, ...), from a new "Import subscriptions" section in
+  Settings. The parsers are pure and dependency-free, and an import writes only
+  the local subscription list — it reaches the account only on an explicit sync.
+- **A local Subscriptions feed.** Home's **Subscriptions** chip now builds its
+  feed from the device-local subscription list — no account and no sign-in — by
+  fetching each subscribed channel's recent uploads with bounded concurrency and
+  merging them newest-first. A dead or renamed channel is skipped rather than
+  blanking the whole feed, and the first results appear before the slowest
+  channel answers.
+
+### Changed
+- **Home's feed chips no longer wait for a sign-in.** The Subscriptions feed is
+  device-local, so the chips are always shown and a signed-out user sees their
+  own subscriptions; a signed-in account still contributes through the same list
+  it syncs into.
 
 ## 0.2.1 — 2026-11-14
 

@@ -228,6 +228,49 @@ class LibraryStore internal constructor(
         return added
     }
 
+    /**
+     * Adds [channels] to the local subscription list, imported channels first.
+     *
+     * This is the bulk cousin of [toggleSubscription], so it stores the same
+     * shape ([durationSeconds] = 0, [live] = false) and deduplicates: a channel
+     * already subscribed, or repeated within [channels] itself, is not added
+     * again. The additions are prepended in the order given and the whole list
+     * is capped at [MAX_SUBSCRIPTIONS] from the top, so a large import cannot
+     * grow it past its bound (and cannot evict the channels it just added).
+     *
+     * Content is written first; only then is each channel actually added stamped
+     * for sync, matching [toggleSubscription]. That stamp is a no-op while
+     * signed out, so an import stays account-independent: it writes the local
+     * list and reaches the account only on an explicit sync.
+     *
+     * Returns the number of channels actually added. A no-op for empty input.
+     */
+    suspend fun addSubscriptions(channels: List<VideoItem>): Int {
+        if (channels.isEmpty()) return 0
+        var stored: List<VideoItem> = emptyList()
+        dataStore.edit { p ->
+            val current = decodeVideos(p[subscriptionsKey])
+            val known = current.mapTo(HashSet(current.size)) { it.id }
+            val added = ArrayList<VideoItem>(channels.size)
+            for (channel in channels) {
+                if (known.add(channel.id)) {
+                    added += channel.copy(durationSeconds = 0, live = false)
+                }
+            }
+            if (added.isEmpty()) return@edit
+            val next = (added + current).take(MAX_SUBSCRIPTIONS)
+            // The additions sit at the front, so only a cap that trims past them
+            // (more than MAX_SUBSCRIPTIONS new channels at once) drops any; the
+            // prefix of `next` that came from `added` is exactly what survived.
+            stored = next.take(added.size)
+            p[subscriptionsKey] = json.encodeToString(videoList, next)
+        }
+        if (stored.isEmpty()) return 0
+        val at = System.currentTimeMillis()
+        stored.forEach { stampSubscriptionChange(it, added = true, at) }
+        return stored.size
+    }
+
     suspend fun savePosition(video: VideoItem, positionMs: Long) {
         if (positionMs < 5_000) return
         dataStore.edit { p ->

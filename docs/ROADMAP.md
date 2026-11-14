@@ -102,8 +102,8 @@ easy to demo.
 - [x] Queue: add to queue, drag to reorder, autoplay from the queue (0.2.1)
 - [x] YouTube playlist sync (pull-first mirror shipped in 0.2.0)
 - [x] YouTube subscription sync (pull-first, both-way, shipped in 0.2.0)
-- [ ] Import subscriptions from Google Takeout CSV / OPML
-- [ ] Subscription feed (local, newest-first)
+- [x] Import subscriptions from Google Takeout CSV / OPML (0.2.2)
+- [x] Subscription feed (local, newest-first) (0.2.2)
 
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness

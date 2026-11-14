@@ -205,4 +205,115 @@ class LibraryStoreTest {
         assertFalse(store.toggleFavourite(video))
         assertTrue(store.favourites.first().isEmpty())
     }
+
+    @Test
+    fun `add subscriptions adds the new channels and returns the count`() = runBlocking {
+        val a = VideoItem(id = "UCaaa", title = "A", channelName = "A")
+        val b = VideoItem(id = "UCbbb", title = "B", channelName = "B")
+
+        val added = store.addSubscriptions(listOf(a, b))
+
+        assertEquals(2, added)
+        assertEquals(listOf("UCaaa", "UCbbb"), store.subscriptions.first().map { it.id })
+    }
+
+    @Test
+    fun `add subscriptions skips channels already subscribed`() = runBlocking {
+        store.toggleSubscription(channel)
+        val fresh = VideoItem(id = "UCfresh", title = "Fresh", channelName = "Fresh")
+
+        val added = store.addSubscriptions(listOf(channel, fresh))
+
+        assertEquals(1, added)
+        assertEquals(listOf("UCfresh", channel.id), store.subscriptions.first().map { it.id })
+    }
+
+    @Test
+    fun `add subscriptions dedups within the input`() = runBlocking {
+        val a = VideoItem(id = "UCaaa", title = "A", channelName = "A")
+        val b = VideoItem(id = "UCbbb", title = "B", channelName = "B")
+
+        val added = store.addSubscriptions(listOf(a, a, b))
+
+        assertEquals(2, added)
+        assertEquals(listOf("UCaaa", "UCbbb"), store.subscriptions.first().map { it.id })
+    }
+
+    @Test
+    fun `add subscriptions prepends the new channels`() = runBlocking {
+        store.toggleSubscription(channel)
+        val a = VideoItem(id = "UCaaa", title = "A", channelName = "A")
+        val b = VideoItem(id = "UCbbb", title = "B", channelName = "B")
+
+        store.addSubscriptions(listOf(a, b))
+
+        assertEquals(
+            listOf("UCaaa", "UCbbb", channel.id),
+            store.subscriptions.first().map { it.id },
+        )
+    }
+
+    @Test
+    fun `add subscriptions stores the subscription shape`() = runBlocking {
+        val live = VideoItem(
+            id = "UCaaa",
+            title = "A",
+            channelName = "A",
+            durationSeconds = 42,
+            live = true,
+        )
+
+        store.addSubscriptions(listOf(live))
+
+        val stored = store.subscriptions.first().single()
+        assertEquals(0, stored.durationSeconds)
+        assertFalse(stored.live)
+    }
+
+    @Test
+    fun `add subscriptions caps at the subscription bound`() = runBlocking {
+        val many = (1..505).map { VideoItem(id = "UC$it", title = "c$it", channelName = "c$it") }
+
+        val added = store.addSubscriptions(many)
+
+        assertEquals(500, added)
+        val stored = store.subscriptions.first()
+        assertEquals(500, stored.size)
+        assertEquals("UC1", stored.first().id)
+        assertFalse(stored.any { it.id == "UC501" })
+    }
+
+    @Test
+    fun `add subscriptions queues one upsert per channel added`() = runBlocking {
+        store.toggleSubscription(channel)
+        val fresh = VideoItem(id = "UCfresh", title = "Fresh", channelName = "Fresh")
+
+        store.addSubscriptions(listOf(channel, fresh))
+
+        val entry = store.syncEntries().getValue(subscriptionKey(fresh.id))
+        assertEquals("acc-key", entry.accountKey)
+        assertEquals(OpKind.UPSERT, entry.pendingOp?.kind)
+        assertFalse(entry.basePresent)
+    }
+
+    @Test
+    fun `add subscriptions signed out writes content but queues nothing`() = runBlocking {
+        val signedOut = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+        val a = VideoItem(id = "UCaaa", title = "A", channelName = "A")
+
+        val added = signedOut.addSubscriptions(listOf(a))
+
+        assertEquals(1, added)
+        assertEquals(listOf("UCaaa"), signedOut.subscriptions.first().map { it.id })
+        assertTrue(signedOut.syncEntries().isEmpty())
+    }
+
+    @Test
+    fun `add subscriptions with empty input adds nothing`() = runBlocking {
+        val added = store.addSubscriptions(emptyList())
+
+        assertEquals(0, added)
+        assertTrue(store.subscriptions.first().isEmpty())
+        assertTrue(store.syncEntries().isEmpty())
+    }
 }

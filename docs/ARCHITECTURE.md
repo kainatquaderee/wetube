@@ -201,6 +201,19 @@ Signing in is optional: an in-app browser session is kept in private
 storage and used only for the web surfaces, so feeds and subscriptions can be
 personal while playback stays anonymous.
 
+Existing subscriptions can be brought in from a Google Takeout
+`subscriptions.csv` or from an OPML file exported by another client (NewPipe,
+FreeTube, ...). The parsers are pure and dependency-free — a small CSV field
+splitter and the JDK's DOM parser, with no Android API — and an import is a
+local write only, so it reaches the account only on an explicit sync.
+
+Home's **Subscriptions** feed is built from that same device-local list, with no
+account and no sign-in: each subscribed channel's recent uploads are fetched with
+bounded concurrency and merged newest-first, using the relative `publishedText`
+("3 hours ago") as the only ordering signal a feed item carries. A channel that
+fails is skipped rather than blanking the feed, and the first results are shown
+before the slowest channel answers.
+
 **One writer, one transaction.** A preference change goes through
 `SettingsStore.update { … }`, which runs the read-modify-write *inside* the
 DataStore `edit` transaction rather than snapshotting a value first and writing

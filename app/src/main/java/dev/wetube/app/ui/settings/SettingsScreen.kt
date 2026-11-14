@@ -62,7 +62,11 @@ import dev.wetube.app.core.DEFAULT_PIPED_HOST
 import dev.wetube.app.core.sanitizeBackendHost
 import dev.wetube.app.data.auth.Account
 import dev.wetube.app.data.backend.BackendType
+import dev.wetube.app.data.local.ImportResult
 import dev.wetube.app.data.local.MAX_BACKUP_BYTES
+import dev.wetube.app.data.local.parseOpml
+import dev.wetube.app.data.local.parseTakeoutCsv
+import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.sync.CapabilityProbe
@@ -76,6 +80,13 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+/**
+ * Largest subscriptions file this screen reads into memory. A Takeout CSV or
+ * OPML export is a few kilobytes; the bound only rejects a file that could not
+ * have come from a client and would otherwise be read wholesale.
+ */
+private const val MAX_SUBSCRIPTION_IMPORT_BYTES = 2 * 1024 * 1024
 
 class SettingsViewModel(private val locator: ServiceLocator) : ViewModel() {
 
@@ -93,6 +104,12 @@ class SettingsViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     /** Last backup/restore/account message, shown under the buttons. */
     var message by mutableStateOf<String?>(null)
+
+    /**
+     * Last subscription-import message. Kept separate from [message] so its
+     * result shows beside the import button, not under an unrelated section.
+     */
+    var importMessage by mutableStateOf<String?>(null)
 
     /**
      * The last capability-check result, or `null` before one has run. Lives in
@@ -173,6 +190,57 @@ class SettingsViewModel(private val locator: ServiceLocator) : ViewModel() {
         }
     }
 
+    /**
+     * Imports subscriptions from a Google Takeout `subscriptions.csv` or an OPML
+     * file exported by another client.
+     *
+     * The kind is sniffed from the content, not trusted from the file's MIME
+     * type: markup starts with `<` (or carries an `<opml` tag), anything else is
+     * read as CSV. The parsers are pure, so a malformed file simply yields no
+     * channels. Each channel is mapped to the shape the rest of the app stores
+     * subscriptions in (id = channel id, title = channel name) and added to the
+     * *device-local* list; the summary always reports how many were added and
+     * mentions already-present or skipped entries only when there are any.
+     */
+    fun importSubscriptions(text: String) {
+        viewModelScope.launch {
+            val trimmed = text.trim()
+            val result = runCatching {
+                if (trimmed.startsWith("<") || trimmed.contains("<opml", ignoreCase = true)) {
+                    parseOpml(text)
+                } else {
+                    parseTakeoutCsv(text)
+                }
+            }.getOrElse { ImportResult(emptyList(), 0) }
+
+            if (result.channels.isEmpty()) {
+                importMessage = if (result.skipped > 0) {
+                    "No subscriptions found in that file (${result.skipped} entries could not be read)."
+                } else {
+                    "No subscriptions found in that file."
+                }
+                return@launch
+            }
+
+            val items = result.channels.map { channel ->
+                VideoItem(
+                    id = channel.id,
+                    title = channel.name,
+                    channelName = channel.name,
+                    channelId = channel.id,
+                )
+            }
+            val added = locator.library.addSubscriptions(items)
+            val alreadyPresent = items.size - added
+            val details = buildList {
+                if (alreadyPresent > 0) add("$alreadyPresent already present")
+                if (result.skipped > 0) add("${result.skipped} skipped")
+            }
+            val suffix = if (details.isEmpty()) "" else " (${details.joinToString(", ")})"
+            importMessage = "Imported $added subscription${if (added == 1) "" else "s"}$suffix."
+        }
+    }
+
     companion object {
         fun factory(locator: ServiceLocator) = viewModelFactory {
             initializer { SettingsViewModel(locator) }
@@ -239,6 +307,29 @@ fun SettingsScreen(
         }
     }
 
+    val openSubscriptions = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        // Reject an oversized file before it is read into memory. Providers may
+        // not report a length, but a subscriptions file is tiny.
+        val declaredSize = runCatching {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
+        }.getOrNull()
+        if (declaredSize != null && declaredSize > MAX_SUBSCRIPTION_IMPORT_BYTES.toLong()) {
+            viewModel.importMessage = "That subscriptions file is too large to import."
+            return@rememberLauncherForActivityResult
+        }
+        val text = runCatching {
+            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        }.getOrNull()
+        if (text == null) {
+            viewModel.importMessage = "Could not read that file."
+        } else {
+            viewModel.importSubscriptions(text)
+        }
+    }
+
     Column(
         modifier
             .fillMaxSize()
@@ -293,7 +384,38 @@ fun SettingsScreen(
                 onClick = { openBackup.launch(arrayOf("*/*")) },
             ) { Text("Restore") }
         }
+
+        // Feedback for backup, restore and account changes, beside the buttons
+        // that produce it.
         viewModel.message?.let { message ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+
+        Section("Import subscriptions")
+        Text(
+            "Bring existing subscriptions to this device from a Google Takeout " +
+                "subscriptions.csv, or from an OPML file exported by another YouTube client " +
+                "(NewPipe, FreeTube, ...). Imported channels are added to this device's " +
+                "subscriptions and never change your account until you sync.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        Button(
+            // `*/*` for the same reason as Restore above: providers routinely
+            // report a `.csv` or `.opml` file as `application/octet-stream`, so
+            // the content is sniffed after reading instead of filtered here.
+            onClick = { openSubscriptions.launch(arrayOf("*/*")) },
+        ) { Text("Import subscriptions") }
+
+        // Feedback beside the import button, so a result is never shown under
+        // an unrelated section.
+        viewModel.importMessage?.let { message ->
             Spacer(Modifier.height(8.dp))
             Text(
                 message,
