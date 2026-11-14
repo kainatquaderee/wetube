@@ -81,10 +81,13 @@ class MainActivity : ComponentActivity() {
      */
     private fun videoIdFrom(intent: Intent?): String? {
         val data = intent?.data ?: return null
-        val host = data.host?.lowercase() ?: return null
+        // Normalised the same way as the paste path (VideoIds.youtubeVideoId):
+        // strip `www.` and accept the bare `youtube.com` host, so a tapped link
+        // and a pasted one can never diverge.
+        val host = data.host?.lowercase()?.removePrefix("www.") ?: return null
         val candidate = when (host) {
             "youtu.be" -> data.pathSegments.firstOrNull()
-            "www.youtube.com", "m.youtube.com" -> data.getQueryParameter("v")
+            "youtube.com", "m.youtube.com" -> data.getQueryParameter("v")
             else -> null
         }
         return candidate?.takeIf(::isValidVideoId)

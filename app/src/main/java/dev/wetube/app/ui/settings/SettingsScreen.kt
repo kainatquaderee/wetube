@@ -607,8 +607,8 @@ fun SettingsScreen(
             onChange = { value -> viewModel.update { it.copy(sponsorBlockEnabled = value) } },
         )
         SwitchRow(
-            title = "Show likes and dislikes",
-            subtitle = "Show the community like and dislike counts.",
+            title = "Show dislike count",
+            subtitle = "Show the community dislike count, from Return YouTube Dislike.",
             checked = settings.showDislikes,
             onChange = { value -> viewModel.update { it.copy(showDislikes = value) } },
         )

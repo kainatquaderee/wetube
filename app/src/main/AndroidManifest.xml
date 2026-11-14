@@ -53,6 +53,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="youtu.be" />
+                <data android:scheme="https" android:host="youtube.com" android:pathPrefix="/watch" />
                 <data android:scheme="https" android:host="www.youtube.com" android:pathPrefix="/watch" />
                 <data android:scheme="https" android:host="m.youtube.com" android:pathPrefix="/watch" />
             </intent-filter>

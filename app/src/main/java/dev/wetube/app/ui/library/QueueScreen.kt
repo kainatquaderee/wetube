@@ -53,7 +53,7 @@ class QueueViewModel(private val locator: ServiceLocator) : ViewModel() {
     val queue: StateFlow<List<VideoItem>> = locator.library.queue
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** Drops the head of the queue when it starts playing. */
+    /** Moves the queued item at [from] to [to], preserving the order of the rest. */
     fun reorder(from: Int, to: Int) = viewModelScope.launch { locator.library.moveInQueue(from, to) }
 
     fun remove(videoId: String) = viewModelScope.launch { locator.library.removeFromQueue(videoId) }
@@ -68,13 +68,19 @@ class QueueViewModel(private val locator: ServiceLocator) : ViewModel() {
 }
 
 /**
- * The head of [queue], or `null` when it is empty.
+ * The item a finished video should auto-play from [queue], or `null` when there
+ * is nothing left to play.
  *
- * Extracted so the player's end-of-playback decision is a pure, testable value
- * rather than a condition buried in an effect: a non-null answer means "there
- * is something to auto-play", a null one means "show Up next".
+ * [currentId] is the video on screen. "Play all" — and a tap on a queue row —
+ * starts a queued video without removing it, so the finished video can still be
+ * the head; skipping it here is what lets the queue advance past it instead of
+ * freezing on the ended frame. Extracted so the player's end-of-playback
+ * decision is a pure, testable value rather than a condition buried in an
+ * effect: a non-null answer means "there is something to auto-play", a null one
+ * means "show Up next".
  */
-internal fun nextQueued(queue: List<VideoItem>): VideoItem? = queue.firstOrNull()
+internal fun nextQueued(queue: List<VideoItem>, currentId: String? = null): VideoItem? =
+    queue.firstOrNull { it.id != currentId }
 
 /**
  * The index a row dragged from [from] should land on, given the total vertical

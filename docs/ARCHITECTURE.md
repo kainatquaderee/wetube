@@ -138,7 +138,10 @@ independent Return YouTube Dislike figure, shown only while "Show dislikes" is
 on) and a Share chip that sends the canonical watch URL. The channel row's
 Subscribe/Subscribed button writes to the same local library the Library screen
 reads. When a video finishes, its next related video appears over the final frame
-and one tap swaps the media in the same player and back-stack entry. A failed
+and one tap swaps the media in the same player and back-stack entry. If the
+queue has a video waiting, that one auto-plays instead; the finished video is
+skipped when choosing it, and a queued video started from "Play all" is dropped
+as it plays, so the queue always moves forward and never loops. A failed
 load or re-resolve is shown over the player rather than instead of the page, so
 the title, channel, chips and comments stay usable below with a single retry.
 

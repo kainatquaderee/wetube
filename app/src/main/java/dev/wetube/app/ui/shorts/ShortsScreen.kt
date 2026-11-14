@@ -185,7 +185,9 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
                     if (!player.isPlaying) player.play()
                     return
                 }
-                if (loaded == null) return
+                // `loaded` being a different clip — or null, because the shared
+                // player was emptied — falls through: the visible page must be
+                // re-resolved rather than left as a blank surface.
             }
         }
         playing = index
@@ -224,10 +226,20 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
         }
     }
 
-    fun retry() {
+    /**
+     * Refreshes the reel. With no clips at all it reloads the feed; otherwise it
+     * re-resolves the clip on screen ([index]) so a refresh never starts clip 0
+     * under a page the viewer is not looking at.
+     */
+    fun retry(index: Int? = null) {
+        if (state.videos.isEmpty()) {
+            load()
+            return
+        }
+        val target = (index ?: playing).coerceIn(0, state.videos.lastIndex)
         playing = -1
         state = state.copy(error = null)
-        if (state.videos.isEmpty()) load() else play(0)
+        play(target)
     }
 
     /**
@@ -414,7 +426,7 @@ fun ShortsScreen(
                             )
                         }
                     }
-                    IconButton(onClick = viewModel::retry) {
+                    IconButton(onClick = { viewModel.retry(pager.currentPage) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.White)
                     }
                 }

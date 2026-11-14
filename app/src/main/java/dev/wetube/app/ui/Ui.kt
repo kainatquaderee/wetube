@@ -17,10 +17,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -285,6 +287,33 @@ fun CaptionSpeedBadge(
             style = MaterialTheme.typography.labelLarge,
         )
     }
+}
+
+/**
+ * Confirms removing a channel from the local subscription list.
+ *
+ * A subscription reaches the signed-in account, and a single tap on a
+ * "Subscribed" button otherwise reads as state rather than as the action it is;
+ * the confirmation keeps an accidental tap from silently unsubscribing.
+ */
+@Composable
+fun UnsubscribeConfirmDialog(
+    channelName: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Unsubscribe?") },
+        text = {
+            Text(
+                "You will stop following $channelName, and new videos from the " +
+                    "channel will no longer appear in your feed.",
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Unsubscribe") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

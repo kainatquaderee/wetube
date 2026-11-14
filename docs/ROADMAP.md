@@ -185,6 +185,22 @@ easy to demo.
 - [x] Corrected the "Audio only" subtitle, which claimed it started videos in the
       background as audio rather than playing every video without the picture
 
+## 0.3.3 — rough-edge pass (shipped in this tree)
+- [x] A finished queue video advances: the player skips the video on screen when
+      choosing what to auto-play, and a queued video started from "Play all" is
+      dropped as it plays so it cannot loop
+- [x] The Shorts reel re-resolves the visible page instead of bailing out to a
+      blank surface when its clip frames have not loaded
+- [x] Refreshing Shorts re-resolves the clip you are watching, not clip 0
+- [x] A swapped-in video starts a fresh resume budget, so the second video of a
+      session saves its progress
+- [x] A `youtube.com` link without `www.` is matched by the manifest and by the
+      in-app parser alike
+- [x] The quality chip shows the height actually playing, and the quality sheet
+      lists only the heights the video offers
+- [x] Unsubscribing confirms first; subscribing stays one tap
+- [x] "Show dislike count" names the switch; the search placeholder invites a link
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

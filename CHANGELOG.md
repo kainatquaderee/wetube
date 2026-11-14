@@ -1,9 +1,45 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.2 (versionCode 22).
+Security. This release is 0.3.3 (versionCode 23).
 
-## 0.3.2 — 2026-11-14
+## 0.3.3 — 2026-11-14
+
+A pass over the rough edges that showed up while watching: the queue advances,
+the Shorts reel recovers, and several labels stop saying more than they can
+back up.
+
+### Fixed
+- **A finished video now advances the queue.** When a video played from the
+  queue ended, "Up next" could sit on the ended frame instead of playing the
+  next item: the finished video was still sitting at the head of the queue. The
+  player now skips the video it just finished, and a queued video started from
+  "Play all" is dropped from the queue as it plays so it cannot come round a
+  second time.
+- **The Shorts reel no longer goes blank.** A reel whose clip frames had not
+  loaded yet was left as an empty surface because the visible page bailed out
+  instead of resolving again; the page is now always re-resolved.
+- **Refreshing Shorts keeps your place.** The refresh button used to jump back
+  to the first clip; it now re-resolves the clip you are actually watching.
+- **Resuming a second video saves its progress.** The resume-point budget was
+  carried over from the previous video, so a video played right after another
+  could have its resume point suppressed.
+- **A `youtube.com` link without `www.` opens.** Tapped links were only matched
+  against `www.youtube.com` and `m.youtube.com`, while the paste path accepted
+  the bare host — the two now agree.
+- **The quality chip stops overstating the stream.** Picking 2160p on a video
+  that only serves 1080p used to label the chip "2160p"; it now shows the height
+  that is actually playing. The quality sheet also lists only the heights the
+  video really offers.
+
+### Changed
+- **Unsubscribing asks first.** A tap on "Subscribed" now opens a confirmation,
+  since unsubscribing reaches your account; subscribing is still one tap.
+- **"Show dislike count"** names the switch after what it turns on, instead of
+  "Show likes and dislikes".
+- **The search box invites a link.** Its placeholder now reads "Search or paste
+  a link", matching the fact that a pasted YouTube URL plays straight away.
+
 
 Playback stops burning data and battery on frames you cannot see.
 

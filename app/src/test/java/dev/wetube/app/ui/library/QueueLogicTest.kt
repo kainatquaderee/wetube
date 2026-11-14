@@ -30,6 +30,28 @@ class QueueLogicTest {
         assertSame(head, nextQueued(listOf(head, video("b"))))
     }
 
+    @Test
+    fun `the video on screen is skipped so the queue can advance`() {
+        // "Play all" leaves the starting video at the head; auto-play must move
+        // past it instead of freezing on the ended frame.
+        val head = video("a")
+        val next = video("b")
+
+        assertSame(next, nextQueued(listOf(head, next), currentId = "a"))
+    }
+
+    @Test
+    fun `a queue holding only the current video has nothing to play`() {
+        assertNull(nextQueued(listOf(video("a")), currentId = "a"))
+    }
+
+    @Test
+    fun `without a current video the head still plays next`() {
+        val head = video("a")
+
+        assertSame(head, nextQueued(listOf(head, video("b")), currentId = null))
+    }
+
     // ----- targetIndex ------------------------------------------------------
 
     @Test

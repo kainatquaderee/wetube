@@ -50,18 +50,24 @@ import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.wetube.app.ui.formatSpeed
-import dev.wetube.app.ui.qualityHeights
 
 /** Which level of the settings sheet is showing. */
 private enum class SettingsPage { Main, Quality, Speed }
 
 private val speedChoices = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 3f, 4f)
 
-/** "Auto (1080p)" when the automatic pick is known, otherwise "720p"/"Auto". */
-private fun qualityValue(quality: Int, effectiveHeight: Int): String = when {
-    quality > 0 -> "${quality}p"
-    effectiveHeight > 0 -> "Auto (${effectiveHeight}p)"
-    else -> "Auto"
+/**
+ * The label for a quality choice.
+ *
+ * An explicit pick shows the height that is actually playing whenever the video
+ * is too small for the chosen one, so the chip never claims 2160p over a 1080p
+ * stream; Auto shows the height it resolved to.
+ */
+internal fun qualityValue(quality: Int, effectiveHeight: Int): String = when {
+    quality <= 0 && effectiveHeight > 0 -> "Auto (${effectiveHeight}p)"
+    quality <= 0 -> "Auto"
+    effectiveHeight > 0 -> "${effectiveHeight}p"
+    else -> "${quality}p"
 }
 
 /**
@@ -102,11 +108,10 @@ fun PlayerSettingsSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var page by remember { mutableStateOf(SettingsPage.Main) }
 
-    // Every height the video offers plus the standard ladder, highest first, so
-    // the list looks the same even for a video that only has one file.
-    val heights = remember(qualities) {
-        (qualities + qualityHeights).distinct().sortedDescending()
-    }
+    // Only the heights the video actually offers, so a choice here can never
+    // silently fall back to a smaller stream. This matches the player's More
+    // menu, which lists the same set.
+    val heights = remember(qualities) { qualities.distinct().sortedDescending() }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -183,7 +188,7 @@ fun PlayerSettingsSheet(
                     )
                     SwitchRow(
                         icon = Icons.Default.ThumbUp,
-                        title = "Show likes and dislikes",
+                        title = "Show dislike count",
                         checked = showDislikes,
                         onChange = onShowDislikes,
                     )

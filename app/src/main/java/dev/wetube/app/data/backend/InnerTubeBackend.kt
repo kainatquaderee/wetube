@@ -1240,7 +1240,6 @@ class InnerTubeBackend(
 
     private companion object {
         const val endpoint = "https://www.youtube.com/youtubei/v1"
-        const val apiKey = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
 
         /**
          * The seed for a fresh reel watch sequence (protobuf, percent-encoded).

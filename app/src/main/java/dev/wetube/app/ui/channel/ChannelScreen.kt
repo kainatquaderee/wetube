@@ -23,6 +23,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +42,7 @@ import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.ui.LoadingBox
 import dev.wetube.app.ui.MessageBox
+import dev.wetube.app.ui.UnsubscribeConfirmDialog
 import dev.wetube.app.ui.VideoCard
 import dev.wetube.app.ui.friendlyError
 import kotlinx.coroutines.flow.first
@@ -127,6 +129,7 @@ fun ChannelScreen(
         factory = ChannelViewModel.factory(locator, channelId),
     )
     val state = viewModel.state
+    var confirmUnsubscribe by remember { mutableStateOf(false) }
 
     Column(modifier.fillMaxSize()) {
         TopAppBar(
@@ -154,7 +157,16 @@ fun ChannelScreen(
                             Row2(
                                 channel = channel,
                                 subscribed = state.subscribed,
-                                onToggle = viewModel::toggleSubscription,
+                                onToggle = {
+                                    // Subscribing is a one-tap action; only
+                                    // unsubscribing asks first, because it
+                                    // reaches the account.
+                                    if (state.subscribed) {
+                                        confirmUnsubscribe = true
+                                    } else {
+                                        viewModel.toggleSubscription()
+                                    }
+                                },
                             )
                             if (channel.description.isNotBlank()) {
                                 Spacer(Modifier.height(10.dp))
@@ -174,6 +186,17 @@ fun ChannelScreen(
                 }
             }
         }
+    }
+
+    if (confirmUnsubscribe) {
+        UnsubscribeConfirmDialog(
+            channelName = state.channel?.name ?: "this channel",
+            onConfirm = {
+                confirmUnsubscribe = false
+                viewModel.toggleSubscription()
+            },
+            onDismiss = { confirmUnsubscribe = false },
+        )
     }
 }
 

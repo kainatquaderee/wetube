@@ -120,6 +120,7 @@ import dev.wetube.app.ui.CaptionSpeedBadge
 import dev.wetube.app.ui.CompactVideoRow
 import dev.wetube.app.ui.LoadingBox
 import dev.wetube.app.ui.MessageBox
+import dev.wetube.app.ui.UnsubscribeConfirmDialog
 import dev.wetube.app.ui.captions.CaptionOverlay
 import dev.wetube.app.ui.captions.CaptionSheet
 import dev.wetube.app.ui.comments.CommentsSheet
@@ -418,6 +419,10 @@ class PlayerViewModel(
 
     fun load() {
         val id = currentVideoId
+        // A swapped-in video starts a fresh save budget. Without this reset the
+        // new video's resume point would be suppressed until playback passed
+        // the previous video's last-saved position.
+        lastSaved = 0L
         viewModelScope.launch {
             state = state.copy(loading = true, error = null)
             runCatching {
@@ -680,8 +685,15 @@ class PlayerViewModel(
      * starts rather than a moment before.
      */
     fun playFromQueue(video: VideoItem) {
+        val finishedId = currentVideoId
         playRelated(video)
-        viewModelScope.launch { locator.library.removeFromQueue(video.id) }
+        viewModelScope.launch {
+            // Drop the entry that is starting, and the finished video too: "Play
+            // all" leaves the video it started at the head of the queue, so
+            // without this it would be eligible to auto-play a second time.
+            locator.library.removeFromQueue(video.id)
+            if (finishedId != video.id) locator.library.removeFromQueue(finishedId)
+        }
     }
 
     fun setSpeed(speed: Float) {
@@ -1227,7 +1239,7 @@ fun PlayerScreen(
     val nextVideo = state.detail?.related?.firstOrNull()
     // The head of the queue, if any. Non-null means a finished video should
     // auto-advance instead of showing the Up-next overlay.
-    val queuedNext = nextQueued(queue)
+    val queuedNext = nextQueued(queue, viewModel.currentVideoId)
 
     val playerView = remember {
         PlayerView(context).apply {
@@ -1743,11 +1755,8 @@ private fun PlayerInfo(
     var speedMenu by remember { mutableStateOf(false) }
     var qualityMenu by remember { mutableStateOf(false) }
     var moreMenu by remember { mutableStateOf(false) }
-    val qualityChip = when {
-        videoQuality == 0 && effectiveHeight > 0 -> "Auto · ${effectiveHeight}p"
-        videoQuality == 0 -> "Auto"
-        else -> "${videoQuality}p"
-    }
+    var confirmUnsubscribe by remember { mutableStateOf(false) }
+    val qualityChip = qualityValue(videoQuality, effectiveHeight)
     val chapters = remember(detail.item.id) { parseChapters(detail.description) }
     val scroll = rememberScrollState()
     val chipsScroll = rememberScrollState()
@@ -2033,7 +2042,11 @@ private fun PlayerInfo(
                     ButtonDefaults.buttonColors()
                 }
                 Button(
-                    onClick = onToggleSubscription,
+                    onClick = {
+                        // Subscribing is a one-tap action; only unsubscribing
+                        // asks first, because it reaches the account.
+                        if (subscribed) confirmUnsubscribe = true else onToggleSubscription()
+                    },
                     colors = colors,
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(
                         horizontal = 16.dp,
@@ -2043,6 +2056,17 @@ private fun PlayerInfo(
                     Text(if (subscribed) "Subscribed" else "Subscribe")
                 }
             }
+        }
+
+        if (confirmUnsubscribe) {
+            UnsubscribeConfirmDialog(
+                channelName = detail.item.channelName.ifBlank { "this channel" },
+                onConfirm = {
+                    confirmUnsubscribe = false
+                    onToggleSubscription()
+                },
+                onDismiss = { confirmUnsubscribe = false },
+            )
         }
 
         if (chapters.isNotEmpty()) {
