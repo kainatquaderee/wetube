@@ -160,7 +160,8 @@ as its media id, so a screen can tell whether the player still holds the clip it
 expects — this is what stops the normal player's video from appearing behind
 Shorts after navigating back.
 
-**Leaving the player.** Pressing back while a video plays shrinks it into a
+**Leaving the player.** Pressing back — or tapping the back arrow in the top bar,
+which shares the same path — while a video plays shrinks it into a
 small window docked over the app, so the feed, search or channel behind it stays
 usable and the video keeps playing. The window has its own surface, re-pointed
 at the same session the instant the player screen releases it, which keeps the

@@ -232,6 +232,11 @@ easy to demo.
       paused video leaves the player as before, and swiping home still uses the
       system picture-in-picture window
 
+## 0.3.8 — the on-screen back arrow docks like the back gesture (shipped in this tree)
+- [x] The player's top-bar back arrow now shares the back gesture's path: leave
+      fullscreen first, then dock the playing video into the mini-player, and
+      only leave the screen when there is nothing to float
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

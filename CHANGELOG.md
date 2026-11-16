@@ -1,9 +1,20 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.7 (versionCode 27).
+Security. This release is 0.3.8 (versionCode 28).
 
-## 0.3.7 — in-app mini-player (2026-11-16)
+## 0.3.8 — the on-screen back arrow docks like the back gesture (2026-11-16)
+
+The arrow in the player's top bar did something different from the system back
+gesture; now the two are one and the same.
+
+### Changed
+- **The back arrow shrinks the video into the mini-player, just like the back
+  gesture.** Previously the top-bar arrow always left the player screen, so a
+  viewer who tapped it lost the floating window they would have got from
+  swiping or pressing back. Both entries now share a single path: leave
+  fullscreen first, then dock the playing video into the window, and only leave
+  the screen when there is nothing to float.
 
 Pressing back while a video plays now shrinks it into a small floating window
 over the app instead of leaving it.

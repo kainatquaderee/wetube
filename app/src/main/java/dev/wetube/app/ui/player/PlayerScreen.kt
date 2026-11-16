@@ -1366,14 +1366,16 @@ fun PlayerScreen(
 
     // Back leaves fullscreen first, then shrinks the video into the in-app
     // window if there is a picture to float, and only otherwise leaves the
-    // screen — so a viewer keeps watching over the feed they came from.
-    BackHandler {
+    // screen — so a viewer keeps watching over the feed they came from. The
+    // on-screen back arrow and the system back gesture share this one path.
+    val leavePlayer: () -> Unit = {
         when {
             fullscreen -> fullscreen = false
             canFloat -> onMinimize(viewModel.currentVideoId)
             else -> onBack()
         }
     }
+    BackHandler { leavePlayer() }
 
     LaunchedEffect(controller, isRemote, inPictureInPicture) {
         // Detach the local player entirely while casting. A PlayerView that
@@ -1566,7 +1568,7 @@ fun PlayerScreen(
                     ),
             )
             IconButton(
-                onClick = { if (fullscreen) fullscreen = false else onBack() },
+                onClick = leavePlayer,
                 modifier = Modifier.align(Alignment.TopStart),
             ) {
                 Icon(
