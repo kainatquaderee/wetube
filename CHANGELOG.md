@@ -1,7 +1,32 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.9 (versionCode 29).
+Security. This release is 0.3.10 (versionCode 30).
+
+## 0.3.10 — a rotate button, and a top bar clear of the status bar (2026-11-16)
+
+The player's top bar gained a manual rotate control, and the bar no longer sits
+under the status bar when the phone is held sideways.
+
+### Added
+- **Rotate button.** A rotation control in the player's top bar flips the picture
+  between portrait and landscape on a tap, so a viewer whose device is locked to
+  one orientation — or lying flat with auto-rotate off — can turn the video
+  without leaving the app or reaching for the system settings. The choice
+  follows whatever is on screen: a landscape viewer gets portrait, and portrait
+  gets landscape. Leaving the player returns the window to the system's own
+  auto-rotate behaviour, so the phone does not stay pinned afterwards.
+
+### Fixed
+- **The player's top bar no longer overlaps the status bar in landscape.** The
+  video area is a 16:9 slice of the page width, which on a sideways phone is
+  taller than the page itself. An oversized block is centred, so its top edge —
+  and every button pinned to it — was pushed up under the status bar, where the
+  clock and signal icons sat on top of Back, Settings, Rotate and Full screen and
+  the taps never reached them. The video area is now clamped to the page height,
+  which keeps the top bar anchored below the status bar and its buttons fully
+  tappable in both orientations. The buttons keep their full touch-target size;
+  only their position changed.
 
 ## 0.3.9 — audio-only playback is truly audio-only (2026-11-16)
 

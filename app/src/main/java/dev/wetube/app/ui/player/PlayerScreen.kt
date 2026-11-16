@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Speed
@@ -79,6 +81,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -99,6 +102,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -347,6 +352,40 @@ internal fun shouldEnterPictureInPicture(
     playing: Boolean,
     hasDetail: Boolean,
 ): Boolean = !casting && playing && hasDetail
+
+/**
+ * The orientation a rotate tap asks the window for, given what is on screen.
+ *
+ * The player's rotate button is a manual toggle: a landscape viewer wants
+ * portrait back and a portrait one wants landscape. Anything that is not yet
+ * landscape — including [android.content.res.Configuration.ORIENTATION_UNDEFINED]
+ * on a surface whose orientation is not settled — resolves to landscape, which
+ * is the orientation a viewer most often wants for a video. The choice is a pure
+ * function so it is pinned without a device.
+ */
+internal fun rotatedOrientation(current: Int): Int =
+    if (current == Configuration.ORIENTATION_LANDSCAPE) {
+        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    } else {
+        ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+    }
+
+/**
+ * The height the player's video area should take inside [availableHeight].
+ *
+ * The video normally takes a 16:9 slice sized by the page width, which is what
+ * a portrait phone has room for. On a landscape phone (or a short window) that
+ * slice is taller than the page, and an oversized Column child is centred — the
+ * video's top, and with it the always-visible top bar, ends up above the page
+ * edge and under the status bar. Clamping the slice to the page height keeps the
+ * box anchored at the top, so the chrome it carries stays inside the safe area.
+ * Pure so the fit is pinned without a device.
+ */
+internal fun fittedVideoHeight(
+    width: Dp,
+    availableHeight: Dp,
+    aspectRatio: Float = 16f / 9f,
+): Dp = minOf(width / aspectRatio, availableHeight)
 
 class PlayerViewModel(
     private val locator: ServiceLocator,
@@ -1306,11 +1345,16 @@ fun PlayerScreen(
     }
     DisposableEffect(Unit) {
         onDispose {
-            val window = view.context.findActivity()?.window
+            val activity = view.context.findActivity()
+            val window = activity?.window
             if (window != null) {
                 WindowInsetsControllerCompat(window, view)
                     .show(WindowInsetsCompat.Type.systemBars())
             }
+            // The rotate button is a player affordance, so hand the window back
+            // to the system's own orientation policy when the player leaves: the
+            // feed behind should not stay sideways because a video was.
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -1513,257 +1557,281 @@ fun PlayerScreen(
         viewModel.playFromQueue(head)
     }
 
-    Column(modifier.fillMaxSize()) {
-        // The video surface is composed exactly once. Picture-in-picture only
-        // changes the Box that holds it — filling the small window instead of
-        // taking its 16:9 slice of the page — so the single AndroidView node is
-        // never asked to reparent, which would crash with "child already has a
-        // parent". The chrome below returns early in PiP.
-        Box(
-            modifier = if (fullscreen || inPictureInPicture) {
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black)
-            } else {
-                Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .background(Color.Black)
-            }
-                .onGloballyPositioned { coordinates ->
-                    // The video's place on screen, so the system can shrink the
-                    // picture-in-picture window out of that rectangle rather
-                    // than out of the whole activity.
-                    val frame = coordinates.boundsInWindow()
-                    videoBounds = android.graphics.Rect(
-                        frame.left.toInt(),
-                        frame.top.toInt(),
-                        frame.right.toInt(),
-                        frame.bottom.toInt(),
-                    )
-                },
-        ) {
-            if (isRemote) {
-                RemoteSurface(
-                    session = session,
-                    artworkUrl = state.detail?.item?.thumbnail,
-                    casting = state.casting,
-                    castFailure = state.castFailure,
-                    onPlayPause = viewModel::remotePlayPause,
-                    onSeek = viewModel::remoteSeek,
-                    onVolume = viewModel::remoteVolume,
-                    onRetry = viewModel::retryCast,
-                    onPlayHere = viewModel::playHere,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else {
-                androidx.compose.ui.viewinterop.AndroidView(
-                    factory = { playerView },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-
-            // Audio-only playback shows the black card instead of a picture.
-            // The label is drawn before the picture-in-picture early-return so
-            // the system window carries the same card, and it carries no
-            // pointer input, so Media3's own controls stay usable underneath.
-            if (state.audioOnly && !isRemote) {
-                Text(
-                    text = "Audio only mode",
-                    color = Color.White.copy(alpha = 0.7f),
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.align(Alignment.Center),
-                )
-            }
-
-            // Picture-in-picture shows the video and nothing else: the small
-            // window has no room for the top bar, the buffering spinner, the
-            // captions or the end card, and the system draws its own controls.
-            // Returning here leaves every effect above — the queue advance, the
-            // position tick, the error listener — still running.
-            if (inPictureInPicture) return@Box
-
-            // A subtle scrim keeps the always-visible top bar legible over a
-            // bright frame; Media3's own gradient only appears with its controls.
+    // A 16:9 slice fits the page width only while the page is taller than it
+    // is wide. In landscape the box's width-derived 16:9 height is taller than
+    // the page, and an oversized Column child is centred, which drags the
+    // always-visible top bar up under the status bar. Measuring the page here
+    // and clamping the video box to the available height keeps the box at the
+    // top of the page, so the chrome it carries stays inside the safe area.
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val videoHeight = if (fullscreen || inPictureInPicture) {
+            maxHeight
+        } else {
+            fittedVideoHeight(maxWidth, maxHeight)
+        }
+        Column(modifier = Modifier.fillMaxSize()) {
+            // The video surface is composed exactly once. Picture-in-picture only
+            // changes the Box that holds it — filling the small window instead of
+            // taking its 16:9 slice of the page — so the single AndroidView node is
+            // never asked to reparent, which would crash with "child already has a
+            // parent". The chrome below returns early in PiP.
             Box(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .height(72.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color(0xB3000000), Color.Transparent),
-                        ),
-                    ),
-            )
-            IconButton(
-                onClick = leavePlayer,
-                modifier = Modifier.align(Alignment.TopStart),
+                    .height(videoHeight)
+                    .background(Color.Black)
+                    .onGloballyPositioned { coordinates ->
+                        // The video's place on screen, so the system can shrink the
+                        // picture-in-picture window out of that rectangle rather
+                        // than out of the whole activity.
+                        val frame = coordinates.boundsInWindow()
+                        videoBounds = android.graphics.Rect(
+                            frame.left.toInt(),
+                            frame.top.toInt(),
+                            frame.right.toInt(),
+                            frame.bottom.toInt(),
+                        )
+                    },
             ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White,
-                )
-            }
-            Row(
-                modifier = Modifier.align(Alignment.TopEnd),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // Reachable in windowed and fullscreen playback alike, exactly
-                // like the other top-bar controls. The waiting count lives in
-                // the description rather than a separate badge, so the row does
-                // not need a new layout.
-                IconButton(onClick = onOpenQueue) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.PlaylistPlay,
-                        contentDescription = if (queueCount > 0) {
-                            "Queue, $queueCount waiting"
-                        } else {
-                            "Queue"
-                        },
-                        tint = Color.White,
+                if (isRemote) {
+                    RemoteSurface(
+                        session = session,
+                        artworkUrl = state.detail?.item?.thumbnail,
+                        casting = state.casting,
+                        castFailure = state.castFailure,
+                        onPlayPause = viewModel::remotePlayPause,
+                        onSeek = viewModel::remoteSeek,
+                        onVolume = viewModel::remoteVolume,
+                        onRetry = viewModel::retryCast,
+                        onPlayHere = viewModel::playHere,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    androidx.compose.ui.viewinterop.AndroidView(
+                        factory = { playerView },
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
-                IconButton(onClick = { showCastSheet = true }) {
-                    Icon(
-                        imageVector = if (isRemote) {
-                            Icons.Default.CastConnected
-                        } else {
-                            Icons.Default.Cast
-                        },
-                        contentDescription = if (isRemote) {
-                            "Casting — open device controls"
-                        } else {
-                            "Play on a device"
-                        },
-                        // The connected icon is the one piece of state the top
-                        // bar carries; the accent colour makes "casting" visible
-                        // at a glance even before the surface text is read.
-                        tint = if (isRemote) MaterialTheme.colorScheme.primary else Color.White,
-                    )
-                }
-                // Media3's own gear lives in a control row it hides in portrait,
-                // so the player exposes its own always-reachable settings entry.
-                IconButton(onClick = { showSettings = true }) {
-                    Icon(
-                        Icons.Default.Settings,
-                        contentDescription = "Settings",
-                        tint = Color.White,
-                    )
-                }
-                IconButton(onClick = { fullscreen = !fullscreen }) {
-                    Icon(
-                        if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                        contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
-                        tint = Color.White,
-                    )
-                }
-            }
-            if (!isRemote && (controller == null || buffering)) {
-                CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center),
-                    color = Color.White,
-                )
-            }
 
-            if (!isRemote && holding) {
-                CaptionSpeedBadge(
-                    text = "2×",
+                // Audio-only playback shows the black card instead of a picture.
+                // The label is drawn before the picture-in-picture early-return so
+                // the system window carries the same card, and it carries no
+                // pointer input, so Media3's own controls stay usable underneath.
+                if (state.audioOnly && !isRemote) {
+                    Text(
+                        text = "Audio only mode",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
+
+                // Picture-in-picture shows the video and nothing else: the small
+                // window has no room for the top bar, the buffering spinner, the
+                // captions or the end card, and the system draws its own controls.
+                // Returning here leaves every effect above — the queue advance, the
+                // position tick, the error listener — still running.
+                if (inPictureInPicture) return@Box
+
+                // A subtle scrim keeps the always-visible top bar legible over a
+                // bright frame; Media3's own gradient only appears with its controls.
+                Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .padding(top = 10.dp),
+                        .fillMaxWidth()
+                        .height(72.dp)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color(0xB3000000), Color.Transparent),
+                            ),
+                        ),
                 )
+                IconButton(
+                    onClick = leavePlayer,
+                    modifier = Modifier.align(Alignment.TopStart),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White,
+                    )
+                }
+                Row(
+                    modifier = Modifier.align(Alignment.TopEnd),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // Reachable in windowed and fullscreen playback alike, exactly
+                    // like the other top-bar controls. The waiting count lives in
+                    // the description rather than a separate badge, so the row does
+                    // not need a new layout.
+                    IconButton(onClick = onOpenQueue) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.PlaylistPlay,
+                            contentDescription = if (queueCount > 0) {
+                                "Queue, $queueCount waiting"
+                            } else {
+                                "Queue"
+                            },
+                            tint = Color.White,
+                        )
+                    }
+                    IconButton(onClick = { showCastSheet = true }) {
+                        Icon(
+                            imageVector = if (isRemote) {
+                                Icons.Default.CastConnected
+                            } else {
+                                Icons.Default.Cast
+                            },
+                            contentDescription = if (isRemote) {
+                                "Casting — open device controls"
+                            } else {
+                                "Play on a device"
+                            },
+                            // The connected icon is the one piece of state the top
+                            // bar carries; the accent colour makes "casting" visible
+                            // at a glance even before the surface text is read.
+                            tint = if (isRemote) MaterialTheme.colorScheme.primary else Color.White,
+                        )
+                    }
+                    // Media3's own gear lives in a control row it hides in portrait,
+                    // so the player exposes its own always-reachable settings entry.
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = Color.White,
+                        )
+                    }
+                    // A manual orientation toggle. It is offered beside the other
+                    // top-bar controls so a viewer whose device is locked (or simply
+                    // lying flat) can turn the picture without the system setting.
+                    IconButton(
+                        onClick = {
+                            val activity = hostActivity
+                            val current = activity?.resources?.configuration?.orientation
+                                ?: Configuration.ORIENTATION_PORTRAIT
+                            activity?.requestedOrientation = rotatedOrientation(current)
+                        },
+                    ) {
+                        Icon(
+                            Icons.Default.ScreenRotation,
+                            contentDescription = "Rotate",
+                            tint = Color.White,
+                        )
+                    }
+                    IconButton(onClick = { fullscreen = !fullscreen }) {
+                        Icon(
+                            if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                            contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
+                            tint = Color.White,
+                        )
+                    }
+                }
+                if (!isRemote && (controller == null || buffering)) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.align(Alignment.Center),
+                        color = Color.White,
+                    )
+                }
+
+                if (!isRemote && holding) {
+                    CaptionSpeedBadge(
+                        text = "2×",
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 10.dp),
+                    )
+                }
+
+                // Captions are timed against the local player; while casting they
+                // are off by design (the TV renders its own), so the overlay must
+                // not keep following a stale position.
+                if (!isRemote) {
+                    CaptionOverlay(
+                        session = viewModel.captions,
+                        positionMs = positionMs,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(horizontal = 24.dp)
+                            .padding(bottom = 56.dp),
+                    )
+                }
+
+                // A failed load or a failed re-resolve belongs to the player, not
+                // to the page: keep the title, channel, chips and comments below.
+                val error = state.error
+                if (!isRemote && error != null && state.detail != null) {
+                    PlaybackErrorCard(
+                        message = error,
+                        onRetry = viewModel::load,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
+
+                // The finished video stays on screen while the viewer decides;
+                // playing "up next" swaps the media in this same player. A queue
+                // takes precedence: the auto-advance effect above has already
+                // started its head, so Up next belongs only to an empty queue. A
+                // cast session reports its own end through the renderer's transport
+                // state, which the remote surface already shows.
+                if (!isRemote && playbackEnded && queuedNext == null && nextVideo != null) {
+                    PlaybackEndedOverlay(
+                        video = nextVideo,
+                        onPlay = { viewModel.playRelated(nextVideo) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
 
-            // Captions are timed against the local player; while casting they
-            // are off by design (the TV renders its own), so the overlay must
-            // not keep following a stale position.
-            if (!isRemote) {
-                CaptionOverlay(
-                    session = viewModel.captions,
-                    positionMs = positionMs,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(horizontal = 24.dp)
-                        .padding(bottom = 56.dp),
+            if (fullscreen || inPictureInPicture) return@Column
+
+            val detail = state.detail
+            when {
+                detail != null -> PlayerInfo(
+                    detail = detail,
+                    dislikes = state.dislikes,
+                    showDislikes = state.showDislikes,
+                    subscribed = detail.item.channelId.isNotBlank() &&
+                        subscriptions.any { it.id == detail.item.channelId },
+                    segmentCount = state.segments.size,
+                    favourite = state.favourite,
+                    watchLater = inWatchLater,
+                    downloadState = downloadState,
+                    downloadFileMissing = downloadFileMissing,
+                    downloadMessage = state.downloadMessage,
+                    descriptionExpanded = state.descriptionExpanded,
+                    speed = state.speed,
+                    captionsEnabled = viewModel.captions.enabled,
+                    captionsAvailable = viewModel.captions.tracks.isNotEmpty(),
+                    commentCount = detail.comments.countText,
+                    qualities = detail.playback.videoQualities,
+                    videoQuality = state.videoQuality,
+                    effectiveHeight = state.effectiveHeight,
+                    onToggleDescription = viewModel::toggleDescription,
+                    onToggleFavourite = viewModel::toggleFavourite,
+                    onToggleWatchLater = viewModel::toggleWatchLater,
+                    onDownload = viewModel::toggleDownload,
+                    onRedownload = viewModel::redownload,
+                    onClearDownloadMessage = viewModel::clearDownloadMessage,
+                    onAddToQueue = viewModel::addToQueue,
+                    onOpenPlaylistSheet = { showPlaylistSheet = true },
+                    onToggleSubscription = viewModel::toggleSubscription,
+                    onShare = { shareVideo(context, detail.item.id) },
+                    onSpeed = viewModel::setSpeed,
+                    onQuality = viewModel::setQuality,
+                    onCaptions = { showCaptionSheet = true },
+                    onComments = { showComments = true },
+                    onSeek = { if (isRemote) viewModel.remoteSeek(it) else controller?.seekTo(it) },
+                    onVideoClick = onVideoClick,
+                    onChannelClick = onChannelClick,
                 )
-            }
-
-            // A failed load or a failed re-resolve belongs to the player, not
-            // to the page: keep the title, channel, chips and comments below.
-            val error = state.error
-            if (!isRemote && error != null && state.detail != null) {
-                PlaybackErrorCard(
-                    message = error,
-                    onRetry = viewModel::load,
-                    modifier = Modifier.align(Alignment.Center),
-                )
-            }
-
-            // The finished video stays on screen while the viewer decides;
-            // playing "up next" swaps the media in this same player. A queue
-            // takes precedence: the auto-advance effect above has already
-            // started its head, so Up next belongs only to an empty queue. A
-            // cast session reports its own end through the renderer's transport
-            // state, which the remote surface already shows.
-            if (!isRemote && playbackEnded && queuedNext == null && nextVideo != null) {
-                PlaybackEndedOverlay(
-                    video = nextVideo,
-                    onPlay = { viewModel.playRelated(nextVideo) },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-        }
-
-        if (fullscreen || inPictureInPicture) return@Column
-
-        val detail = state.detail
-        when {
-            detail != null -> PlayerInfo(
-                detail = detail,
-                dislikes = state.dislikes,
-                showDislikes = state.showDislikes,
-                subscribed = detail.item.channelId.isNotBlank() &&
-                    subscriptions.any { it.id == detail.item.channelId },
-                segmentCount = state.segments.size,
-                favourite = state.favourite,
-                watchLater = inWatchLater,
-                downloadState = downloadState,
-                downloadFileMissing = downloadFileMissing,
-                downloadMessage = state.downloadMessage,
-                descriptionExpanded = state.descriptionExpanded,
-                speed = state.speed,
-                captionsEnabled = viewModel.captions.enabled,
-                captionsAvailable = viewModel.captions.tracks.isNotEmpty(),
-                commentCount = detail.comments.countText,
-                qualities = detail.playback.videoQualities,
-                videoQuality = state.videoQuality,
-                effectiveHeight = state.effectiveHeight,
-                onToggleDescription = viewModel::toggleDescription,
-                onToggleFavourite = viewModel::toggleFavourite,
-                onToggleWatchLater = viewModel::toggleWatchLater,
-                onDownload = viewModel::toggleDownload,
-                onRedownload = viewModel::redownload,
-                onClearDownloadMessage = viewModel::clearDownloadMessage,
-                onAddToQueue = viewModel::addToQueue,
-                onOpenPlaylistSheet = { showPlaylistSheet = true },
-                onToggleSubscription = viewModel::toggleSubscription,
-                onShare = { shareVideo(context, detail.item.id) },
-                onSpeed = viewModel::setSpeed,
-                onQuality = viewModel::setQuality,
-                onCaptions = { showCaptionSheet = true },
-                onComments = { showComments = true },
-                onSeek = { if (isRemote) viewModel.remoteSeek(it) else controller?.seekTo(it) },
-                onVideoClick = onVideoClick,
-                onChannelClick = onChannelClick,
-            )
-            state.loading -> LoadingBox()
-            else -> MessageBox(
-                title = "Couldn't start playback",
-                body = state.error ?: "Something went wrong.",
-            ) {
-                TextButton(onClick = { viewModel.load() }) { Text("Retry") }
+                state.loading -> LoadingBox()
+                else -> MessageBox(
+                    title = "Couldn't start playback",
+                    body = state.error ?: "Something went wrong.",
+                ) {
+                    TextButton(onClick = { viewModel.load() }) { Text("Retry") }
+                }
             }
         }
     }

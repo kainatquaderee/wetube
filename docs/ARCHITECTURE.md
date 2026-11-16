@@ -176,6 +176,20 @@ the player as before. Audio-only playback floats too and the window shows the
 same black card the full player does. Swiping home instead still hands the video
 to the system picture-in-picture window.
 
+**Orientation and the top bar.** The top bar carries a rotate button that flips
+the window between portrait and landscape on a tap, for a viewer whose device is
+locked to one orientation or lying flat with auto-rotate off. It asks for the
+opposite of what is on screen — landscape gets portrait and anything else gets
+landscape — as a pure function so the rule is pinned without a device. Leaving
+the player returns the window to `SCREEN_ORIENTATION_UNSPECIFIED`, handing it
+back to the system's own auto-rotate rather than pinning the last choice. The
+video area itself is a 16:9 slice of the page width; on a sideways phone that
+slice is taller than the page, and an oversized `Column` child is centred, which
+would push the top bar it carries above the page edge and under the status bar.
+The slice is therefore clamped to the page height (`fittedVideoHeight`, another
+pure function), so the box stays anchored at the top and the bar's buttons remain
+below the status bar and fully tappable in both orientations.
+
 **Audio-only rendering.** With **Audio only** on, the `MediaItem` is built from
 the audio rendition, but a muxed fallback track can still carry a frame, so the
 player also hides its video surface and stands a black card reading "Audio only
@@ -425,6 +439,7 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | Picture-in-picture | Back docks the playing video into a small in-app window over the app while it stays browsable, an audio-only video floating the same black card; swiping home uses the system window |
 | Player panel | In-player gear: quality, speed, captions, audio-only, background, audio-only in the background, SponsorBlock, dislikes |
 | Player extras | Read-only dislike count, Share, Subscribe/Subscribed on the channel row, end screen with the next related video |
+| Orientation | Top-bar rotate button flips portrait/landscape and hands the window back to the system's auto-rotate on exit; the video area is clamped so the top bar stays clear of the status bar in landscape |
 | Casting | DLNA/UPnP `MediaRenderer` discovery and playback on the local network, with a remote-control page |
 | Search | Autocomplete and continuation paging; keyboard dismissed on submit, next page loaded at the end of the list |
 | Subtitles | Tracks from the video itself, CC menu, YouTube auto-translation with fallback |

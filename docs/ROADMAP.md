@@ -243,6 +243,14 @@ easy to demo.
 - [x] The card follows the video into the in-app mini-player and the system
       picture-in-picture window, so audio-only playback can float
 
+## 0.3.10 — a rotate button, and a top bar clear of the status bar (shipped in this tree)
+- [x] A rotate control in the player's top bar flips the picture between portrait
+      and landscape on a tap, for a device locked to one orientation or lying flat
+- [x] Leaving the player hands the window back to the system's auto-rotate, so it
+      is not pinned to the toggle's last choice
+- [x] The video area is clamped to the page height, so in landscape the top bar
+      stays below the status bar instead of sitting under it with dead buttons
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override
