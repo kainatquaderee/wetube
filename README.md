@@ -147,13 +147,6 @@ sdk.dir=/path/to/Android/Sdk
 ./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
 ```
 
-Release builds are minified with R8 and will not package without a real signing
-key, so a debug-signed artifact can never be mistaken for a release. CI signs
-with the repository secrets (`WETUBE_KEYSTORE_BASE64`,
-`WETUBE_KEYSTORE_PASSWORD`, `WETUBE_KEY_ALIAS`, `WETUBE_KEY_PASSWORD`).
-Locally, put the same values in a git-ignored `keystore.properties`. For a
-throwaway test build on a key-less checkout, pass `-PallowDebugSigning=true` to
-sign with the debug key explicitly.
 
 ## Architecture
 
