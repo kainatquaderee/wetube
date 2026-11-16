@@ -1159,8 +1159,8 @@ details .a {
 
 .people {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
   gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 340px));
 }
 .person {
   display: flex;
@@ -1177,24 +1177,19 @@ details .a {
   border-color: rgba(255, 0, 51, 0.55);
   background: linear-gradient(180deg, rgba(255, 0, 51, 0.08), transparent);
 }
-.person img,
-.person .avatar-plus {
+.person img {
   flex: 0 0 auto;
   width: 56px;
   height: 56px;
   border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--line);
 }
-.person img { object-fit: cover; border: 1px solid var(--line); }
-.avatar-plus {
-  display: grid;
-  place-items: center;
-  border: 1px dashed var(--line);
+.people-note {
+  margin: 20px 0 0;
   color: var(--muted-2);
-  font-size: 24px;
-  line-height: 1;
-  transition: border-color 0.25s, color 0.25s;
+  font-size: 14px;
 }
-.person-cta:hover .avatar-plus { border-color: rgba(255, 0, 51, 0.55); color: var(--red-2); }
 .person-meta { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .person-meta b {
   display: flex;
