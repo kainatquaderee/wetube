@@ -64,7 +64,7 @@ easy to demo.
 - [ ] Queue management on the renderer
 
 ## 0.1.9 — polish follow-ups
-- [ ] Mini-player: keep the current video docked while browsing the rest of the app
+- [x] Mini-player: keep the current video docked while browsing the rest of the app
 - [ ] Comment composer: post and reply from the app when signed in
 - [ ] Fullscreen auto-rotate for landscape video, with a portrait lock option
 
@@ -222,6 +222,15 @@ easy to demo.
       and no two list items share a key
 - [x] A continuation is sent back to the client profile that minted it, so the
       signed-in personal feed and the anonymous feed never mix
+
+## 0.3.7 — in-app mini-player (shipped in this tree)
+- [x] Back from the player docks the running video into a small window over the
+      app, and the screen it came from stays fully browsable underneath
+- [x] The window keeps playing, drags out of the way, reopens the full player on
+      a tap (at whatever the session is now playing) and stops on close
+- [x] Offered only for a local picture actually playing; a cast, audio-only or
+      paused video leaves the player as before, and swiping home still uses the
+      system picture-in-picture window
 
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness

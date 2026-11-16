@@ -64,6 +64,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.activity.compose.BackHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,6 +72,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -94,9 +97,12 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import android.app.PictureInPictureParams
 import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Rational
 import android.view.MotionEvent
 import android.view.ViewGroup
 import coil.compose.AsyncImage
@@ -321,6 +327,25 @@ internal fun canDropVideoInBackground(
     !casting &&
     hasAudioTrack &&
     !live
+
+/**
+ * Whether the video may float instead of the player leaving the screen.
+ *
+ * Pressing back shrinks the picture into the in-app window over the feed, and
+ * swiping home floats it into the system window; both are a continuation of
+ * watching something, so they are offered only when there is a picture on
+ * *this* phone that is actually playing: a cast stream is drawn by the TV and
+ * would leave an empty box, audio-only playback has no picture to float, and a
+ * paused, finished or still-loading player has nothing worth pinning to a
+ * corner. A loaded detail is required because the window's aspect ratio and
+ * source-rect hint are taken from the video that is on screen.
+ */
+internal fun shouldEnterPictureInPicture(
+    casting: Boolean,
+    playing: Boolean,
+    userAudioOnly: Boolean,
+    hasDetail: Boolean,
+): Boolean = !casting && playing && !userAudioOnly && hasDetail
 
 class PlayerViewModel(
     private val locator: ServiceLocator,
@@ -1157,10 +1182,13 @@ fun PlayerScreen(
     locator: ServiceLocator,
     videoId: String,
     onBack: () -> Unit,
+    /** Shrink the playing video into the in-app window instead of leaving. */
+    onMinimize: (String) -> Unit = {},
     onVideoClick: (String) -> Unit,
     onChannelClick: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenQueue: () -> Unit,
+    inPictureInPicture: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: PlayerViewModel = viewModel(
@@ -1285,14 +1313,80 @@ fun PlayerScreen(
         }
     }
 
-    // Back leaves fullscreen first, then the screen.
-    BackHandler(enabled = fullscreen) { fullscreen = false }
+    // Back offers the floating window (and the system's picture-in-picture) only
+    // when there is a picture on *this* phone that is actually playing: a cast
+    // stream is drawn by the TV and would leave an empty box, audio-only
+    // playback has no picture to float, and a paused, finished or still-loading
+    // player has nothing worth pinning to a corner.
+    val hostActivity = context.findActivity()
+    val canFloat = shouldEnterPictureInPicture(
+        casting = isRemote,
+        playing = playingIntent,
+        userAudioOnly = state.audioOnly,
+        hasDetail = state.detail != null,
+    )
+    // The video surface's rectangle on screen, so the system can shrink the
+    // window out of it rather than out of the whole activity. Null until the
+    // first layout pass.
+    var videoBounds by remember { mutableStateOf<android.graphics.Rect?>(null) }
 
-    LaunchedEffect(controller, isRemote) {
+    // Keep the system's copy of the parameters current: the aspect ratio and
+    // source rect for the shrink animation, and — on Android 12 and up — auto
+    // enter, so swiping home floats the video into the system window the same
+    // way back once did. Auto enter is switched off whenever the video may not
+    // float, so the app never pins a paused, casting or sound-only player to a
+    // corner.
+    LaunchedEffect(canFloat, videoBounds, isRemote) {
+        val host = hostActivity ?: return@LaunchedEffect
+        val params = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9))
+        videoBounds?.let { params.setSourceRectHint(it) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            params.setAutoEnterEnabled(canFloat)
+        }
+        runCatching { host.setPictureInPictureParams(params.build()) }
+    }
+
+    // The parameters live on the window, so leaving the player must clear the
+    // auto-enter flag: otherwise a swipe home from the feed afterwards would
+    // pin the whole app into a system picture-in-picture box.
+    DisposableEffect(hostActivity) {
+        val host = hostActivity
+        onDispose {
+            if (host != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                runCatching {
+                    host.setPictureInPictureParams(
+                        PictureInPictureParams.Builder()
+                            .setAutoEnterEnabled(false)
+                            .build(),
+                    )
+                }
+            }
+        }
+    }
+
+    // Back leaves fullscreen first, then shrinks the video into the in-app
+    // window if there is a picture to float, and only otherwise leaves the
+    // screen — so a viewer keeps watching over the feed they came from.
+    BackHandler {
+        when {
+            fullscreen -> fullscreen = false
+            canFloat -> onMinimize(viewModel.currentVideoId)
+            else -> onBack()
+        }
+    }
+
+    LaunchedEffect(controller, isRemote, inPictureInPicture) {
         // Detach the local player entirely while casting. A PlayerView that
         // still points at the paused ExoPlayer would draw its last frame and
-        // offer controls that move nothing the viewer can hear.
-        playerView.useController = !isRemote
+        // offer controls that move nothing the viewer can hear. The window's
+        // own controls take over in picture-in-picture, so Media3's bar — built
+        // for a full screen — is not drawn there.
+        playerView.useController = !isRemote && !inPictureInPicture
+        // Wait one frame before taking the shared player: a mini player being
+        // disposed in this same commit (a tap on it reopens this screen)
+        // releases the player as it goes, and this surface must attach after
+        // that or the video would end up bound to neither.
+        withFrameNanos { }
         playerView.player = if (isRemote) null else controller
     }
 
@@ -1402,8 +1496,13 @@ fun PlayerScreen(
     }
 
     Column(modifier.fillMaxSize()) {
+        // The video surface is composed exactly once. Picture-in-picture only
+        // changes the Box that holds it — filling the small window instead of
+        // taking its 16:9 slice of the page — so the single AndroidView node is
+        // never asked to reparent, which would crash with "child already has a
+        // parent". The chrome below returns early in PiP.
         Box(
-            modifier = if (fullscreen) {
+            modifier = if (fullscreen || inPictureInPicture) {
                 Modifier
                     .fillMaxSize()
                     .background(Color.Black)
@@ -1412,7 +1511,19 @@ fun PlayerScreen(
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
                     .background(Color.Black)
-            },
+            }
+                .onGloballyPositioned { coordinates ->
+                    // The video's place on screen, so the system can shrink the
+                    // picture-in-picture window out of that rectangle rather
+                    // than out of the whole activity.
+                    val frame = coordinates.boundsInWindow()
+                    videoBounds = android.graphics.Rect(
+                        frame.left.toInt(),
+                        frame.top.toInt(),
+                        frame.right.toInt(),
+                        frame.bottom.toInt(),
+                    )
+                },
         ) {
             if (isRemote) {
                 RemoteSurface(
@@ -1433,6 +1544,14 @@ fun PlayerScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
             }
+
+            // Picture-in-picture shows the video and nothing else: the small
+            // window has no room for the top bar, the buffering spinner, the
+            // captions or the end card, and the system draws its own controls.
+            // Returning here leaves every effect above — the queue advance, the
+            // position tick, the error listener — still running.
+            if (inPictureInPicture) return@Box
+
             // A subtle scrim keeps the always-visible top bar legible over a
             // bright frame; Media3's own gradient only appears with its controls.
             Box(
@@ -1566,7 +1685,7 @@ fun PlayerScreen(
             }
         }
 
-        if (fullscreen) return@Column
+        if (fullscreen || inPictureInPicture) return@Column
 
         val detail = state.detail
         when {

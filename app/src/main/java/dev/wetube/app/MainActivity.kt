@@ -3,6 +3,7 @@ package dev.wetube.app
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -23,6 +24,16 @@ class MainActivity : ComponentActivity() {
 
     /** Bumped for every launch intent so the same link can be opened twice. */
     private val startRequest = mutableIntStateOf(0)
+
+    /**
+     * Whether the window is currently shrunk to a picture-in-picture box.
+     *
+     * Compose cannot read this from the window itself, so the activity mirrors
+     * it into snapshot state and the player uses it to drop all chrome and show
+     * the video alone. It is also the flag the player reads to decide that the
+     * back gesture has already been spent.
+     */
+    private val inPictureInPicture = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,6 +62,7 @@ class MainActivity : ComponentActivity() {
                     locator = locator,
                     startVideoId = startVideoId.value,
                     startRequest = startRequest.intValue,
+                    inPictureInPicture = inPictureInPicture.value,
                     onStartConsumed = { startVideoId.value = null },
                 )
             }
@@ -61,6 +73,14 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         open(intent)
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPictureInPicture.value = isInPictureInPictureMode
     }
 
     private fun open(intent: Intent?) {

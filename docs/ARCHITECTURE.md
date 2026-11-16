@@ -160,6 +160,20 @@ as its media id, so a screen can tell whether the player still holds the clip it
 expects — this is what stops the normal player's video from appearing behind
 Shorts after navigating back.
 
+**Leaving the player.** Pressing back while a video plays shrinks it into a
+small window docked over the app, so the feed, search or channel behind it stays
+usable and the video keeps playing. The window has its own surface, re-pointed
+at the same session the instant the player screen releases it, which keeps the
+one-video-per-surface rule intact — the full player and the window never hold
+the video at the same time. The window can be dragged out of the way, tapped to
+reopen the full player (at whatever the session is now playing, so a queue that
+advanced while it was up reopens the right clip), or closed, which pauses and
+dismisses it. It is offered only when there is a local picture that is actually
+playing: a cast is drawn by the TV, audio-only has no picture, and a paused,
+finished or still-loading video has nothing to dock; those cases leave the
+player as before. Swiping home instead still hands the video to the system
+picture-in-picture window.
+
 **Hold to 2×.** Pressing and holding the video surface (or a Short) switches to
 2× playback; releasing restores the previous speed. In the normal player this
 is an `OnTouchListener` that does not consume the event, so the native controls
@@ -397,6 +411,7 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | UI | Hand-written Jetpack Compose, dark and light |
 | Transport | Direct InnerTube over JSON, plus Invidious and Piped |
 | Playback | Progressive, merged A/V, HLS live |
+| Picture-in-picture | Back docks the playing video into a small in-app window over the app while it stays browsable; swiping home uses the system window |
 | Player panel | In-player gear: quality, speed, captions, audio-only, background, audio-only in the background, SponsorBlock, dislikes |
 | Player extras | Read-only dislike count, Share, Subscribe/Subscribed on the channel row, end screen with the next related video |
 | Casting | DLNA/UPnP `MediaRenderer` discovery and playback on the local network, with a remote-control page |

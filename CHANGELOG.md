@@ -1,7 +1,35 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.6 (versionCode 26).
+Security. This release is 0.3.7 (versionCode 27).
+
+## 0.3.7 — in-app mini-player (2026-11-16)
+
+Pressing back while a video plays now shrinks it into a small floating window
+over the app instead of leaving it.
+
+### Added
+- **In-app mini-player.** Back from the player docks the running video into a
+  small window anchored to a corner, and the screen it came from — feed, search,
+  a channel, the library — stays fully usable underneath. The window keeps
+  playing, can be dragged out of the way of whatever is behind it, opens the
+  full player again on a tap, and has a close button that stops playback and
+  dismisses it.
+- **Opening the video again is the same video.** Tapping the window reopens the
+  full player at whatever the session is actually playing, so a queue that
+  advanced while the window was up reopens the right clip rather than the one
+  the window was created with.
+- **Home-swipe still floats the system window.** Leaving the app to the home
+  screen while a video plays keeps the system picture-in-picture behaviour, so
+  a viewer can watch over other apps; only the in-app back gesture changed.
+
+### Changed
+- **Back no longer leaves the video behind.** The mini-player is offered only
+  when there is a picture on this phone that is actually playing: a cast is
+  drawn by the TV, audio-only has no picture, and a paused, finished or
+  still-loading video has nothing worth docking. In those cases back leaves the
+  player as before. The system picture-in-picture window and the in-app window
+  are never shown at the same time.
 
 ## 0.3.6 — infinite scroll (2026-11-14)
 

@@ -48,6 +48,11 @@ resolves.
   final frame; one tap plays it in the same player
 - A playback failure keeps the title, channel, chips and comments usable below,
   with a retry on the player
+- **Mini-player on back**: pressing back while a video plays docks it into a
+  small floating window over the app, so you can keep browsing the feed while it
+  plays; drag it out of the way, tap it to reopen the full player, or close it to
+  stop playback. Leaving the app to the home screen still uses the system
+  picture-in-picture window
 - **Offline downloads**: tap **More → Download** on a video to keep it on the
   device. A **Downloads** tab in the Library lists what is saved with its live
   progress and lets you retry or remove an item; a saved video plays with no
