@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WeTube — YouTube, without the noise</title>
+  <meta name="description" content="WeTube is a small, fast, open-source YouTube client for Android. No ads, no trackers, no analytics, and no account required.">
+  <meta name="theme-color" content="#07070a">
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/logo.png">
+  <link rel="canonical" href="https://kainatquaderee.github.io/wetube/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="WeTube — YouTube, without the noise">
+  <meta property="og:description" content="A small, fast, open-source YouTube client for Android. No ads, no trackers, no analytics.">
+  <meta property="og:url" content="https://kainatquaderee.github.io/wetube/">
+  <meta property="og:image" content="https://kainatquaderee.github.io/wetube/assets/logo.png">
+  <meta name="twitter:card" content="summary">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@500;600;700;800&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/site.css">
+  <script>document.documentElement.classList.replace('no-js','js');</script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" id="nav">
+    <div class="container nav-inner">
+      <a class="brand" href="#top" aria-label="WeTube — home">
+        <img class="brand-mark" src="assets/logo.svg" alt="" width="34" height="34">
+        <span class="brand-name">WeTube</span>
+      </a>
+
+      <button class="menu-btn" id="menuBtn" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navLinks">
+        <span></span><span></span>
+      </button>
+
+      <nav class="nav-links" id="navLinks" aria-label="Primary">
+        <a href="#features">Features</a>
+        <a href="#player">Player</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#install">Install</a>
+        <a href="#updates">Updates</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a class="ghost-link" href="https://github.com/kainatquaderee/wetube" aria-label="View source on GitHub">
+          <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span>Source</span>
+        </a>
+        <a class="btn btn-primary btn-sm" href="https://github.com/kainatquaderee/wetube/releases/latest">Download</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <span id="top"></span>
+
+    <!-- Hero -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <a class="pill reveal" href="https://github.com/kainatquaderee/wetube/releases/latest">
+            <span class="pill-dot"></span>
+            <span>Now at 0.3.10 &middot; MIT licensed</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+
+          <h1 class="reveal" style="--d:.05s">YouTube,<br><em>without the noise.</em></h1>
+
+          <p class="lede reveal" style="--d:.12s">A small, fast, open-source client for Android. No ads, no trackers, no analytics — and no account required. Just the videos you came for.</p>
+
+          <div class="cta-row reveal" style="--d:.18s">
+            <a class="btn btn-primary" href="https://github.com/kainatquaderee/wetube/releases/latest">
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+              Download APK
+            </a>
+            <a class="btn btn-ghost" href="https://github.com/kainatquaderee/wetube">
+              <svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+              View source
+            </a>
+          </div>
+
+          <div class="trust reveal" style="--d:.24s">
+            <span>MIT licensed</span>
+            <span>Android 8+</span>
+            <span>Optional sign-in</span>
+            <span>Local-first</span>
+          </div>
+        </div>
+
+        <div class="hero-visual reveal" style="--d:.1s">
+          <div class="glow" aria-hidden="true"></div>
+
+          <div class="float f1" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/></svg>
+            No ads &middot; no trackers
+          </div>
+          <div class="float f2" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3M4 14v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3M9 12h6"/></svg>
+            Audio only
+          </div>
+
+          <div class="phone">
+            <div class="phone-screen">
+              <div class="vid">
+                <div class="vid-top">
+                  <span class="ic"></span>
+                  <span class="ic"></span>
+                  <span class="ic"></span>
+                </div>
+                <div class="vid-play">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                </div>
+              </div>
+              <div class="meta">
+                <div class="line w-80"></div>
+                <div class="line muted w-50"></div>
+                <div class="chips">
+                  <span class="chip">Auto</span>
+                  <span class="chip">1x</span>
+                  <span class="chip">CC</span>
+                </div>
+                <div class="progress"><span></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="marquee" aria-hidden="true">
+        <div class="marquee-track">
+          <span class="marquee-item">No Ads <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">No Trackers <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">No Telemetry <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">Open Source <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">MIT Licensed <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">Optional Sign-in <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">Local-first <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">Android 8+ <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">No Ads <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">No Trackers <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">No Telemetry <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">Open Source <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">MIT Licensed <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">Optional Sign-in <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">Local-first <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+          <span class="marquee-item">Android 8+ <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stats -->
+    <section class="stats">
+      <div class="container">
+        <div class="stats-grid">
+          <div class="stat reveal"><b>0</b><span>ads or ad SDKs</span></div>
+          <div class="stat reveal" style="--d:.06s"><b>0</b><span>trackers or telemetry</span></div>
+          <div class="stat reveal" style="--d:.12s"><b>100%</b><span>open source</span></div>
+          <div class="stat reveal" style="--d:.18s"><b>MIT</b><span>licensed</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="section" id="features">
+      <div class="container">
+        <div class="section-head reveal">
+          <span class="eyebrow">Features</span>
+          <h2>Everything you need. Nothing you don&rsquo;t.</h2>
+          <p class="lede">A focused client with the controls that matter — built on Media3/ExoPlayer, with quality, casting, downloads and Shorts done properly.</p>
+        </div>
+
+        <div class="bento">
+          <article class="card span-7 reveal">
+            <div class="ic-tile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none"/></svg>
+            </div>
+            <h3>Playback tuned to your phone</h3>
+            <p>Hardware-friendly H.264/AAC by default, with a quality picker from 144p to 2160p. Merge high-quality video and audio automatically, or pin the height you want — switching resumes exactly where you were.</p>
+            <div class="tags"><span class="tag">ExoPlayer</span><span class="tag">144p–2160p</span><span class="tag">0.25×–4×</span><span class="tag">Resume</span></div>
+          </article>
+
+          <article class="card span-5 reveal" style="--d:.06s">
+            <div class="ic-tile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18v11H3z"/><path d="M12 16v5M8 21h8"/></svg>
+            </div>
+            <h3>Cast to the big screen</h3>
+            <p>Find DLNA/UPnP renderers on your own Wi-Fi — a smart TV, a speaker, another phone running VLC or Kodi — and drive transport, seek and volume from the phone.</p>
+            <div class="tags"><span class="tag">DLNA</span><span class="tag">UPnP</span><span class="tag">Remote</span></div>
+          </article>
+
+          <article class="card span-5 reveal">
+            <div class="ic-tile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+            </div>
+            <h3>Truly offline</h3>
+            <p>Keep a video on the device and watch it with no connection. Interrupted transfers resume from a part file, and a storage cap trims the oldest finished download first.</p>
+            <div class="tags"><span class="tag">Downloads</span><span class="tag">Resume</span><span class="tag">Storage cap</span></div>
+          </article>
+
+          <article class="card span-7 reveal" style="--d:.06s">
+            <div class="ic-tile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="3"/><path d="M10 7h4M10 11h4M10 15h4"/></svg>
+            </div>
+            <h3>Shorts, done right</h3>
+            <p>A vertical swipe feed with its own progress bar, tap to pause, hold for 2×, captions, and a rail with like, dislike and comment counts. The channel line opens the channel.</p>
+            <div class="tags"><span class="tag">Swipe feed</span><span class="tag">2× hold</span><span class="tag">CC menu</span></div>
+          </article>
+
+          <article class="card span-6 reveal">
+            <div class="ic-tile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+            </div>
+            <h3>A player built for watching</h3>
+            <p>An in-player gear for quality, speed, captions, audio-only, background playback and SponsorBlock. Chapters from the description, a share link, an end screen, and honest dislike counts.</p>
+            <div class="tags"><span class="tag">In-player settings</span><span class="tag">Chapters</span><span class="tag">End screen</span></div>
+          </article>
+
+          <article class="card span-6 reveal" style="--d:.06s">
+            <div class="ic-tile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
+            </div>
+            <h3>Your data stays yours</h3>
+            <p>History, favourites, resume points and subscriptions live on the device. Back up everything to a single JSON file you choose where to put; sync is optional, off by default and pull-first.</p>
+            <div class="tags"><span class="tag">Local-first</span><span class="tag">JSON backup</span><span class="tag">Optional sync</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Player showcase -->
+    <section class="section" id="player">
+      <div class="container">
+        <div class="showcase">
+          <div class="showcase-visual reveal">
+            <div class="glow" aria-hidden="true"></div>
+            <div class="float f2" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3M4 14v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3M9 12h6"/></svg>
+              Audio only
+            </div>
+            <div class="phone">
+              <div class="phone-screen">
+                <div class="vid">
+                  <div class="vid-top"><span class="ic"></span><span class="ic"></span><span class="ic"></span></div>
+                  <div class="vid-play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></div>
+                </div>
+                <div class="meta">
+                  <div class="line w-80"></div>
+                  <div class="line muted w-60"></div>
+                  <div class="chips">
+                    <span class="chip">1080p</span>
+                    <span class="chip">1.5×</span>
+                    <span class="chip">CC</span>
+                    <span class="chip">SponsorBlock</span>
+                  </div>
+                  <div class="progress"><span></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="showcase-copy">
+            <div class="section-head reveal" style="margin-bottom:26px">
+              <span class="eyebrow">The player</span>
+              <h2>Thoughtful where it counts.</h2>
+            </div>
+
+            <div class="showcase-list reveal" style="--d:.06s">
+              <div class="feature-row">
+                <span class="n">01</span>
+                <div><h3>Quality you control</h3><p>Auto prefers hardware-decodable H.264 up to 1080p, and still allows 1440p/2160p when nothing smaller exists. Pin any height the video offers.</p></div>
+              </div>
+              <div class="feature-row">
+                <span class="n">02</span>
+                <div><h3>Sound without the screen</h3><p>Audio-only mode, background playback through a MediaSessionService, a real media notification and lock-screen controls. Hold the video for 2×.</p></div>
+              </div>
+              <div class="feature-row">
+                <span class="n">03</span>
+                <div><h3>Subtitles and chapters</h3><p>The video&rsquo;s own caption tracks with auto-translation and a fallback to the original, plus chapters detected from the description that seek on tap.</p></div>
+              </div>
+              <div class="feature-row">
+                <span class="n">04</span>
+                <div><h3>A window that keeps watching</h3><p>Back docks the video into a mini-player over the feed; swipe home for the system picture-in-picture window. Drag it aside, tap to reopen, close to stop.</p></div>
+              </div>
+              <div class="feature-row">
+                <span class="n">05</span>
+                <div><h3>Quiet about the noise</h3><p>SponsorBlock auto-skip for sponsor, self-promo and interaction segments, and Return YouTube Dislike counts — both optional.</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Privacy -->
+    <section class="section" id="privacy">
+      <div class="container">
+        <div class="privacy-card reveal">
+          <div class="privacy-grid">
+            <div>
+              <span class="eyebrow">Privacy</span>
+              <h2>Private by construction.</h2>
+              <p class="lede">Not a setting you have to find. The release dependency graph has no ad SDK and no analytics SDK, and your library never leaves the device unless you export it.</p>
+
+              <ul class="checklist" style="margin-top:28px">
+                <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><div>No ads, ad SDKs, trackers or telemetry.<small>The release build ships none of them.</small></div></li>
+                <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><div>No account required.<small>Sign-in is optional and runs in an in-app browser.</small></div></li>
+                <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><div>History, favourites and resume points stay local.<small>Cookies live in private storage and are excluded from backups.</small></div></li>
+                <li><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span><div>Backups are one JSON file you place yourself.<small>Drive, a USB stick, another phone — your call.</small></div></li>
+              </ul>
+            </div>
+
+            <div class="receipt" aria-label="Privacy summary">
+<div class="row"><span>privacy.manifest</span><span>v0.3.10</span></div>
+<hr>
+<div class="row"><span>ads</span><span class="ok">none</span></div>
+<div class="row"><span>trackers</span><span class="ok">none</span></div>
+<div class="row"><span>telemetry</span><span class="ok">none</span></div>
+<div class="row"><span>analytics sdk</span><span class="ok">none</span></div>
+<div class="row"><span>account</span><span>optional</span></div>
+<div class="row"><span>history</span><span>device</span></div>
+<div class="row"><span>backup</span><span>you decide</span></div>
+<hr>
+<div class="row"><span>status</span><span class="ok">clean</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Install -->
+    <section class="section" id="install">
+      <div class="container">
+        <div class="install">
+          <div class="reveal">
+            <span class="eyebrow">Install</span>
+            <h2>Up and running in a minute.</h2>
+            <p class="lede">Grab the signed APK from the latest release. No Play Store, no account, no sign-up screens.</p>
+
+            <div class="steps">
+              <div class="step">
+                <span class="n">1</span>
+                <div><b>Download the APK</b><span>From the latest release; it is signed with the project key.</span></div>
+              </div>
+              <div class="step">
+                <span class="n">2</span>
+                <div><b>Allow installs from your browser</b><span>Android asks once, the first time.</span></div>
+              </div>
+              <div class="step">
+                <span class="n">3</span>
+                <div><b>Open WeTube</b><span>Or side-load it with the command beside this.</span></div>
+              </div>
+            </div>
+
+            <div class="cta-row" style="margin-top:30px">
+              <a class="btn btn-primary" href="https://github.com/kainatquaderee/wetube/releases/latest">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+                Get the latest release
+              </a>
+              <a class="btn btn-ghost" href="https://github.com/kainatquaderee/wetube/releases">All releases</a>
+            </div>
+          </div>
+
+          <div class="reveal" style="--d:.08s">
+            <div class="code-card">
+              <div class="code-card-head">
+                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="code-title">terminal</span>
+                <button class="copy" type="button" data-copy="#installCmd" aria-label="Copy install command">Copy</button>
+              </div>
+              <pre class="code"><code id="installCmd" data-copy-text="adb install -r app-release.apk"><span class="prompt">$</span> adb install -r app-release.apk</code></pre>
+              <div class="code-foot">
+                <span>JDK 17+ &middot; Android SDK 35</span>
+                <span>Android 8.0+</span>
+              </div>
+            </div>
+
+            <div class="note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+              <span>Release builds are minified with R8 and signed with the project key. The debug build uses a separate <code>.debug</code> id, so it can sit beside the release.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Obtainium -->
+        <div class="obtainium" id="updates">
+          <div class="reveal">
+            <span class="eyebrow">Auto-updates</span>
+            <h3>Never sideload by hand again.</h3>
+            <p class="lede">Obtainium installs apps straight from their GitHub releases, so every WeTube update arrives with a tap. Point it at the repository once and each new build shows up on its own.</p>
+
+            <div class="steps">
+              <div class="step">
+                <span class="n">1</span>
+                <div><b>Install Obtainium</b><span>Get it from the project&rsquo;s own releases page.</span></div>
+              </div>
+              <div class="step">
+                <span class="n">2</span>
+                <div><b>Add the WeTube repository</b><span>Open Obtainium, tap <em>Add App</em>, and paste the address beside this.</span></div>
+              </div>
+              <div class="step">
+                <span class="n">3</span>
+                <div><b>Install, then let it track</b><span>Obtainium reads the latest release and offers every future one — no GitHub account needed.</span></div>
+              </div>
+            </div>
+
+            <div class="cta-row" style="margin-top:30px">
+              <a class="btn btn-primary" href="https://github.com/ImranR98/Obtainium/releases/latest">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+                Get Obtainium
+              </a>
+              <a class="btn btn-ghost" href="https://github.com/ImranR98/Obtainium">How it works</a>
+            </div>
+          </div>
+
+          <div class="reveal" style="--d:.08s">
+            <div class="source-card">
+              <div class="source-row">
+                <span class="badge" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3.3-7M21 4v5h-5"/></svg>
+                </span>
+                <span class="source-meta">
+                  <b>App source URL</b>
+                  <span class="source-url" id="sourceUrl" data-copy-text="https://github.com/kainatquaderee/wetube">https://github.com/kainatquaderee/wetube</span>
+                </span>
+                <button class="copy" type="button" data-copy="#sourceUrl" aria-label="Copy the repository URL">Copy</button>
+              </div>
+            </div>
+
+            <div class="note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+              <span>Obtainium also follows the CI builds on the Actions tab if you prefer the newest commit. The full walkthrough lives in <a href="https://github.com/kainatquaderee/wetube/blob/main/docs/INSTALL.md">docs/INSTALL.md</a>.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Keep Android Open -->
+    <section class="section" id="open-android">
+      <div class="container">
+        <div class="kao-banner" id="kao-banner"></div>
+        <div class="kao reveal">
+          <div>
+            <span class="eyebrow">Open Android</span>
+            <h2>Android is open. Let&rsquo;s keep it that way.</h2>
+            <p class="lede">WeTube exists because Android lets you choose what runs on your own phone. That promise is under threat. Google plans to require every Android developer to register with it — pay a fee, accept its terms and hand over government ID — before an app can be installed on a certified device. Not just Play Store apps. Every app.</p>
+            <p class="lede">WeTube is small, independent, free and installed from a link rather than a store — exactly the software this change puts at risk. We stand with <a href="https://keepandroidopen.org/">Keep Android Open</a>.</p>
+            <div class="cta-row" style="margin-top:30px">
+              <a class="btn btn-primary" href="https://keepandroidopen.org/">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/></svg>
+                Support the campaign
+              </a>
+              <a class="btn btn-ghost" href="https://keepandroidopen.org/open-letter">Read the open letter</a>
+            </div>
+          </div>
+
+          <aside class="kao-side">
+            <ul class="kao-points">
+              <li>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+                <div><b>Every app, not just the Play Store</b><span>Apps from a link, a friend or F-Droid are caught too.</span></div>
+              </li>
+              <li>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+                <div><b>A fee, Google&rsquo;s terms and government ID</b><span>Required before an app can be installed at all.</span></div>
+              </li>
+              <li>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+                <div><b>No opt-out on a phone you already own</b><span>Delivered to certified devices worldwide.</span></div>
+              </li>
+              <li>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+                <div><b>Free software is hit hardest</b><span>Volunteer projects and forks are least able to register.</span></div>
+              </li>
+            </ul>
+
+            <div class="note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+              <span>Building your own app? <a href="https://github.com/woheller69/FreeDroidWarn">FreeDroidWarn</a> shows users a clear notice about the change.</span>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section" id="faq">
+      <div class="container">
+        <div class="section-head reveal" style="max-width:760px;margin-inline:auto;text-align:center">
+          <span class="eyebrow" style="justify-content:center">FAQ</span>
+          <h2>Questions, answered.</h2>
+        </div>
+
+        <div class="faq">
+          <details class="reveal">
+            <summary>Is WeTube free?</summary>
+            <div class="a">Yes. It is free and open source under the MIT license, and there is no paid tier or subscription.</div>
+          </details>
+          <details class="reveal" style="--d:.04s">
+            <summary>Do I need a Google account?</summary>
+            <div class="a">No. The app works without signing in. An account is optional and only adds your own feed and the channels you follow on YouTube.</div>
+          </details>
+          <details class="reveal" style="--d:.08s">
+            <summary>Is it on the Play Store?</summary>
+            <div class="a">No. Every build is published as a GitHub release, and the CI artifacts are available too. The release APK is signed with the project key.</div>
+          </details>
+          <details class="reveal" style="--d:.12s">
+            <summary>Does it show ads or track me?</summary>
+            <div class="a">No ads, no ad SDKs, no trackers, no analytics. The release dependency graph contains none of them, and history and preferences stay on the device unless you export a backup.</div>
+          </details>
+          <details class="reveal" style="--d:.16s">
+            <summary>Which Android versions are supported?</summary>
+            <div class="a">Android 8.0 (API 26) and newer. The app targets Android 15 (API 35).</div>
+          </details>
+          <details class="reveal" style="--d:.2s">
+            <summary>Is it affiliated with YouTube or Google?</summary>
+            <div class="a">No. WeTube is an independent, clean-room client. It is not affiliated with, endorsed by, or connected to YouTube or Google.</div>
+          </details>
+          <details class="reveal" style="--d:.24s">
+            <summary>How do I keep it up to date?</summary>
+            <div class="a">Install once and let <a href="https://github.com/ImranR98/Obtainium">Obtainium</a> follow this repository&rsquo;s releases for you — each new build appears with a tap. You can always re-download the APK from the latest release by hand instead.</div>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div>
+          <a class="brand" href="#top">
+            <img class="brand-mark" src="assets/logo.svg" alt="" width="34" height="34">
+            <span class="brand-name">WeTube</span>
+          </a>
+          <p>A small, fast, open-source YouTube client for Android. No ads. No trackers. No analytics.</p>
+        </div>
+
+        <div>
+          <h4>Product</h4>
+          <a href="#features">Features</a>
+          <a href="#player">Player</a>
+          <a href="#privacy">Privacy</a>
+          <a href="#install">Install</a>
+        </div>
+
+        <div>
+          <h4>Resources</h4>
+          <a href="https://github.com/kainatquaderee/wetube/releases/latest">Latest release</a>
+          <a href="https://github.com/kainatquaderee/wetube/blob/main/docs/INSTALL.md">Install &amp; updates</a>
+          <a href="https://github.com/kainatquaderee/wetube/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+          <a href="https://github.com/kainatquaderee/wetube/blob/main/docs/ROADMAP.md">Roadmap</a>
+          <a href="https://github.com/kainatquaderee/wetube/blob/main/CHANGELOG.md">Changelog</a>
+        </div>
+
+        <div>
+          <h4>Project</h4>
+          <a href="https://github.com/kainatquaderee/wetube">Source code</a>
+          <a href="https://github.com/kainatquaderee/wetube/issues">Issues</a>
+          <a href="https://github.com/kainatquaderee/wetube/blob/main/LICENSE">MIT license</a>
+          <a href="https://github.com/kainatquaderee/wetube/blob/main/README.md">README</a>
+          <a href="#open-android">Open Android</a>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <span>&copy; <span id="year">2026</span> WeTube contributors &middot; MIT</span>
+        <span>Not affiliated with YouTube or Google.</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/site.js" defer></script>
+  <script src="https://keepandroidopen.org/banner.js?size=mini&amp;id=kao-banner&amp;animation=off" defer></script>
+</body>
+</html>

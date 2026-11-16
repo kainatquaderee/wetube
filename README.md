@@ -133,6 +133,19 @@ from the artifacts of any successful
 adb install -r app-release.apk
 ```
 
+**Prefer automatic updates?** Add this repository to
+[Obtainium](https://github.com/ImranR98/Obtainium) once and each new release
+installs with a tap:
+
+```text
+https://github.com/kainatquaderee/wetube
+```
+
+There is a guided, one-page version of these instructions on the project site,
+and the full walkthrough — requirements, Obtainium, CI builds, signature
+verification, updating and troubleshooting — is in
+[`docs/INSTALL.md`](docs/INSTALL.md).
+
 Release APKs are signed with the project key; `apksigner verify --print-certs`
 prints `CN=WeTube`.
 
@@ -307,6 +320,29 @@ the player reports which wall it hit. Downloads, live chat, Google Cast (which
 needs a registered receiver app id) and in-app audio output routing are tracked
 in `docs/ROADMAP.md`. Sync's write path is implemented but `UNVERIFIED` against a
 live account until the capability check is run — see `docs/SYNC_PROTOCOL.md`.
+
+## Keep Android Open
+
+WeTube is possible because Android lets you install software from wherever you
+choose — a link, a friend, a project's own releases. Google has announced that it
+will require **every** Android developer to register centrally with it, pay a
+fee, accept its terms and submit government-issued identification before their
+app can be installed on a certified device. Not just Play Store apps: every app,
+including ones distributed outside any store.
+
+Certified devices are nearly every Android phone, so if this stands, WeTube and
+thousands of other small, free and volunteer projects will be blocked on the
+hardware people already own — with no opt-out. We stand with the campaign:
+
+- Read and support it: <https://keepandroidopen.org>
+- Sign the [open letter](https://keepandroidopen.org/open-letter)
+- Install [F-Droid](https://f-droid.org) on your devices — alternative stores
+  survive only if people actually use them
+- Building an app? [FreeDroidWarn](https://github.com/woheller69/FreeDroidWarn)
+  shows your users a clear notice about what is changing
+
+Installing over `adb` is expected to keep working, which is one reason this
+project's install instructions lean on it.
 
 ## Licence
 
