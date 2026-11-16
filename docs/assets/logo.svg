@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108" role="img" aria-label="WeTube">
+  <!-- Exact conversion of res/drawable/ic_launcher_foreground.xml composited
+       over the adaptive-icon background colour (#0F0F0F). -->
+  <rect width="108" height="108" fill="#0F0F0F"/>
+  <path fill="#FF0033" d="M37,21h34a16,16 0,0 1,16 16v34a16,16 0,0 1,-16 16h-34a16,16 0,0 1,-16 -16v-34a16,16 0,0 1,16 -16z"/>
+  <path fill="#FFFFFF" d="M45,39l24,15l-24,15z"/>
+</svg>
