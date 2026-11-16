@@ -333,19 +333,20 @@ internal fun canDropVideoInBackground(
  *
  * Pressing back shrinks the picture into the in-app window over the feed, and
  * swiping home floats it into the system window; both are a continuation of
- * watching something, so they are offered only when there is a picture on
- * *this* phone that is actually playing: a cast stream is drawn by the TV and
- * would leave an empty box, audio-only playback has no picture to float, and a
- * paused, finished or still-loading player has nothing worth pinning to a
- * corner. A loaded detail is required because the window's aspect ratio and
- * source-rect hint are taken from the video that is on screen.
+ * watching something, so they are offered only when there is playback on *this*
+ * phone that is actually running: a cast stream is drawn by the TV and would
+ * leave an empty box, and a paused, finished or still-loading player has
+ * nothing worth pinning to a corner. A loaded detail is required because the
+ * window's aspect ratio and source-rect hint are taken from the video that is
+ * on screen. Audio-only playback still floats: the window then shows the same
+ * black "Audio only mode" card the full player does, so a listener can keep the
+ * sound going while browsing.
  */
 internal fun shouldEnterPictureInPicture(
     casting: Boolean,
     playing: Boolean,
-    userAudioOnly: Boolean,
     hasDetail: Boolean,
-): Boolean = !casting && playing && !userAudioOnly && hasDetail
+): Boolean = !casting && playing && hasDetail
 
 class PlayerViewModel(
     private val locator: ServiceLocator,
@@ -1314,15 +1315,15 @@ fun PlayerScreen(
     }
 
     // Back offers the floating window (and the system's picture-in-picture) only
-    // when there is a picture on *this* phone that is actually playing: a cast
-    // stream is drawn by the TV and would leave an empty box, audio-only
-    // playback has no picture to float, and a paused, finished or still-loading
-    // player has nothing worth pinning to a corner.
+    // when playback on *this* phone is actually running: a cast stream is drawn
+    // by the TV and would leave an empty box, and a paused, finished or
+    // still-loading player has nothing worth pinning to a corner. Audio-only
+    // playback floats too — the window shows the same black card the full
+    // player does, so the sound keeps going while the viewer browses.
     val hostActivity = context.findActivity()
     val canFloat = shouldEnterPictureInPicture(
         casting = isRemote,
         playing = playingIntent,
-        userAudioOnly = state.audioOnly,
         hasDetail = state.detail != null,
     )
     // The video surface's rectangle on screen, so the system can shrink the
@@ -1390,6 +1391,21 @@ fun PlayerScreen(
         // that or the video would end up bound to neither.
         withFrameNanos { }
         playerView.player = if (isRemote) null else controller
+    }
+
+    // "Audio only" has to be genuinely audio-only. The media item normally drops
+    // the video rendition, but a muxed fallback can still carry a picture, so
+    // the surface itself is hidden too and the black card below stands in for
+    // the frame. Deferred one frame so a surface handed over from the mini
+    // window has attached before its visibility is touched.
+    LaunchedEffect(playerView, state.audioOnly, isRemote) {
+        withFrameNanos { }
+        playerView.videoSurfaceView?.visibility =
+            if (state.audioOnly && !isRemote) {
+                android.view.View.INVISIBLE
+            } else {
+                android.view.View.VISIBLE
+            }
     }
 
     // Media3 puts its own gear in the control bar and, depending on which
@@ -1544,6 +1560,19 @@ fun PlayerScreen(
                 androidx.compose.ui.viewinterop.AndroidView(
                     factory = { playerView },
                     modifier = Modifier.fillMaxSize(),
+                )
+            }
+
+            // Audio-only playback shows the black card instead of a picture.
+            // The label is drawn before the picture-in-picture early-return so
+            // the system window carries the same card, and it carries no
+            // pointer input, so Media3's own controls stay usable underneath.
+            if (state.audioOnly && !isRemote) {
+                Text(
+                    text = "Audio only mode",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.align(Alignment.Center),
                 )
             }
 

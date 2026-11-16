@@ -237,6 +237,12 @@ easy to demo.
       fullscreen first, then dock the playing video into the mini-player, and
       only leave the screen when there is nothing to float
 
+## 0.3.9 — audio-only playback is truly audio-only (shipped in this tree)
+- [x] "Audio only" hides the video surface in the full player and shows a black
+      "Audio only mode" card instead of a stray frame
+- [x] The card follows the video into the in-app mini-player and the system
+      picture-in-picture window, so audio-only playback can float
+
 ## 0.3 — player polish
 - [ ] Gesture controls: double-tap seek, vertical swipe volume/brightness
 - [ ] Pinch to zoom / fill mode, aspect ratio override

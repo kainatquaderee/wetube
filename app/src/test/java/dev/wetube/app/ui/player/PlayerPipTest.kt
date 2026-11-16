@@ -5,24 +5,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Back offers picture-in-picture only when there is a picture on this phone that
- * is actually playing. It must decline a cast (the TV draws the video), an
- * audio-only stream (there is no picture to float) and a player with no loaded
- * detail (nothing to size the window from). The decision is a pure function, so
- * it is pinned here without a device.
+ * Back offers picture-in-picture only when something is playing on this phone
+ * that a small window can meaningfully continue. It must decline a cast (the TV
+ * draws the video) and a player with no loaded detail (nothing to size the
+ * window from), but it keeps offering the window for audio-only playback: the
+ * floating card plays the sound while the viewer browses. The decision is a
+ * pure function, so it is pinned here without a device.
  */
 class PlayerPipTest {
 
-    /** Every precondition satisfied: a loaded, playing, local video. */
+    /** Every precondition satisfied: a loaded, playing, local stream. */
     private fun pip(
         casting: Boolean = false,
         playing: Boolean = true,
-        userAudioOnly: Boolean = false,
         hasDetail: Boolean = true,
     ): Boolean = shouldEnterPictureInPicture(
         casting = casting,
         playing = playing,
-        userAudioOnly = userAudioOnly,
         hasDetail = hasDetail,
     )
 
@@ -42,11 +41,6 @@ class PlayerPipTest {
     }
 
     @Test
-    fun `an audio-only stream has no picture to float`() {
-        assertFalse(pip(userAudioOnly = true))
-    }
-
-    @Test
     fun `a video that has not loaded cannot size a window`() {
         assertFalse(pip(hasDetail = false))
     }
@@ -54,13 +48,12 @@ class PlayerPipTest {
     @Test
     fun `every precondition has to hold`() {
         // A single blocker is enough to keep the viewer on the screen.
-        for (index in 0 until 4) {
+        for (index in 0 until 3) {
             assertFalse(
                 pip(
                     casting = index == 0,
                     playing = index != 1,
-                    userAudioOnly = index == 2,
-                    hasDetail = index != 3,
+                    hasDetail = index != 2,
                 ),
             )
         }

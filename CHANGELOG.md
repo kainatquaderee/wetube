@@ -1,7 +1,27 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.8 (versionCode 28).
+Security. This release is 0.3.9 (versionCode 29).
+
+## 0.3.9 — audio-only playback is truly audio-only (2026-11-16)
+
+Turning on "Audio only" no longer leaves a picture on screen: the video area
+becomes a black card labelled "Audio only mode", and that card follows the video
+into the floating window.
+
+### Fixed
+- **"Audio only" now actually drops the picture.** A muxed fallback track could
+  still carry a video frame, so the setting looked like it did nothing. The
+  player now hides the video surface whenever audio-only is on and stands a
+  black "Audio only mode" card in its place; the sound, the native controls and
+  the progress bar are untouched.
+
+### Changed
+- **Audio-only playback can float.** Back now docks an audio-only video into the
+  mini-player — and swiping home hands it to the system picture-in-picture
+  window — instead of leaving the player, and the floating window shows the same
+  black "Audio only mode" card, so a listener can keep the sound going while
+  browsing.
 
 ## 0.3.8 — the on-screen back arrow docks like the back gesture (2026-11-16)
 

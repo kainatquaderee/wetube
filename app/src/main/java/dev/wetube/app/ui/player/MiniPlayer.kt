@@ -16,6 +16,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +65,7 @@ private val MINI_MARGIN = 12.dp
  *
  * @param controller the shared playback session this window mirrors.
  * @param videoId the video to reopen when the window is tapped.
+ * @param audioOnly draw the black "Audio only mode" card instead of a picture.
  * @param onExpand reopen the full player screen.
  * @param onClose stop and dismiss the window.
  */
@@ -71,6 +74,7 @@ private val MINI_MARGIN = 12.dp
 fun MiniPlayer(
     controller: Player?,
     videoId: String,
+    audioOnly: Boolean,
     onExpand: (String) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
@@ -141,6 +145,24 @@ fun MiniPlayer(
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f),
             )
+
+            // Audio-only playback floats the same black card the full player
+            // shows, in place of a picture. It sits under the gesture layer so
+            // a tap still reopens the player and a drag still moves the window.
+            if (audioOnly) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "Audio only mode",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                }
+            }
 
             // A transparent layer above the surface carries the gestures: a
             // tap reopens the full player, a drag flicks the window out of the

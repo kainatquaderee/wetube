@@ -255,6 +255,7 @@ fun WeTubeRoot(
             MiniPlayer(
                 controller = controller,
                 videoId = miniVideoId!!,
+                audioOnly = prefs.audioOnly,
                 // The queue can advance playback while the window is up, so
                 // reopen whatever is actually in the player rather than the id
                 // the window was created with, and fall back to it if the

@@ -169,11 +169,20 @@ one-video-per-surface rule intact — the full player and the window never hold
 the video at the same time. The window can be dragged out of the way, tapped to
 reopen the full player (at whatever the session is now playing, so a queue that
 advanced while it was up reopens the right clip), or closed, which pauses and
-dismisses it. It is offered only when there is a local picture that is actually
-playing: a cast is drawn by the TV, audio-only has no picture, and a paused,
-finished or still-loading video has nothing to dock; those cases leave the
-player as before. Swiping home instead still hands the video to the system
-picture-in-picture window.
+dismisses it. It is offered only when there is playback on *this* phone that is
+actually running: a cast is drawn by the TV and would leave an empty box, and a
+paused, finished or still-loading video has nothing to dock; those cases leave
+the player as before. Audio-only playback floats too and the window shows the
+same black card the full player does. Swiping home instead still hands the video
+to the system picture-in-picture window.
+
+**Audio-only rendering.** With **Audio only** on, the `MediaItem` is built from
+the audio rendition, but a muxed fallback track can still carry a frame, so the
+player also hides its video surface and stands a black card reading "Audio only
+mode" where the picture was. The label carries no pointer input, so Media3's own
+controls stay usable over it, and it is drawn before the picture-in-picture
+early-return so the system window shows the same card. The in-app mini-player
+draws the same card from the shared preference.
 
 **Hold to 2×.** Pressing and holding the video surface (or a Short) switches to
 2× playback; releasing restores the previous speed. In the normal player this
@@ -412,7 +421,8 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | UI | Hand-written Jetpack Compose, dark and light |
 | Transport | Direct InnerTube over JSON, plus Invidious and Piped |
 | Playback | Progressive, merged A/V, HLS live |
-| Picture-in-picture | Back docks the playing video into a small in-app window over the app while it stays browsable; swiping home uses the system window |
+| Audio only | Hides the video surface and shows a black "Audio only mode" card in the player, the mini-player and the system picture-in-picture window |
+| Picture-in-picture | Back docks the playing video into a small in-app window over the app while it stays browsable, an audio-only video floating the same black card; swiping home uses the system window |
 | Player panel | In-player gear: quality, speed, captions, audio-only, background, audio-only in the background, SponsorBlock, dislikes |
 | Player extras | Read-only dislike count, Share, Subscribe/Subscribed on the channel row, end screen with the next related video |
 | Casting | DLNA/UPnP `MediaRenderer` discovery and playback on the local network, with a remote-control page |
