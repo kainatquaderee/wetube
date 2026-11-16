@@ -688,11 +688,22 @@ class InnerTubeBackend(
         // reading the watch page for it is not free, so that payload is built
         // only once both of the others come back empty.
         var answer: JsonObject? = null
+        // A refusal carries YouTube's own explanation in
+        // `playabilityStatus.reason` — "Sign in to confirm your age", for
+        // instance. Every profile refuses the same video for the same reason,
+        // so the first explanation is kept: the player shows it to the viewer
+        // and the mature-content filter matches on it.
+        var refusal: String? = null
         for (profile in playbackProfileOrder(skipLeading = fallback)) {
-            answer = playerFor(profile, id)
-            if (answer != null) break
+            val attempt = playerFor(profile, id)
+            if (attempt.response != null) {
+                answer = attempt.response
+                break
+            }
+            if (refusal == null) refusal = attempt.refusal
         }
-        val response = answer ?: error("YouTube did not answer the player request.")
+        val response = answer
+            ?: throw IOException(refusal ?: "YouTube did not answer the player request.")
 
         playerMemoId = id
         playerMemoAt = SystemClock.elapsedRealtime()
@@ -701,31 +712,63 @@ class InnerTubeBackend(
     }
 
     /**
-     * One player request for [profile], or `null` when it had nothing playable.
+     * One player request for [profile], and what YouTube answered with.
      *
      * The VR body is built here, so its watch-page read happens only when the
      * order actually reaches VR: a playable IOS or Android response ends the
      * loop before this is called. A failed request is logged with its profile
      * name and treated as a miss, so the next profile still gets a turn.
+     *
+     * A 200 that carries no playable URL is a refusal, and YouTube explains it
+     * in `playabilityStatus.reason` — "Sign in to confirm your age" for an
+     * age-gated video. That sentence is worth keeping: it is what the viewer
+     * should be told instead of a generic failure, and it is the only signal
+     * the mature-content filter has to recognise an age-gated video.
      */
-    private suspend fun playerFor(profile: PlaybackProfile, id: String): JsonObject? {
+    private suspend fun playerFor(
+        profile: PlaybackProfile,
+        id: String,
+    ): PlayerAttempt {
         val (client, body) = when (profile) {
             PlaybackProfile.IOS -> iosClient to playerBody(id)
             PlaybackProfile.ANDROID -> androidClient to playerBody(id)
             PlaybackProfile.VR -> vr to signedPlayerPayload(id)
         }
-        return runCatching { call("player", client, body, withAuth = false) }
+        val answer = runCatching { call("player", client, body, withAuth = false) }
             .onFailure {
                 if (BuildConfig.DEBUG) {
                     android.util.Log.w(
                         "WeTube",
-                        "player (${profile.name.lowercase()}) failed: ${it.javaClass.simpleName}",
+                        "player (${profile.name.lowercase()}) failed: ${it.javaClass.simpleName} ${it.message}",
                     )
                 }
             }
             .getOrNull()
-            ?.takeIf { it.playableUrlCount() > 0 }
+            ?: return PlayerAttempt(response = null, refusal = null)
+        if (answer.playableUrlCount() > 0) return PlayerAttempt(response = answer, refusal = null)
+
+        val playability = answer["playabilityStatus"].obj()
+        val status = playability.str("status")
+        val reason = playability.str("reason")
+        if (BuildConfig.DEBUG) {
+            android.util.Log.w(
+                "WeTube",
+                "player (${profile.name.lowercase()}) refused $id: status=$status reason=$reason",
+            )
+        }
+        return PlayerAttempt(response = null, refusal = reason)
     }
+
+    /**
+     * What one profile answered to a player request.
+     *
+     * At most one field is set: [response] when the payload carries a playable
+     * URL, [refusal] when YouTube offered none and explained why. A refusal can
+     * carry no sentence of its own — an empty `playabilityStatus`, or formats
+     * that are all ciphered — in which case the caller falls back to its own
+     * wording.
+     */
+    private data class PlayerAttempt(val response: JsonObject?, val refusal: String?)
 
     /** The minimal player body: one video id and the two content flags. */
     private fun playerBody(id: String): JsonObject = buildJsonObject {
