@@ -80,6 +80,9 @@ class InnerTubeBackend(
             display = displayName,
             transport = SyncTransport { path, extra -> postForSync(path, extra) },
             json = http.json,
+            // The one line per read that says whether a `2xx` was an account
+            // with nothing in it or a body [InnerTubeSync] could not read.
+            log = { if (BuildConfig.DEBUG) android.util.Log.d("WeTube", it) },
         )
     }
 
@@ -374,10 +377,25 @@ class InnerTubeBackend(
             if (session.isNotEmpty()) put("X-Youtube-Bootstrap-Logged-In", "true")
         }
         val (code, body) = http.postJsonRaw("$endpoint/$path?prettyPrint=false", payload, headers)
+        if (BuildConfig.DEBUG) logSyncReply(path, code, extra, body)
         SyncReply.Http(code, body)
     } catch (e: IOException) {
         val reason = e.message?.takeIf { it.isNotBlank() } ?: e::class.simpleName ?: "network error"
         SyncReply.Unreachable(reason)
+    }
+
+    /**
+     * Debug-only trace of one sync request and its answer.
+     *
+     * A sync call is the one place a non-2xx is *data* rather than a thrown
+     * exception: it becomes a sync status, so without this line a failed sync
+     * names no endpoint at all in the log. The body is appended only for a
+     * non-2xx, because that is where the server states its reason for refusing;
+     * it is truncated, and this never runs in a release build.
+     */
+    private fun logSyncReply(path: String, code: Int, extra: JsonObject, body: String) {
+        val reason = if (code in 200..299) "" else " ${body.take(200)}"
+        android.util.Log.d("WeTube", "sync $path ${extra.brief()} -> $code$reason")
     }
 
     // ---- TubeBackend ----------------------------------------------------
@@ -1372,6 +1390,20 @@ class InnerTubeBackend(
 // ---- small JSON helpers -------------------------------------------------
 
 internal fun JsonElement?.obj(): JsonObject? = this as? JsonObject
+
+/**
+ * Names a request's parameters in one debug log line.
+ *
+ * Every InnerTube call shares a host, so a log can only tell a request apart by
+ * the parameters that identify it (`browseId`, `playlistId`, `continuation`,
+ * ...). Long values — a continuation token, an id array — are truncated: the
+ * line has to name the call, not reproduce the payload.
+ */
+internal fun JsonObject.brief(): String =
+    entries.joinToString(" ") { (key, value) ->
+        val text = (value as? JsonPrimitive)?.contentOrNull ?: value.toString()
+        "$key=${text.take(40)}"
+    }.take(200)
 
 internal fun JsonObject?.str(key: String): String? = this?.get(key).text()
 

@@ -21,7 +21,14 @@ object HttpLog {
             private fun ms() = System.currentTimeMillis() - start
 
             private fun line(phase: String, detail: String = "") {
-                Log.d(TAG, "+${ms()}ms ${call.request().method} ${call.request().url.host} $phase $detail".trim())
+                // The path is what tells two calls apart: every InnerTube request
+                // shares one host. The query string is deliberately left out, as
+                // it can carry the API key.
+                val path = call.request().url.encodedPath
+                Log.d(
+                    TAG,
+                    "+${ms()}ms ${call.request().method} ${call.request().url.host}$path $phase $detail".trim(),
+                )
             }
 
             override fun callStart(call: Call) = line("start")
