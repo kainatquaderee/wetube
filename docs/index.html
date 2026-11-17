@@ -64,7 +64,7 @@
         <div class="hero-copy">
           <a class="pill reveal" href="https://github.com/kainatquaderee/wetube/releases/latest">
             <span class="pill-dot"></span>
-            <span>Now at 0.3.10 &middot; MIT licensed</span>
+            <span>Now at 0.3.11 &middot; MIT licensed</span>
             <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </a>
 
@@ -227,6 +227,33 @@
             <p>History, favourites, resume points and subscriptions live on the device. Back up everything to a single JSON file you choose where to put; sync is optional, off by default and pull-first.</p>
             <div class="tags"><span class="tag">Local-first</span><span class="tag">JSON backup</span><span class="tag">Optional sync</span></div>
           </article>
+
+          <article class="card reveal">
+            <div class="ic-tile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+            </div>
+            <h3>Search that actually narrows</h3>
+            <p>The three-dot menu on the search screen holds the filters: type, duration, upload date and sort order, plus 4K, HD, subtitles and live toggles. Apply keeps the query you typed and runs it again with them on; a chip over the results counts what is active and clears it in one tap.</p>
+            <div class="tags"><span class="tag">Filters</span><span class="tag">4K / HD</span><span class="tag">Subtitles</span><span class="tag">Live</span></div>
+          </article>
+
+          <article class="card reveal" style="--d:.04s">
+            <div class="ic-tile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h3l4-3v12l-4-3H4z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/></svg>
+            </div>
+            <h3>Every dub, your pick</h3>
+            <p>The player&rsquo;s Audio row lists the languages the video really carries, one row each. Playback starts on the track that matches the phone&rsquo;s language, a track this phone cannot decode is never offered, and your pick holds when you change quality.</p>
+            <div class="tags"><span class="tag">Audio tracks</span><span class="tag">Device language</span><span class="tag">Quality change</span></div>
+          </article>
+
+          <article class="card reveal" style="--d:.08s">
+            <div class="ic-tile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>
+            </div>
+            <h3>One library per account</h3>
+            <p>History, favourites and playlists belong to the account that is signed in, so signing in as someone else shows their library rather than a merge of both. A library from an older version is taken over once, by the first account that signs in, and a clip favourited while signed out joins the account that signs in later. Subscriptions and resume points stay one list for the device.</p>
+            <div class="tags"><span class="tag">Per account</span><span class="tag">Taken over once</span><span class="tag">No merge</span></div>
+          </article>
         </div>
       </div>
     </section>
@@ -283,11 +310,15 @@
               </div>
               <div class="feature-row">
                 <span class="n">04</span>
-                <div><h3>A window that keeps watching</h3><p>Back docks the video into a mini-player over the feed; swipe home for the system picture-in-picture window. Drag it aside, tap to reopen, close to stop.</p></div>
+                <div><h3>A window that keeps watching</h3><p>Back docks the video into a mini-player over the feed, and so does Settings, the channel or the queue opened from the player: the picture is always one tap away. Swipe home for the system picture-in-picture window (Android 12 and up). Drag it aside, tap to reopen, close to pause.</p></div>
               </div>
               <div class="feature-row">
                 <span class="n">05</span>
                 <div><h3>Quiet about the noise</h3><p>SponsorBlock auto-skip for sponsor, self-promo and interaction segments, and Return YouTube Dislike counts — both optional.</p></div>
+              </div>
+              <div class="feature-row">
+                <span class="n">06</span>
+                <div><h3>The language you hear it in</h3><p>The More menu&rsquo;s Audio row lists the dubs this video actually carries and plays the one matching the phone&rsquo;s language. A track the phone cannot decode is not offered at all, and the pick travels through a quality change.</p></div>
               </div>
             </div>
           </div>
@@ -314,7 +345,7 @@
             </div>
 
             <div class="receipt" aria-label="Privacy summary">
-<div class="row"><span>privacy.manifest</span><span>v0.3.10</span></div>
+<div class="row"><span>privacy.manifest</span><span>v0.3.11</span></div>
 <hr>
 <div class="row"><span>ads</span><span class="ok">none</span></div>
 <div class="row"><span>trackers</span><span class="ok">none</span></div>
@@ -338,7 +369,7 @@
           <div class="reveal">
             <span class="eyebrow">Install</span>
             <h2>Up and running in a minute.</h2>
-            <p class="lede">Grab the signed APK from the latest release. No Play Store, no account, no sign-up screens.</p>
+            <p class="lede">Grab the signed APK for your phone from the latest release. No Play Store, no account, no sign-up screens.</p>
 
             <div class="steps">
               <div class="step">
@@ -371,11 +402,16 @@
                 <span class="code-title">terminal</span>
                 <button class="copy" type="button" data-copy="#installCmd" aria-label="Copy install command">Copy</button>
               </div>
-              <pre class="code"><code id="installCmd" data-copy-text="adb install -r app-release.apk"><span class="prompt">$</span> adb install -r app-release.apk</code></pre>
+              <pre class="code"><code id="installCmd" data-copy-text="adb install -r app-arm64-v8a-release.apk"><span class="prompt">$</span> adb install -r app-arm64-v8a-release.apk</code></pre>
               <div class="code-foot">
                 <span>JDK 17+ &middot; Android SDK 35</span>
                 <span>Android 8.0+</span>
               </div>
+            </div>
+
+            <div class="note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+              <span>Four APKs ship, split by CPU: <code>app-arm64-v8a-release.apk</code> (171 MB, nearly every phone), <code>app-armeabi-v7a-release.apk</code> (138 MB, older 32-bit ARM), <code>app-x86_64-release.apk</code> (190 MB, 64-bit x86) and <code>app-universal-release.apk</code> (464 MB, the fallback that installs anywhere).</span>
             </div>
 
             <div class="note">
@@ -525,7 +561,7 @@
           </details>
           <details class="reveal" style="--d:.04s">
             <summary>Do I need a Google account?</summary>
-            <div class="a">No. The app works without signing in. An account is optional and only adds your own feed and the channels you follow on YouTube.</div>
+            <div class="a">No. The app works without signing in. An account is optional: signed in, Home is your own front page, comments post as you, the account&rsquo;s playlists can be mirrored into Library, and — with mature content allowed — an age-restricted video opens in the embedded browser. Syncing subscriptions and favourites to the account is a separate switch, off by default.</div>
           </details>
           <details class="reveal" style="--d:.08s">
             <summary>Is it on the Play Store?</summary>
@@ -541,11 +577,19 @@
           </details>
           <details class="reveal" style="--d:.2s">
             <summary>Is it affiliated with YouTube or Google?</summary>
-            <div class="a">No. WeTube is an independent, clean-room client. It is not affiliated with, endorsed by, or connected to YouTube or Google.</div>
+            <div class="a">No. WeTube is an independent client. It is not affiliated with, endorsed by, or connected to YouTube or Google.</div>
           </details>
           <details class="reveal" style="--d:.24s">
             <summary>How do I keep it up to date?</summary>
             <div class="a">Install once and let <a href="https://github.com/ImranR98/Obtainium">Obtainium</a> follow this repository&rsquo;s releases for you — each new build appears with a tap. You can always re-download the APK from the latest release by hand instead.</div>
+          </details>
+          <details class="reveal" style="--d:.28s">
+            <summary>What do the search filters do to my query?</summary>
+            <div class="a">Nothing to the words. They narrow the same search: Apply runs the query again with your type, duration, upload date, sort order and any of 4K, HD, subtitles or live, and the chip over the results drops them all in one tap. Only the InnerTube backend can apply them, and the sheet says so on the others.</div>
+          </details>
+          <details class="reveal" style="--d:.32s">
+            <summary>Why does a video offer several audio tracks?</summary>
+            <div class="a">Because each dub is its own audio stream, and a video can carry as many as it has languages. The player lists the tracks the video really has, starts on the one matching your phone&rsquo;s language, hides anything this phone cannot decode, and keeps your choice when you change quality.</div>
           </details>
         </div>
       </div>
