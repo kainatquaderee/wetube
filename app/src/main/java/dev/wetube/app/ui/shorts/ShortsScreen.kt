@@ -45,6 +45,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +70,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import dev.wetube.app.core.isValidVideoId
 import dev.wetube.app.data.model.CommentThreadInfo
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
@@ -100,6 +102,18 @@ data class ShortsUiState(
     val detail: VideoDetail? = null,
     val dislikes: Long? = null,
     val error: String? = null,
+    /**
+     * Page the pager should open on. Set when a clip is opened from somewhere
+     * else (a Shorts shelf in Home) so the section starts on that clip instead
+     * of on the reel's first.
+     */
+    val startIndex: Int = 0,
+    /**
+     * Bumped by every external start request. A counter rather than the id,
+     * because the same clip can be requested twice and the page alone cannot
+     * tell the two apart.
+     */
+    val startRequest: Int = 0,
 )
 
 /**
@@ -160,6 +174,51 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
                 }
                 .onFailure { state = state.copy(loading = false, error = friendlyError(it)) }
         }
+    }
+
+    /**
+     * Opens the section on one specific clip.
+     *
+     * The clip comes from a Shorts shelf in Home, which is not necessarily part
+     * of the reel feed: the shelf is the account's, the reel is recommended. A
+     * clip that is already in the feed is simply jumped to; one that is not is
+     * placed at the front as a bare card, which the Shorts page fills in from the
+     * player response once it starts, exactly as it does for its own shelf cards.
+     */
+    fun start(videoId: String) {
+        if (!isValidVideoId(videoId)) return
+        val existing = state.videos.indexOfFirst { it.id == videoId }
+        // A requested clip is a new page, so the "already playing" short-circuit
+        // in [play] must not keep whatever was loaded before it.
+        playing = -1
+        if (existing >= 0) {
+            state = state.copy(
+                startIndex = existing,
+                startRequest = state.startRequest + 1,
+                error = null,
+            )
+            play(existing)
+            return
+        }
+        val card = VideoItem(
+            id = videoId,
+            title = "",
+            channelName = "",
+            channelId = "",
+            thumbnail = "https://i.ytimg.com/vi/$videoId/frame0.jpg",
+            durationSeconds = 0,
+            views = 0,
+            publishedText = "",
+            live = false,
+        )
+        state = state.copy(
+            loading = false,
+            videos = listOf(card) + state.videos,
+            startIndex = 0,
+            startRequest = state.startRequest + 1,
+            error = null,
+        )
+        play(0)
     }
 
     /**
@@ -287,9 +346,20 @@ fun ShortsScreen(
     locator: ServiceLocator,
     onOpenChannel: (String) -> Unit,
     modifier: Modifier = Modifier,
+    startVideoId: String? = null,
+    onStartConsumed: () -> Unit = {},
 ) {
     val viewModel: ShortsViewModel = viewModel(factory = ShortsViewModel.factory(locator))
     val state = viewModel.state
+
+    // A clip opened from a Shorts shelf arrives as a one-shot request. The
+    // caller clears it once it is consumed, so a recomposition cannot replay it.
+    val consumeStart = rememberUpdatedState(onStartConsumed)
+    LaunchedEffect(startVideoId) {
+        val id = startVideoId ?: return@LaunchedEffect
+        viewModel.start(id)
+        consumeStart.value()
+    }
     val controller by locator.playback.controller.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -336,7 +406,18 @@ fun ShortsScreen(
         }
 
         else -> {
-            val pager = rememberPagerState(pageCount = { state.videos.size })
+            val pager = rememberPagerState(
+                // Opening on a shelf clip must not flash the reel's first page.
+                initialPage = state.startIndex.coerceIn(0, state.videos.lastIndex),
+                pageCount = { state.videos.size },
+            )
+
+            // A later request (a second shelf clip) only changes the index, so
+            // the pager is moved rather than recreated.
+            LaunchedEffect(state.startRequest) {
+                val target = state.startIndex.coerceIn(0, state.videos.lastIndex)
+                if (pager.currentPage != target) pager.scrollToPage(target)
+            }
 
             // settledPage, not currentPage: starting a clip halfway through a
             // swipe would briefly play a video the viewer cannot see yet.

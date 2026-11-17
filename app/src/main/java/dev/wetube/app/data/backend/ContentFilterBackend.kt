@@ -5,6 +5,8 @@ import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.FeedPage
+import dev.wetube.app.data.model.HomeBlock
+import dev.wetube.app.data.model.HomePage
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
@@ -55,6 +57,32 @@ class ContentFilterBackend(
     override suspend fun trendingPage(region: String, nextPage: String?): FeedPage {
         val page = delegate.trendingPage(region, nextPage)
         return FeedPage(videos = visible(page.videos), nextPage = page.nextPage)
+    }
+
+    /**
+     * The chip bar and the shelves are forwarded untouched: neither is content,
+     * and filtering a chip out would leave the viewer on a chip that is no
+     * longer in the bar. Only the items are filtered, in one pass, so a page
+     * costs one [visible] call rather than one per block.
+     */
+    override suspend fun homeFeed(region: String, nextPage: String?, chip: String?): HomePage {
+        val page = delegate.homeFeed(region, nextPage, chip)
+        val kept = visible(page.videos).mapTo(HashSet()) { it.id }
+        return page.copy(
+            blocks = page.blocks.mapNotNull { block ->
+                when (block) {
+                    is HomeBlock.Video -> block.takeIf { block.video.id in kept }
+                    is HomeBlock.Shelf -> {
+                        val items = block.shelf.items.filter { it.id in kept }
+                        if (items.isEmpty()) {
+                            null
+                        } else {
+                            HomeBlock.Shelf(block.shelf.copy(items = items))
+                        }
+                    }
+                }
+            },
+        )
     }
 
     override suspend fun search(query: String, nextPage: String?): SearchResult {

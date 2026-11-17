@@ -142,3 +142,62 @@ data class FeedPage(
     val videos: List<VideoItem>,
     val nextPage: String? = null,
 )
+
+/**
+ * One entry in Home's chip bar.
+ *
+ * [token] is the opaque request that selects this chip, minted by the backend
+ * that produced the bar; `null` means "the feed's own first page", which is how
+ * the already-selected chip ("All") arrives. [selected] marks the one chip the
+ * current feed belongs to, so the UI never has to guess from the title.
+ */
+data class FeedChip(
+    val title: String,
+    val token: String? = null,
+    val selected: Boolean = false,
+)
+
+/**
+ * A shelf inside the feed: one titled horizontal row.
+ *
+ * [isShorts] is carried by the shelf itself (YouTube marks the Shorts shelf with
+ * its brand icon), not guessed from [title], because the title is localised and
+ * viewers can rename nothing but see every language.
+ */
+data class FeedShelf(
+    val title: String,
+    val items: List<VideoItem>,
+    val isShorts: Boolean = false,
+)
+
+/** One element of the front page, in the order the feed returned it. */
+sealed interface HomeBlock {
+    data class Video(val video: VideoItem) : HomeBlock
+
+    data class Shelf(val shelf: FeedShelf) : HomeBlock
+
+    /** Every video this block shows; a shelf contributes all of its cards. */
+    val videos: List<VideoItem>
+        get() = when (this) {
+            is Video -> listOf(video)
+            is Shelf -> shelf.items
+        }
+}
+
+/**
+ * One page of Home: the chip bar, the ordered blocks, and the next-page token.
+ *
+ * The blocks are kept in feed order rather than flattened into a video list,
+ * because a shelf's position among the videos is part of what the page looks
+ * like: the Shorts shelf sits between two rows of videos and moves as the feed
+ * changes. A transport that has no shelves simply returns [HomeBlock.Video]s.
+ */
+data class HomePage(
+    val blocks: List<HomeBlock> = emptyList(),
+    val chips: List<FeedChip> = emptyList(),
+    val nextPage: String? = null,
+) {
+    /** Every video in the page, shelves included, de-duplicated in feed order. */
+    val videos: List<VideoItem>
+        get() = blocks.flatMap { it.videos }.distinctBy { it.id }
+}

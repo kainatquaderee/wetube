@@ -13,7 +13,11 @@ import dev.wetube.app.data.model.CaptionTrack
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.CommentThreadInfo
+import dev.wetube.app.data.model.FeedChip
 import dev.wetube.app.data.model.FeedPage
+import dev.wetube.app.data.model.FeedShelf
+import dev.wetube.app.data.model.HomeBlock
+import dev.wetube.app.data.model.HomePage
 import dev.wetube.app.data.model.Playback
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.StreamFormat
@@ -402,23 +406,41 @@ class InnerTubeBackend(
 
     override suspend fun trending(region: String): List<VideoItem> = trendingPage(region).videos
 
+    /**
+     * The plain list API over the same feed [homeFeed] serves.
+     *
+     * Callers that only want videos (the flat preview list) get them from the
+     * block-ordered page, so both entry points read one parser and cannot drift
+     * apart.
+     */
     override suspend fun trendingPage(region: String, nextPage: String?): FeedPage {
+        val page = homeFeed(region, nextPage)
+        return FeedPage(videos = page.videos, nextPage = page.nextPage)
+    }
+
+    /**
+     * One page of the front feed, chips and shelves included.
+     *
+     * Three request shapes feed this: a first page (`browseId`), a chip switch and
+     * a next page — and the last two are *the same* request, a `browse` carrying a
+     * `continuation` token. They differ only in what the answer means, so they
+     * differ only here, in which token is passed. The chip only exists on the web
+     * surface, so its token has no profile tag; continuation tokens carry theirs.
+     */
+    override suspend fun homeFeed(region: String, nextPage: String?, chip: String?): HomePage {
         // A continuation must be sent back to the same client that produced it:
         // the token is minted per client profile, and the signed-in personal
         // feed only exists on the web surface. The profile therefore travels
         // inside the token rather than being guessed again later.
         if (nextPage != null) {
-            val resumed = decodeFeedToken(nextPage) ?: return FeedPage(emptyList())
-            val response = call(
-                "browse",
-                resumed.profile,
-                buildJsonObject { put("continuation", resumed.token) },
-            )
-            return FeedPage(
-                videos = response.videos(),
-                nextPage = response.continuationToken()?.let { encodeFeedToken(resumed.profile, it) },
-            )
+            val resumed = decodeFeedToken(nextPage) ?: return HomePage()
+            return continuation(resumed.profile, resumed.token)
         }
+
+        // Switching chips is the same request as a next page; the answer is a
+        // whole new feed rather than an appended page, and it carries no chip bar
+        // of its own, so the caller keeps the bar it already has.
+        if (chip != null) return continuation(web, chip)
 
         // Signed in, the account's own recommendations only exist on the web
         // surface; the native home feed would be the anonymous one. Fall back
@@ -428,23 +450,57 @@ class InnerTubeBackend(
                 call("browse", web, buildJsonObject { put("browseId", "FEwhat_to_watch") })
             }.getOrNull()
             if (personal != null) {
-                val videos = personal.videos()
-                if (videos.isNotEmpty()) {
-                    return FeedPage(
-                        videos = videos,
-                        nextPage = personal.continuationToken()?.let { encodeFeedToken(web, it) },
-                    )
-                }
+                val page = personal.homePage(web)
+                if (page.blocks.isNotEmpty()) return page
             }
         }
         val response = call("browse", vr, buildJsonObject {
             put("browseId", "FEwhat_to_watch")
         })
-        return FeedPage(
-            videos = response.videos(),
-            nextPage = response.continuationToken()?.let { encodeFeedToken(vr, it) },
+        return response.homePage(vr)
+    }
+
+    /** Resumes a feed from an opaque continuation token, on its own client. */
+    private suspend fun continuation(profile: Profile, token: String): HomePage {
+        val response = call("browse", profile, buildJsonObject { put("continuation", token) })
+        return response.homePage(profile)
+    }
+
+    /**
+     * Reads a whole feed answer into a page.
+     *
+     * The chip bar is read wherever the answer has one: a first page carries it
+     * in its header, and a continuation answer carries none — the bar is the
+     * account's, and it stays with the screen rather than with the page.
+     */
+    private fun JsonObject.homePage(profile: Profile): HomePage {
+        val entries = feedEntries(this)
+        return HomePage(
+            // A surface whose renderers this reader does not know (the older
+            // native feeds) still gets its videos, as a flat list.
+            blocks = if (entries.isEmpty()) {
+                videos().map { HomeBlock.Video(it) }
+            } else {
+                feedBlocks(entries) { it.feedCard() }
+            },
+            chips = feedChips(this),
+            nextPage = feedNextToken(entries)?.let { encodeFeedToken(profile, it) },
         )
     }
+
+    /**
+     * The video a card shows, whichever family it belongs to: the web's
+     * `lockupViewModel` / `shortsLockupViewModel`, or the `*VideoRenderer`
+     * objects the native surfaces still send.
+     */
+    private fun JsonObject.feedCard(): VideoItem? =
+        this["lockupViewModel"].obj()?.toLockupItem()
+            ?: this["shortsLockupViewModel"].obj()?.toShortsLockupItem()
+            ?: this["videoRenderer"].obj()?.toVideoItem()
+            ?: this["compactVideoRenderer"].obj()?.toVideoItem()
+            ?: this["videoWithContextRenderer"].obj()?.toVideoItem()
+            ?: this["gridVideoRenderer"].obj()?.toVideoItem()
+            ?: this["reelItemRenderer"].obj()?.toVideoItem()
 
     /** A feed page token, tagged with the client profile that minted it. */
     private fun encodeFeedToken(profile: Profile, token: String): String =
@@ -1387,6 +1443,141 @@ class InnerTubeBackend(
     }
 }
 
+// ---- feed readers -------------------------------------------------------
+//
+// The walkers below turn one `browse` answer into Home's page. They are pure and
+// take the card reader as a parameter, so the order of a page, the split between
+// rows and shelves and the pick of a next-page token can be pinned by a test
+// against a fabricated fixture rather than only against a live account.
+
+/**
+ * The ordered entries of a feed answer.
+ *
+ * A first page lists them in `richGridRenderer.contents`. Both continuation
+ * answers instead wrap them in `onResponseReceivedActions[0]`: a chip switch
+ * under `reloadContinuationItemsCommand` (it replaces the page) and a next page
+ * under `appendContinuationItemsAction` (it adds to it). Either way it is one
+ * `continuationItems` list of the same entries, so one reader serves all three.
+ */
+internal fun feedEntries(body: JsonObject): List<JsonObject> {
+    val fromAction = body.findArray("continuationItems")?.objects().orEmpty()
+    if (fromAction.isNotEmpty()) return fromAction
+    val grid = body.findObject("richGridRenderer") ?: return emptyList()
+    return (grid["contents"] as? JsonArray)?.objects().orEmpty()
+}
+
+/**
+ * The page's entries as blocks, in the order the feed gave them.
+ *
+ * An entry this app cannot show — a Playables card, a statement banner, the
+ * terminator — is skipped rather than left as an empty row, and a video is shown
+ * once even when the page repeats it: a shelf may re-feature a video that also
+ * has its own row, and two list entries with the same key would crash the list.
+ *
+ * [card] reads one entry's card, injected so this ordering is testable without a
+ * transport.
+ */
+internal fun feedBlocks(
+    entries: List<JsonObject>,
+    card: (JsonObject) -> VideoItem?,
+): List<HomeBlock> {
+    val blocks = ArrayList<HomeBlock>(entries.size)
+    val seen = HashSet<String>()
+    for (entry in entries) {
+        val single = feedEntryCard(entry, card)
+        if (single != null) {
+            if (seen.add(single.id)) blocks += HomeBlock.Video(single)
+            continue
+        }
+        val shelf = feedShelf(entry, card) ?: continue
+        val items = shelf.items.filter { seen.add(it.id) }
+        if (items.isNotEmpty()) blocks += HomeBlock.Shelf(shelf.copy(items = items))
+    }
+    return blocks
+}
+
+/**
+ * The single card an entry shows, or `null` when the entry is a video row at all.
+ *
+ * A row of the feed (`richItemRenderer`), a card inside a section (YouTube's
+ * `brandVideoSingletonRenderer`), or a bare card on surfaces that do not wrap
+ * their entries.
+ */
+internal fun feedEntryCard(entry: JsonObject, card: (JsonObject) -> VideoItem?): VideoItem? {
+    val section = entry["richSectionRenderer"].obj()?.get("content") as? JsonObject
+        ?: return (entry["richItemRenderer"].obj()?.get("content") as? JsonObject)?.let(card)
+            ?: card(entry)
+    return card(section)
+        ?: section["brandVideoSingletonRenderer"].obj()?.get("content").obj()?.let(card)
+}
+
+/**
+ * A titled row of cards, or `null` when the entry is not a shelf.
+ *
+ * [FeedShelf.isShorts] is decided by the brand icon YouTube puts on the shelf,
+ * never by the title: titles are localised, so the same shelf reads "Shorts" in
+ * one language and something else in the next.
+ */
+internal fun feedShelf(entry: JsonObject, card: (JsonObject) -> VideoItem?): FeedShelf? {
+    val renderer = (entry["richSectionRenderer"].obj()?.get("content") as? JsonObject)
+        ?.get("richShelfRenderer").obj()
+        ?: entry["richShelfRenderer"].obj()
+        ?: return null
+    val contents = renderer["contents"] as? JsonArray ?: return null
+    val items = contents.objects()
+        .mapNotNull { item ->
+            (item["richItemRenderer"].obj()?.get("content") as? JsonObject)?.let(card)
+                ?: card(item)
+        }
+        .distinctBy { it.id }
+    if (items.isEmpty()) return null
+    return FeedShelf(
+        title = renderer["title"].text().orEmpty(),
+        items = items,
+        isShorts = renderer["icon"].obj()?.str("iconType")?.startsWith("YOUTUBE_SHORTS") == true,
+    )
+}
+
+/**
+ * The account's chip bar, in the order the server sent it.
+ *
+ * Every chip but the selected one carries the continuation token that asks for
+ * its feed; the selected chip carries none, because its feed is the one already
+ * on screen. An empty result means this surface has no bar at all, and Home shows
+ * the feed without one rather than inventing chips.
+ */
+internal fun feedChips(body: JsonObject): List<FeedChip> {
+    val bar = body.findObject("feedFilterChipBarRenderer") ?: return emptyList()
+    return (bar["contents"] as? JsonArray).objects().mapNotNull { entry ->
+        val chip = entry["chipCloudChipRenderer"].obj() ?: return@mapNotNull null
+        val title = chip["text"].text()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        FeedChip(
+            title = title,
+            token = chip["navigationEndpoint"].obj()
+                ?.get("continuationCommand").obj()
+                ?.str("token")
+                ?.takeIf { it.isNotBlank() },
+            selected = chip.str("isSelected") == "true",
+        )
+    }
+}
+
+/**
+ * The token that asks for what comes after these entries.
+ *
+ * Only the terminator entry is read — YouTube's `continuationItemRenderer`, which
+ * is how "there is more below" is expressed. The page is full of other
+ * continuation commands (every chip of the bar carries one), and resuming from
+ * one of those would replace the feed instead of continuing it. The entries are
+ * searched from the end, because the terminator is the last one.
+ */
+internal fun feedNextToken(entries: List<JsonObject>): String? =
+    entries.asReversed().firstNotNullOfOrNull { entry ->
+        entry["continuationItemRenderer"].obj()
+            ?.findAll("continuationCommand").orEmpty()
+            .firstOrNull()?.str("token")?.takeIf { it.isNotBlank() }
+    }
+
 // ---- small JSON helpers -------------------------------------------------
 
 internal fun JsonElement?.obj(): JsonObject? = this as? JsonObject
@@ -1452,6 +1643,52 @@ internal fun JsonObject.findAll(key: String): List<JsonObject> {
                 (element[key] as? JsonObject)?.let(found::add)
                 element.values.forEach(::walk)
             }
+            is JsonArray -> element.forEach(::walk)
+            else -> Unit
+        }
+    }
+    walk(this)
+    return found
+}
+
+/**
+ * The first object stored under [key], anywhere in the tree.
+ *
+ * Used where a response carries exactly one of something — a feed's chip bar, its
+ * grid — so the reader does not have to pin down the wrapping path, which is not
+ * the same on every surface.
+ */
+internal fun JsonObject.findObject(key: String): JsonObject? {
+    var found: JsonObject? = null
+    fun walk(element: JsonElement) {
+        if (found != null) return
+        when (element) {
+            is JsonObject -> element.forEach { (k, v) ->
+                if (found != null) return@forEach
+                if (k == key) found = v as? JsonObject ?: return@forEach
+                walk(v)
+            }
+
+            is JsonArray -> element.forEach(::walk)
+            else -> Unit
+        }
+    }
+    walk(this)
+    return found
+}
+
+/** The first array stored under [key], anywhere in the tree. */
+internal fun JsonObject.findArray(key: String): JsonArray? {
+    var found: JsonArray? = null
+    fun walk(element: JsonElement) {
+        if (found != null) return
+        when (element) {
+            is JsonObject -> element.forEach { (k, v) ->
+                if (found != null) return@forEach
+                if (k == key) found = v as? JsonArray ?: return@forEach
+                walk(v)
+            }
+
             is JsonArray -> element.forEach(::walk)
             else -> Unit
         }

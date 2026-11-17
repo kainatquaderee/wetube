@@ -244,8 +244,9 @@ fun CompactVideoRow(video: VideoItem, onClick: () -> Unit, modifier: Modifier = 
     }
 }
 
+/** Length / liveness pill drawn over a thumbnail; shared by every card shape. */
 @Composable
-private fun Badge(text: String, background: Color, alignment: Alignment = Alignment.BottomEnd) {
+internal fun Badge(text: String, background: Color, alignment: Alignment = Alignment.BottomEnd) {
     Box(
         modifier = Modifier
             .fillMaxSize()

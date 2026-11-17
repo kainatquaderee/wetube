@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Subscriptions
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -44,6 +45,7 @@ import dev.wetube.app.ui.auth.SignInScreen
 import dev.wetube.app.ui.channel.ChannelScreen
 import dev.wetube.app.ui.credits.CreditsScreen
 import dev.wetube.app.ui.home.HomeScreen
+import dev.wetube.app.ui.home.SubsScreen
 import dev.wetube.app.ui.library.LibraryScreen
 import dev.wetube.app.ui.library.PlaylistDetailScreen
 import dev.wetube.app.ui.library.QueueScreen
@@ -59,6 +61,9 @@ private data class Tab(val route: String, val label: String, val icon: ImageVect
 private val tabs = listOf(
     Tab("home", "Home", Icons.Default.Home),
     Tab("shorts", "Shorts", Icons.Default.PlayCircle),
+    // The aggregated uploads feed is its own tab, exactly like the real app:
+    // Home is the recommended chip feed, subscriptions are a separate surface.
+    Tab("subs", "Subs", Icons.Default.Subscriptions),
     Tab("search", "Search", Icons.Default.Search),
     Tab("library", "Library", Icons.Default.VideoLibrary),
     Tab("settings", "Settings", Icons.Default.Settings),
@@ -84,6 +89,8 @@ fun WeTubeRoot(
     // the video at the same time.
     val controller by locator.playback.controller.collectAsStateWithLifecycle()
     var miniVideoId by remember { mutableStateOf<String?>(null) }
+    // A clip tapped in Home's Shorts shelf, delivered to the Shorts section once.
+    var shortsStart by remember { mutableStateOf<String?>(null) }
     val showMini = miniVideoId != null &&
         !inPictureInPicture &&
         currentRoute?.startsWith("watch") != true
@@ -146,12 +153,29 @@ fun WeTubeRoot(
                         locator = locator,
                         onVideoClick = { id -> navController.navigate("watch/$id") },
                         onChannelClick = { id -> navController.navigate("channel/$id") },
+                        // A clip in Home's Shorts shelf opens the Shorts section
+                        // on that clip; the request travels as state, not as a
+                        // route argument, so the tab keeps its plain route and
+                        // the bottom bar stays selected.
+                        onShortsClick = { id ->
+                            shortsStart = id
+                            navController.navigate("shorts") { launchSingleTop = true }
+                        },
                     )
                 }
                 composable("shorts") {
                     ShortsScreen(
                         locator = locator,
                         onOpenChannel = { id -> navController.navigate("channel/$id") },
+                        startVideoId = shortsStart,
+                        onStartConsumed = { shortsStart = null },
+                    )
+                }
+                composable("subs") {
+                    SubsScreen(
+                        locator = locator,
+                        onVideoClick = { id -> navController.navigate("watch/$id") },
+                        onChannelClick = { id -> navController.navigate("channel/$id") },
                     )
                 }
                 composable("search") {

@@ -4,6 +4,8 @@ import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.FeedPage
+import dev.wetube.app.data.model.HomeBlock
+import dev.wetube.app.data.model.HomePage
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
@@ -33,6 +35,30 @@ interface TubeBackend {
      */
     suspend fun trendingPage(region: String, nextPage: String? = null): FeedPage =
         FeedPage(trending(region))
+
+    /**
+     * One page of Home, in the shape the page is actually laid out in: a chip
+     * bar, an ordered run of videos and shelves, and the token for the next
+     * page.
+     *
+     * [chip] selects one entry of the bar — the token a previous [HomePage]
+     * handed out — and `null` means the feed's own first page. A transport
+     * without a chip bar ignores [chip] and answers with no chips, which is
+     * exactly how Home then renders: no bar at all.
+     *
+     * The default follows [trendingPage], so a backend that only knows how to
+     * produce a flat list still fills Home; it just shows no chips or shelves.
+     */
+    suspend fun homeFeed(
+        region: String,
+        nextPage: String? = null,
+        chip: String? = null,
+    ): HomePage = trendingPage(region, nextPage).let { page ->
+        HomePage(
+            blocks = page.videos.map { HomeBlock.Video(it) },
+            nextPage = page.nextPage,
+        )
+    }
 
     suspend fun search(query: String, nextPage: String? = null): SearchResult
 
