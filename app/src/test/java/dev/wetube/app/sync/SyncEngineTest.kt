@@ -160,6 +160,12 @@ class SyncEngineTest {
         metadata.saveState(AccountSyncState(key, favouritesPlaylistId = playlistId))
     }
 
+    /** How many times one playlist's membership was asked for. */
+    private fun pulls(playlistId: String): Int =
+        backend.calls.count {
+            it.method == FakeSyncBackend.M_PULL_PLAYLIST && it.args.firstOrNull() == playlistId
+        }
+
     // ----- Disabled ---------------------------------------------------------
 
     @Test
@@ -324,6 +330,105 @@ class SyncEngineTest {
         // A fresh private playlist is created instead of adding into PLx.
         assertEquals(FakeSyncBackend.M_CREATE_PLAYLIST, backend.writes.single().method)
         assertTrue(backend.writes.none { it.args.firstOrNull() == "PLx" })
+    }
+
+    // ----- Mirrors of the account's playlists -------------------------------
+
+    @Test
+    fun `the account's playlists are mirrored into the library`() = runTest {
+        backend.playlistsResult = OpResult.Ok(listOf(RemotePlaylist("PLa", "Road trip", itemCount = 1)))
+        backend.playlistPage = { _, _ ->
+            OpResult.Ok(PlaylistPage(listOf(RemotePlaylistItem("v9", "sv9", title = "Song")), null))
+        }
+        val engine = engine(FakeDeps(syncBackend = backend, done = true))
+
+        assertTrue(engine.syncNow() is SyncStatus.Done)
+
+        val mirror = library.playlists.first().single()
+        assertEquals("PLa", mirror.id)
+        assertEquals("Road trip", mirror.name)
+        assertTrue(mirror.remote)
+        assertEquals(listOf("v9"), mirror.videoIds)
+        assertEquals(1, mirror.remoteCount)
+        // The rows resolve from the metadata cache, so it must have been filled
+        // in the same write.
+        assertEquals("Song", library.videoMeta.first()["v9"]?.title)
+    }
+
+    @Test
+    fun `an unchanged item count skips the membership pull`() = runTest {
+        backend.playlistsResult = OpResult.Ok(listOf(RemotePlaylist("PLa", "Road trip", itemCount = 1)))
+        backend.playlistPage = { _, _ ->
+            OpResult.Ok(PlaylistPage(listOf(RemotePlaylistItem("v9", "sv9")), null))
+        }
+        val engine = engine(FakeDeps(syncBackend = backend, done = true))
+
+        assertTrue(engine.syncNow() is SyncStatus.Done)
+        assertEquals(1, pulls("PLa"))
+
+        // The account still reports one item, so the second sync trusts the
+        // count and does not ask for the membership again.
+        assertTrue(engine.syncNow() is SyncStatus.Done)
+        assertEquals(1, pulls("PLa"))
+    }
+
+    @Test
+    fun `the playlist behind the favourites mirror is not mirrored twice`() = runTest {
+        backend.playlistsResult = OpResult.Ok(
+            listOf(playlist, RemotePlaylist("PLa", "Road trip", itemCount = 0)),
+        )
+        rememberMirror()
+        val engine = engine(FakeDeps(syncBackend = backend, done = true))
+
+        assertTrue(engine.syncNow() is SyncStatus.Done)
+
+        // PLx backs the Favourites tab, which already renders it; only the other
+        // playlist becomes a library mirror.
+        assertEquals(listOf("PLa"), library.playlists.first().map { it.id })
+    }
+
+    @Test
+    fun `a failed membership pull keeps the mirror and does not fail the sync`() = runTest {
+        backend.playlistsResult = OpResult.Ok(listOf(RemotePlaylist("PLa", "Road trip", itemCount = 2)))
+        backend.playlistPage = { _, _ ->
+            OpResult.Ok(
+                PlaylistPage(
+                    listOf(RemotePlaylistItem("v9", "sv9"), RemotePlaylistItem("v8", "sv8")),
+                    null,
+                ),
+            )
+        }
+        val engine = engine(FakeDeps(syncBackend = backend, done = true))
+
+        assertTrue(engine.syncNow() is SyncStatus.Done)
+        assertEquals(listOf("v9", "v8"), library.playlists.first().single().videoIds)
+
+        // The account says the playlist grew, but its membership request fails.
+        // The other playlists are still worth having, so this must not fail the
+        // whole sync (unlike the favourites pull).
+        backend.playlistsResult = OpResult.Ok(listOf(RemotePlaylist("PLa", "Road trip", itemCount = 3)))
+        backend.playlistPage = { _, _ -> OpResult.Retryable("network") }
+        assertTrue(engine.syncNow() is SyncStatus.Done)
+        val kept = library.playlists.first().single()
+        assertEquals(listOf("v9", "v8"), kept.videoIds)
+        assertEquals(2, kept.remoteCount)
+
+        // The count still differs, so the next sync fills the playlist in.
+        backend.playlistPage = { _, _ ->
+            OpResult.Ok(
+                PlaylistPage(
+                    listOf(
+                        RemotePlaylistItem("v9", "sv9"),
+                        RemotePlaylistItem("v8", "sv8"),
+                        RemotePlaylistItem("v7", "sv7"),
+                    ),
+                    null,
+                ),
+            )
+        }
+        assertTrue(engine.syncNow() is SyncStatus.Done)
+        assertEquals(listOf("v9", "v8", "v7"), library.playlists.first().single().videoIds)
+        assertEquals(3, library.playlists.first().single().remoteCount)
     }
 
     @Test

@@ -131,4 +131,16 @@ class PlaylistLogicTest {
         assertEquals("1 video", playlistItemCount(LocalPlaylist("local:1", "P", listOf("a"))))
         assertEquals("2 videos", playlistItemCount(LocalPlaylist("local:1", "P", listOf("a", "b"))))
     }
+
+    @Test
+    fun `playlistItemCount prefers the account's own count for a mirror`() {
+        // Membership is only re-pulled when the count changes, so the stored ids
+        // can be a sync behind and the account's number is the honest one.
+        val mirror = LocalPlaylist("PLa", "P", listOf("a"), remote = true, remoteCount = 12)
+        assertEquals("12 videos", playlistItemCount(mirror))
+
+        // A mirror whose count was not recorded yet still counts what it holds.
+        val fresh = LocalPlaylist("PLb", "P", listOf("a", "b"), remote = true, remoteCount = 0)
+        assertEquals("2 videos", playlistItemCount(fresh))
+    }
 }

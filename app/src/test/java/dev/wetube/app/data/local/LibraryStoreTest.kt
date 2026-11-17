@@ -8,8 +8,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -27,6 +33,11 @@ import java.io.File
  * with no call-site change, and that pull/confirm/fail update it correctly.
  * The real DataStore engine is used so the shared-transaction behaviour is
  * exercised, not a mock.
+ *
+ * It also covers account scoping (history, playlists and the metadata cache
+ * carry the signed-in account's key, everything else stays bare), the one-shot
+ * [LibraryStore.adoptLegacyContent] migration, and the read-only mirrors of the
+ * account's own playlists ([LibraryStore.applyRemotePlaylistPull]).
  */
 class LibraryStoreTest {
 
@@ -63,6 +74,9 @@ class LibraryStoreTest {
     private fun accountKeySource(key: String?) = object : AccountKeySource {
         override suspend fun current(): String? = key
     }
+
+    /** A second store over the same file, standing in for another account. */
+    private fun libraryFor(key: String?) = LibraryStore(dataStore, json, accountKeySource(key))
 
     @Test
     fun `subscribing queues an upsert with a pending op`() = runBlocking {
@@ -315,5 +329,301 @@ class LibraryStoreTest {
         assertEquals(0, added)
         assertTrue(store.subscriptions.first().isEmpty())
         assertTrue(store.syncEntries().isEmpty())
+    }
+
+    // ----- Account scoping --------------------------------------------------
+
+    @Test
+    fun `history is scoped to the signed-in account`() = runBlocking {
+        store.addToHistory(video)
+
+        assertTrue(libraryFor("other-key").history.first().isEmpty())
+        assertEquals(listOf(video.id), store.history.first().map { it.id })
+    }
+
+    @Test
+    fun `playlists and the metadata cache are scoped to the signed-in account`() = runBlocking {
+        store.createPlaylist("Mine")
+        store.cacheVideo(video)
+
+        val other = libraryFor("other-key")
+        assertTrue(other.playlists.first().isEmpty())
+        assertTrue(other.videoMeta.first().isEmpty())
+        assertEquals(listOf("Mine"), store.playlists.first().map { it.name })
+        assertTrue(store.videoMeta.first().containsKey(video.id))
+    }
+
+    @Test
+    fun `clearing history clears only the signed-in account`() = runBlocking {
+        val otherVideo = video.copy(id = "other")
+        val other = libraryFor("other-key")
+        store.addToHistory(video)
+        other.addToHistory(otherVideo)
+
+        store.clearHistory()
+
+        assertTrue(store.history.first().isEmpty())
+        assertEquals(listOf(otherVideo.id), other.history.first().map { it.id })
+    }
+
+    @Test
+    fun `the signed-out bucket and an account never share content`() = runBlocking {
+        val signedOut = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+
+        signedOut.addToHistory(video)
+        signedOut.createPlaylist("Signed out")
+
+        assertEquals(listOf(video.id), signedOut.history.first().map { it.id })
+        assertEquals(listOf("Signed out"), signedOut.playlists.first().map { it.name })
+        assertTrue(store.history.first().isEmpty())
+        assertTrue(store.playlists.first().isEmpty())
+    }
+
+    @Test
+    fun `a library read follows an account switch`() = runBlocking {
+        val keys = MutableStateFlow<String?>("acc-a")
+        val switching = LibraryStore(
+            dataStore,
+            json,
+            object : AccountKeySource {
+                override suspend fun current(): String? = keys.value
+
+                override fun currentKey(): Flow<String?> = keys
+            },
+        )
+        switching.addToHistory(video)
+
+        val seen = mutableListOf<List<String>>()
+        val lists = withTimeout(10_000) {
+            switching.history
+                .onEach { list ->
+                    seen += list.map { it.id }
+                    // Flip the account on the first emission; the *same*
+                    // collection must then read the new scope, which is what a
+                    // switch while the app is running does.
+                    if (seen.size == 1) keys.value = "acc-b"
+                }
+                .take(2)
+                .toList()
+        }
+
+        assertEquals(listOf(video.id), lists[0].map { it.id })
+        assertTrue(lists[1].isEmpty())
+    }
+
+    // ----- Legacy adoption --------------------------------------------------
+
+    @Test
+    fun `adoption copies the legacy content into the signed-in scope`() = runBlocking {
+        val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+        legacy.addToHistory(video)
+        legacy.createPlaylist("Road trip")
+        legacy.cacheVideo(video)
+
+        store.adoptLegacyContent()
+
+        assertEquals(listOf(video.id), store.history.first().map { it.id })
+        assertEquals(listOf("Road trip"), store.playlists.first().map { it.name })
+        assertTrue(store.videoMeta.first().containsKey(video.id))
+        // The legacy records stay as the signed-out bucket, so signing out
+        // still shows the library the user had.
+        assertEquals(listOf(video.id), legacy.history.first().map { it.id })
+        assertEquals(listOf("Road trip"), legacy.playlists.first().map { it.name })
+    }
+
+    @Test
+    fun `adoption runs once, so an account signed in later inherits nothing`() = runBlocking {
+        val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+        legacy.addToHistory(video)
+
+        // The first launch after the upgrade happened signed out: nothing to
+        // copy, but the migration is still spent.
+        legacy.adoptLegacyContent()
+        store.adoptLegacyContent()
+
+        assertTrue(store.history.first().isEmpty())
+        assertEquals(listOf(video.id), legacy.history.first().map { it.id })
+    }
+
+    @Test
+    fun `adoption never overwrites a scope that already has content`() = runBlocking {
+        val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+        val mine = video.copy(id = "mine")
+        legacy.addToHistory(video)
+        store.addToHistory(mine)
+
+        store.adoptLegacyContent()
+
+        assertEquals(listOf(mine.id), store.history.first().map { it.id })
+        assertEquals(listOf(video.id), legacy.history.first().map { it.id })
+    }
+
+    // ----- Mirrors of the account's playlists -------------------------------
+
+    @Test
+    fun `a remote pull lands the mirrors after the local playlists`() = runBlocking {
+        val local = store.createPlaylist("Mine")
+
+        store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(
+                RemotePlaylistMirror("PLa", "A", 1, listOf(video)),
+                RemotePlaylistMirror("PLb", "B", 0, emptyList()),
+            ),
+            at = 7L,
+        )
+
+        val list = store.playlists.first()
+        assertEquals(listOf(local.id, "PLa", "PLb"), list.map { it.id })
+        assertEquals(listOf(false, true, true), list.map { it.remote })
+        val mirror = list.first { it.id == "PLa" }
+        assertEquals(listOf(video.id), mirror.videoIds)
+        assertEquals(1, mirror.remoteCount)
+        assertEquals(7L, mirror.createdAt)
+    }
+
+    @Test
+    fun `a remote pull caches the item metadata in the same write`() = runBlocking {
+        store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(RemotePlaylistMirror("PLa", "A", 1, listOf(video))),
+            at = 1L,
+        )
+
+        // Without this the playlist would render a row per id with no title.
+        assertEquals(listOf(video.id), store.videoMeta.first().keys.toList())
+    }
+
+    @Test
+    fun `an empty mirror list leaves the stored mirrors alone`() = runBlocking {
+        store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(RemotePlaylistMirror("PLa", "A", 1, listOf(video))),
+            at = 1L,
+        )
+
+        val stored = store.applyRemotePlaylistPull("acc-key", emptyList(), at = 2L)
+
+        // The account can answer "no playlists" for a reason that is not "there
+        // are none" (a tab that failed to render), so this must not delete.
+        assertEquals(0, stored)
+        assertEquals(listOf("PLa"), store.playlists.first().map { it.id })
+    }
+
+    @Test
+    fun `a mirror with no items keeps the ids and count it already had`() = runBlocking {
+        store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(RemotePlaylistMirror("PLa", "A", 1, listOf(video))),
+            at = 5L,
+        )
+        val before = store.playlists.first().single()
+
+        // A later sync whose item pull was skipped (the count had not moved, or
+        // the budget ran out) reports the playlist with no items.
+        store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(RemotePlaylistMirror("PLa", "A", 1)),
+            at = 6L,
+        )
+
+        val after = store.playlists.first().single()
+        assertEquals(listOf(video.id), after.videoIds)
+        assertEquals(1, after.remoteCount)
+        // Nothing changed, so the row must not reshuffle on a quiet sync.
+        assertEquals(before.updatedAt, after.updatedAt)
+    }
+
+    @Test
+    fun `a never-pulled mirror stores a zero count so the next sync retries`() = runBlocking {
+        store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(RemotePlaylistMirror("PLa", "A", 4)),
+            at = 5L,
+        )
+
+        val mirror = store.playlists.first().single()
+        assertTrue(mirror.videoIds.isEmpty())
+        // Storing YouTube's 4 would read as "up to date" forever and strand the
+        // playlist empty; 0 means the next sync pulls it again.
+        assertEquals(0, mirror.remoteCount)
+        assertEquals(mapOf("PLa" to 0), store.remotePlaylistCounts("acc-key"))
+    }
+
+    @Test
+    fun `a mirror with a blank or local id is ignored`() = runBlocking {
+        val stored = store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(
+                RemotePlaylistMirror("", "Blank", 1, listOf(video)),
+                // A crafted backup must not be able to overwrite device content.
+                RemotePlaylistMirror("local:fake", "Localish", 1, listOf(video)),
+                RemotePlaylistMirror("PLok", "Ok", 1, listOf(video)),
+            ),
+            at = 1L,
+        )
+
+        assertEquals(1, stored)
+        assertEquals(listOf("PLok"), store.playlists.first().map { it.id })
+    }
+
+    @Test
+    fun `the local playlists win the outer playlist cap`() = runBlocking {
+        store.restore(LibrarySnapshot(playlists = (1..99).map { LocalPlaylist("local:$it", "P$it") }))
+
+        val stored = store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(
+                RemotePlaylistMirror("PLa", "A", 1, listOf(video)),
+                RemotePlaylistMirror("PLb", "B", 1, listOf(video)),
+            ),
+            at = 1L,
+        )
+
+        val list = store.playlists.first()
+        assertEquals(1, stored)
+        assertEquals(100, list.size)
+        assertEquals("local:1", list.first().id)
+        // The dropped mirror is re-pulled by the next sync; a dropped local
+        // playlist would be gone, so locals are kept first.
+        assertEquals("PLa", list.last().id)
+    }
+
+    @Test
+    fun `a mirrored playlist refuses every local write`() = runBlocking {
+        val added = video.copy(id = "added")
+        store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(RemotePlaylistMirror("PLa", "A", 1, listOf(video))),
+            at = 5L,
+        )
+        val before = store.playlists.first().single()
+
+        store.renamePlaylist("PLa", "Renamed")
+        store.addToPlaylist("PLa", added)
+        store.removeFromPlaylist("PLa", video.id)
+        store.moveInPlaylist("PLa", 0, 0)
+        store.setPlaylistVideos("PLa", listOf(added.id))
+        store.deletePlaylist("PLa")
+
+        // Contents and the change stamp are untouched: the next sync would undo
+        // either, and a renamed or deleted mirror would only reappear.
+        assertEquals(before, store.playlists.first().single())
+        assertFalse(store.videoMeta.first().containsKey(added.id))
+    }
+
+    @Test
+    fun `remote playlist counts reports only the mirrors and only for that account`() = runBlocking {
+        store.createPlaylist("Mine")
+        assertTrue(store.remotePlaylistCounts("acc-key").isEmpty())
+
+        store.applyRemotePlaylistPull(
+            "acc-key",
+            listOf(RemotePlaylistMirror("PLa", "A", 2, listOf(video, video.copy(id = "second")))),
+            at = 1L,
+        )
+
+        assertEquals(mapOf("PLa" to 2), store.remotePlaylistCounts("acc-key"))
+        assertTrue(store.remotePlaylistCounts("other-key").isEmpty())
     }
 }
