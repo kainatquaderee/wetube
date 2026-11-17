@@ -83,6 +83,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
@@ -111,6 +112,7 @@ import android.util.Rational
 import android.view.MotionEvent
 import android.view.ViewGroup
 import coil.compose.AsyncImage
+import dev.wetube.app.data.backend.AgeGateException
 import dev.wetube.app.data.download.DownloadState
 import dev.wetube.app.data.download.EnqueueResult
 import dev.wetube.app.data.extras.SponsorSegment
@@ -160,6 +162,19 @@ data class PlayerUiState(
     val loading: Boolean = true,
     val detail: VideoDetail? = null,
     val error: String? = null,
+    /**
+     * The video is playing in YouTube's own web player inside the app instead
+     * of ExoPlayer.
+     *
+     * Set for an age-restricted video opened by a signed-in session: the native
+     * clients refuse those, and YouTube streams them only to a browser that can
+     * speak for the account. The surface shows Firefox's embedded engine and the
+     * ExoPlayer-only chrome — quality, captions, downloads, casting — steps
+     * aside, because there is no local player to drive. The next
+     * [PlayerViewModel.load] clears it, which is also what tears the engine's
+     * session down when the viewer retries.
+     */
+    val webFallback: Boolean = false,
     val dislikes: Long? = null,
     val segments: List<SponsorSegment> = emptyList(),
     val favourite: Boolean = false,
@@ -379,13 +394,17 @@ internal fun rotatedOrientation(current: Int): Int =
  * video's top, and with it the always-visible top bar, ends up above the page
  * edge and under the status bar. Clamping the slice to the page height keeps the
  * box anchored at the top, so the chrome it carries stays inside the safe area.
+ *
+ * [extraHeight] is room the content needs above the picture — the embedded
+ * player's page draws its own top bar there — and is clamped the same way.
  * Pure so the fit is pinned without a device.
  */
 internal fun fittedVideoHeight(
     width: Dp,
     availableHeight: Dp,
     aspectRatio: Float = 16f / 9f,
-): Dp = minOf(width / aspectRatio, availableHeight)
+    extraHeight: Dp = 0.dp,
+): Dp = minOf(width / aspectRatio + extraHeight, availableHeight)
 
 class PlayerViewModel(
     private val locator: ServiceLocator,
@@ -489,7 +508,7 @@ class PlayerViewModel(
         // the previous video's last-saved position.
         lastSaved = 0L
         viewModelScope.launch {
-            state = state.copy(loading = true, error = null)
+            state = state.copy(loading = true, error = null, webFallback = false)
             runCatching {
                 val settings = locator.settings.settings.first()
                 // A finished download is preferred over the network even when
@@ -584,10 +603,41 @@ class PlayerViewModel(
                         "player load failed: ${it::class.java.simpleName} msg=${it.message}",
                     )
                 }
-                state = state.copy(loading = false, error = friendlyError(it))
+                // An age wall is the one refusal with a way out: YouTube plays
+                // the video for a signed-in session, just never for an app
+                // client, so the surface hands it to YouTube's own web player.
+                // Without a session the browser would hit the same wall, and
+                // with mature content switched off the viewer has already said
+                // they do not want this video opened — both keep the message.
+                // While casting, the surface is not this phone's and the cast
+                // sheet lives behind the chrome the fallback hides, so the wall
+                // is reported instead of silently swapping what is on screen.
+                // The gate reads stored state, and a read that fails must not
+                // turn a refusal into a crash on the way to the error message.
+                val web = it is AgeGateException && !locator.output.isRemote &&
+                    runCatching { canUseWebPlayer() }.getOrDefault(false)
+                if (web) locator.playback.pause()
+                state = state.copy(
+                    loading = false,
+                    error = if (web) null else friendlyError(it),
+                    webFallback = web,
+                )
             }
         }
     }
+
+    /**
+     * Whether this app may reopen an age-restricted video in YouTube's own
+     * player.
+     *
+     * Both halves are required. The embedded engine plays for whoever is signed
+     * in inside it, so without a session the app has no account to open the
+     * video with, and the mature-content switch is the viewer's standing answer
+     * about age-restricted videos — a wall discovered after the fact must not
+     * quietly override it.
+     */
+    private suspend fun canUseWebPlayer(): Boolean =
+        locator.auth.headers().isNotEmpty() && locator.settings.settings.first().showMature
 
     /**
      * A minimal [VideoDetail] for a video whose file is already saved.
@@ -1283,6 +1333,16 @@ fun PlayerScreen(
     }
 
     var fullscreen by remember { mutableStateOf(false) }
+
+    // The embedded page sizes its player from the height it is handed: inside
+    // the 16:9 slice it letterboxes the picture into a fraction of the width
+    // rather than filling it, and given the whole screen it fills the width
+    // exactly. The fallback therefore opens full screen; the full-screen button
+    // in the top bar still leaves it, and the page's own chrome comes with it.
+    LaunchedEffect(state.webFallback) {
+        if (state.webFallback) fullscreen = true
+    }
+
     var showCaptionSheet by remember { mutableStateOf(false) }
     var showComments by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -1327,7 +1387,7 @@ fun PlayerScreen(
     // the foreground, so there is no wake lock to leak.
     val playingIntent = rememberPlayingIntent(localController)
     SideEffect {
-        playerView.keepScreenOn = playingIntent && !isRemote && !state.audioOnly
+        playerView.keepScreenOn = playingIntent && !isRemote && !state.audioOnly && !state.webFallback
     }
 
     // Immersive playback: hide the status/navigation bars while fullscreen and
@@ -1567,7 +1627,14 @@ fun PlayerScreen(
         val videoHeight = if (fullscreen || inPictureInPicture) {
             maxHeight
         } else {
-            fittedVideoHeight(maxWidth, maxHeight)
+            fittedVideoHeight(
+                maxWidth,
+                maxHeight,
+                // The embedded page draws YouTube's own top bar above the
+                // picture, so its slot is that much taller; without it the
+                // bottom of the video falls outside the slot.
+                extraHeight = if (state.webFallback) embeddedPageHeaderHeight else 0.dp,
+            )
         }
         Column(modifier = Modifier.fillMaxSize()) {
             // The video surface is composed exactly once. Picture-in-picture only
@@ -1606,8 +1673,19 @@ fun PlayerScreen(
                         onPlayHere = viewModel::playHere,
                         modifier = Modifier.fillMaxSize(),
                     )
+                } else if (state.webFallback) {
+                    // An age-restricted video is not something a native client
+                    // may stream, so YouTube's own page plays it here. Firefox's
+                    // engine owns the picture and its controls from this point:
+                    // the chrome below still offers the way out, the queue and
+                    // the orientation toggle, but nothing that would drive the
+                    // local player.
+                    EmbeddedGeckoPlayer(
+                        videoId = viewModel.currentVideoId,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 } else {
-                    androidx.compose.ui.viewinterop.AndroidView(
+                    AndroidView(
                         factory = { playerView },
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -1617,7 +1695,7 @@ fun PlayerScreen(
                 // The label is drawn before the picture-in-picture early-return so
                 // the system window carries the same card, and it carries no
                 // pointer input, so Media3's own controls stay usable underneath.
-                if (state.audioOnly && !isRemote) {
+                if (state.audioOnly && !isRemote && !state.webFallback) {
                     Text(
                         text = "Audio only mode",
                         color = Color.White.copy(alpha = 0.7f),
@@ -1675,32 +1753,39 @@ fun PlayerScreen(
                             tint = Color.White,
                         )
                     }
-                    IconButton(onClick = { showCastSheet = true }) {
-                        Icon(
-                            imageVector = if (isRemote) {
-                                Icons.Default.CastConnected
-                            } else {
-                                Icons.Default.Cast
-                            },
-                            contentDescription = if (isRemote) {
-                                "Casting — open device controls"
-                            } else {
-                                "Play on a device"
-                            },
-                            // The connected icon is the one piece of state the top
-                            // bar carries; the accent colour makes "casting" visible
-                            // at a glance even before the surface text is read.
-                            tint = if (isRemote) MaterialTheme.colorScheme.primary else Color.White,
-                        )
-                    }
-                    // Media3's own gear lives in a control row it hides in portrait,
-                    // so the player exposes its own always-reachable settings entry.
-                    IconButton(onClick = { showSettings = true }) {
-                        Icon(
-                            Icons.Default.Settings,
-                            contentDescription = "Settings",
-                            tint = Color.White,
-                        )
+                    // Both of these open sheets that read the local player or
+                    // the watch-page detail, and the embedded web player has
+                    // neither: showing them would offer controls that cannot
+                    // work, so the age-gated fallback leaves them out and keeps
+                    // only what still applies — back, queue, rotate, fullscreen.
+                    if (!state.webFallback) {
+                        IconButton(onClick = { showCastSheet = true }) {
+                            Icon(
+                                imageVector = if (isRemote) {
+                                    Icons.Default.CastConnected
+                                } else {
+                                    Icons.Default.Cast
+                                },
+                                contentDescription = if (isRemote) {
+                                    "Casting — open device controls"
+                                } else {
+                                    "Play on a device"
+                                },
+                                // The connected icon is the one piece of state the top
+                                // bar carries; the accent colour makes "casting" visible
+                                // at a glance even before the surface text is read.
+                                tint = if (isRemote) MaterialTheme.colorScheme.primary else Color.White,
+                            )
+                        }
+                        // Media3's own gear lives in a control row it hides in portrait,
+                        // so the player exposes its own always-reachable settings entry.
+                        IconButton(onClick = { showSettings = true }) {
+                            Icon(
+                                Icons.Default.Settings,
+                                contentDescription = "Settings",
+                                tint = Color.White,
+                            )
+                        }
                     }
                     // A manual orientation toggle. It is offered beside the other
                     // top-bar controls so a viewer whose device is locked (or simply
@@ -1727,7 +1812,7 @@ fun PlayerScreen(
                         )
                     }
                 }
-                if (!isRemote && (controller == null || buffering)) {
+                if (!isRemote && !state.webFallback && (controller == null || buffering)) {
                     CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.Center),
                         color = Color.White,
@@ -1744,9 +1829,10 @@ fun PlayerScreen(
                 }
 
                 // Captions are timed against the local player; while casting they
-                // are off by design (the TV renders its own), so the overlay must
-                // not keep following a stale position.
-                if (!isRemote) {
+                // are off by design (the TV renders its own), and the embedded
+                // web player draws its own, so the overlay must not keep
+                // following a position that belongs to something else.
+                if (!isRemote && !state.webFallback) {
                     CaptionOverlay(
                         session = viewModel.captions,
                         positionMs = positionMs,
@@ -1760,7 +1846,7 @@ fun PlayerScreen(
                 // A failed load or a failed re-resolve belongs to the player, not
                 // to the page: keep the title, channel, chips and comments below.
                 val error = state.error
-                if (!isRemote && error != null && state.detail != null) {
+                if (!isRemote && !state.webFallback && error != null && state.detail != null) {
                     PlaybackErrorCard(
                         message = error,
                         onRetry = viewModel::load,
@@ -1774,7 +1860,7 @@ fun PlayerScreen(
                 // started its head, so Up next belongs only to an empty queue. A
                 // cast session reports its own end through the renderer's transport
                 // state, which the remote surface already shows.
-                if (!isRemote && playbackEnded && queuedNext == null && nextVideo != null) {
+                if (!isRemote && !state.webFallback && playbackEnded && queuedNext == null && nextVideo != null) {
                     PlaybackEndedOverlay(
                         video = nextVideo,
                         onPlay = { viewModel.playRelated(nextVideo) },
@@ -1787,6 +1873,11 @@ fun PlayerScreen(
 
             val detail = state.detail
             when {
+                // The embedded page is the picture, and whatever the app knows
+                // about the video comes from a resolve that may belong to the
+                // previous one: the notice about what this surface cannot do is
+                // the honest panel here.
+                state.webFallback -> WebPlayerNotice()
                 detail != null -> PlayerInfo(
                     detail = detail,
                     dislikes = state.dislikes,
@@ -1930,6 +2021,37 @@ private tailrec fun android.content.Context.findActivity(): android.app.Activity
     is android.app.Activity -> this
     is android.content.ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+/**
+ * What fills the page under the embedded player.
+ *
+ * The age wall arrives before the watch-page call does, so there is no title,
+ * channel, description or comment thread to draw — only the honest explanation
+ * of why this video looks different from every other one, and what is missing
+ * while it plays.
+ */
+@Composable
+private fun WebPlayerNotice(modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+    ) {
+        Text(
+            text = "Age-restricted video",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "YouTube plays this one only in its own player, so it runs here instead. " +
+                "Background playback, captions, downloads and casting are not available for " +
+                "this video. If the player asks you to sign in, sign in there once — it keeps " +
+                "its own session.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable

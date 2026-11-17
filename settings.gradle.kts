@@ -17,6 +17,11 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // GeckoView, the engine the age-restricted fallback player runs on, is
+        // published by Mozilla and by nobody else.
+        maven("https://maven.mozilla.org/maven2/") {
+            content { includeGroup("org.mozilla.geckoview") }
+        }
     }
 }
 

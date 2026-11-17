@@ -157,6 +157,13 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
+    // Firefox's engine, embedded for the one case the app cannot stream itself:
+    // an age-restricted video, which YouTube serves only to a browser session.
+    // Pinned to the release whose own dependencies still resolve against
+    // compileSdk 35 (it asks for androidx.core 1.16.0; 1.17.0 and later require
+    // 36, which this toolchain does not support yet).
+    implementation("org.mozilla.geckoview:geckoview:140.0.20250707120347")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")

@@ -34,4 +34,17 @@ class PlayerVideoLayoutTest {
     fun `a page exactly as tall as the slice is left alone`() {
         assertEquals(216.dp, fittedVideoHeight(384.dp, 216.dp))
     }
+
+    @Test
+    fun `the embedded page adds its own top bar to the slice`() {
+        // The site's bar sits above the picture, so the slot grows by it:
+        // 384 * 9 / 16 = 216, plus a 48 dp bar.
+        assertEquals(264.dp, fittedVideoHeight(384.dp, 853.dp, extraHeight = 48.dp))
+    }
+
+    @Test
+    fun `the bar is clamped like the slice on a short page`() {
+        // Landscape: 805 * 9 / 16 + 48 = 500 > 356, so the page height wins.
+        assertEquals(356.dp, fittedVideoHeight(805.dp, 356.dp, extraHeight = 48.dp))
+    }
 }
