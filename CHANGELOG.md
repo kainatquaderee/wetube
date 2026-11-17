@@ -4,7 +4,7 @@ Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
 Security. This release is 0.3.12 (versionCode 32).
 
 
-## 0.3.12 - the engine stops taking the app down with it (2026-11-18)
+## 0.3.12 — the engine stops taking the app down with it (2026-11-18)
 
 Some videos opened the embedded page and the app disappeared: a white pane, then
 the home screen. Nothing landed in the crash log, which is why it took a device
