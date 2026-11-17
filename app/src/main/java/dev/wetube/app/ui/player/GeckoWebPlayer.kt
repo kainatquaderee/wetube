@@ -30,9 +30,13 @@ import org.mozilla.geckoview.GeckoView
  * behaviour this app does not control — so the page runs on an engine that
  * ships inside the APK instead. GeckoView is a complete browser engine: it
  * carries its own network stack, its own cookie store and its own media
- * pipeline, which is exactly why it works where the WebView did not, and
- * exactly why it cannot borrow the app's session — the account has to be
- * signed in here, once, in the engine's own profile.
+ * pipeline, which is exactly why it works where the WebView did not.
+ *
+ * That cookie store is also the one thing the engine will not share: there is
+ * no cookie API on [GeckoRuntime], so the sign-in the app already holds is
+ * handed over by a bundled extension before the page loads ([WebCookieBridge]).
+ * The profile is therefore never the place a session is created — it is only
+ * ever a copy of the account that is selected in Settings.
  *
  * What the app's player adds — background playback, the quality picker,
  * downloads, casting — is unavailable here; the trade is that the video plays
@@ -41,6 +45,7 @@ import org.mozilla.geckoview.GeckoView
 @Composable
 internal fun EmbeddedGeckoPlayer(
     videoId: String,
+    cookies: String,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -81,7 +86,13 @@ internal fun EmbeddedGeckoPlayer(
         }
     }
 
-    LaunchedEffect(session, videoId) {
+    LaunchedEffect(session, videoId, cookies) {
+        // The account selected in Settings is written into the profile before
+        // the page is asked for anything: YouTube answers the watch page as
+        // whoever the cookies say, so arriving first is what keeps the video
+        // from being refused once and reloaded. A round that fails is not fatal
+        // — the page then loads with whatever session the profile already had.
+        WebCookieBridge.seed(sessionCookies(cookies))
         // The watch page, and not an embed of the video.
         //
         // An embed would be the tidier surface — the player alone, no site
@@ -119,7 +130,13 @@ private object GeckoEngine {
             // the only view into what the page did.
             .consoleOutput(BuildConfig.DEBUG)
             .build()
-        return GeckoRuntime.create(context.applicationContext, settings).also { runtime = it }
+        return GeckoRuntime.create(context.applicationContext, settings).also {
+            runtime = it
+            // The app's session lives in this process, not in the engine's
+            // profile, so the route into the cookie store is set up with the
+            // runtime it belongs to (see [WebCookieBridge]).
+            WebCookieBridge.prepare(it)
+        }
     }
 }
 

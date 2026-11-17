@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "WeTube session",
+  "version": "1.0",
+  "description": "Copies the app's YouTube session into this browser profile.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "session@wetube.app"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "permissions": [
+    "cookies",
+    "*://*.youtube.com/*",
+    "nativeMessaging",
+    "geckoViewAddons"
+  ]
+}

@@ -175,6 +175,16 @@ data class PlayerUiState(
      * session down when the viewer retries.
      */
     val webFallback: Boolean = false,
+    /**
+     * The cookie jar of the account the web player is playing as.
+     *
+     * Captured when the fallback opens and kept in step with the account
+     * selected in Settings: the engine's profile is shared by every account, so
+     * a switch has to replace the session on screen rather than add to it. Empty
+     * while [webFallback] is off, and empty is also what signing out sends —
+     * the profile is cleared, never left holding the previous account.
+     */
+    val webCookies: String = "",
     val dislikes: Long? = null,
     val segments: List<SponsorSegment> = emptyList(),
     val favourite: Boolean = false,
@@ -499,6 +509,16 @@ class PlayerViewModel(
 
     init {
         load()
+        // The engine's profile is shared by every account, so a switch in
+        // Settings has to reach the page that is on screen: without this the
+        // web player would keep playing as the account that was just replaced.
+        viewModelScope.launch {
+            locator.auth.account.collect { account ->
+                if (!state.webFallback) return@collect
+                val cookies = account?.cookies.orEmpty()
+                if (cookies != state.webCookies) state = state.copy(webCookies = cookies)
+            }
+        }
     }
 
     fun load() {
@@ -614,30 +634,36 @@ class PlayerViewModel(
                 // is reported instead of silently swapping what is on screen.
                 // The gate reads stored state, and a read that fails must not
                 // turn a refusal into a crash on the way to the error message.
-                val web = it is AgeGateException && !locator.output.isRemote &&
-                    runCatching { canUseWebPlayer() }.getOrDefault(false)
+                val session = (it as? AgeGateException)
+                    ?.takeIf { !locator.output.isRemote }
+                    ?.let { _ -> runCatching { webPlayerSession() }.getOrNull() }
+                val web = session != null
                 if (web) locator.playback.pause()
                 state = state.copy(
                     loading = false,
                     error = if (web) null else friendlyError(it),
                     webFallback = web,
+                    webCookies = session.orEmpty(),
                 )
             }
         }
     }
 
     /**
-     * Whether this app may reopen an age-restricted video in YouTube's own
-     * player.
+     * The cookie jar to reopen an age-restricted video with, or `null` when the
+     * app must keep the refusal.
      *
-     * Both halves are required. The embedded engine plays for whoever is signed
-     * in inside it, so without a session the app has no account to open the
-     * video with, and the mature-content switch is the viewer's standing answer
-     * about age-restricted videos — a wall discovered after the fact must not
-     * quietly override it.
+     * Both halves are required. The embedded engine plays as whoever its
+     * profile says, and the app now hands it the selected account's session, so
+     * without an account there is nothing to open the video with; and the
+     * mature-content switch is the viewer's standing answer about
+     * age-restricted videos — a wall discovered after the fact must not quietly
+     * override it.
      */
-    private suspend fun canUseWebPlayer(): Boolean =
-        locator.auth.headers().isNotEmpty() && locator.settings.settings.first().showMature
+    private suspend fun webPlayerSession(): String? {
+        if (!locator.settings.settings.first().showMature) return null
+        return locator.auth.account.first()?.cookies?.takeIf(String::isNotBlank)
+    }
 
     /**
      * A minimal [VideoDetail] for a video whose file is already saved.
@@ -1682,6 +1708,7 @@ fun PlayerScreen(
                     // local player.
                     EmbeddedGeckoPlayer(
                         videoId = viewModel.currentVideoId,
+                        cookies = state.webCookies,
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
@@ -2046,8 +2073,8 @@ private fun WebPlayerNotice(modifier: Modifier = Modifier) {
         Text(
             text = "YouTube plays this one only in its own player, so it runs here instead. " +
                 "Background playback, captions, downloads and casting are not available for " +
-                "this video. If the player asks you to sign in, sign in there once — it keeps " +
-                "its own session.",
+                "this video. The page plays as the account selected in Settings; " +
+                "switching accounts switches it too.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
