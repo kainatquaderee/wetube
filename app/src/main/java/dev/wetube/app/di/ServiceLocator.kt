@@ -44,6 +44,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -182,9 +183,18 @@ class ServiceLocator(context: Context) {
      * Off the main thread and behind the same process scope as
      * [resumePendingDownloads], because it is a one-time DataStore write and
      * nothing on screen depends on it finishing first.
+     *
+     * The migration is only spent once an account exists to own the records, so
+     * this waits for one instead of running immediately: a launch that happens
+     * signed out must not consume it (the records would be stranded in the
+     * signed-out bucket), and waiting here also covers a sign-in later in the
+     * same process rather than only the next launch.
      */
     fun adoptLegacyContent() {
-        appScope.launch { library.adoptLegacyContent() }
+        appScope.launch {
+            auth.accountKey.filterNotNull().first()
+            library.adoptLegacyContent()
+        }
     }
 
     val ageGate = AgeGateStore(appContext)

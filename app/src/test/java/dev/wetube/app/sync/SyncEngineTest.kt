@@ -373,6 +373,24 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `an unreadable item count does not skip the membership pull`() = runTest {
+        backend.playlistsResult = OpResult.Ok(listOf(RemotePlaylist("PLa", "Box sets", itemCount = 0)))
+        backend.playlistPage = { _, _ ->
+            OpResult.Ok(PlaylistPage(listOf(RemotePlaylistItem("v9", "sv9")), null))
+        }
+        val engine = engine(FakeDeps(syncBackend = backend, done = true))
+
+        assertTrue(engine.syncNow() is SyncStatus.Done)
+        assertEquals(1, pulls("PLa"))
+
+        // No count is not the same as an unchanged count: a mirror whose count
+        // could not be read has to be asked for again, or it would be frozen at
+        // whatever it held the first time it was pulled.
+        assertTrue(engine.syncNow() is SyncStatus.Done)
+        assertEquals(2, pulls("PLa"))
+    }
+
+    @Test
     fun `the playlist behind the favourites mirror is not mirrored twice`() = runTest {
         backend.playlistsResult = OpResult.Ok(
             listOf(playlist, RemotePlaylist("PLa", "Road trip", itemCount = 0)),

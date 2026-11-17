@@ -159,7 +159,7 @@ class InnerTubeSyncTest {
     // ----- pullPlaylists ----------------------------------------------------
 
     @Test
-    fun `pullPlaylists parses grid and lockup playlists`() = runTest {
+    fun `pullPlaylists reads the web lockups and the legacy grid`() = runTest {
         val transport = FakeTransport().apply {
             responder = { _, _ -> SyncReply.Http(200, fixture("fe_playlist_aggregation.json")) }
         }
@@ -168,11 +168,52 @@ class InnerTubeSyncTest {
 
         assertEquals("FEplaylist_aggregation", transport.requests.single().extra.string("browseId"))
         assertEquals(
-            listOf("PLroadtrip0000000000000000", "PLfavourites00000000000", "PLlockup000000000000000000"),
+            listOf(
+                "PLsavedMix0000000000000000",
+                "PLboxSets000000000000000000",
+                "PLnoCount00000000000000000",
+                "PLroadtrip0000000000000000",
+                "PLfavourites00000000000",
+            ),
             playlists.map { it.playlistId },
         )
+        // A video row is built from the same `lockupViewModel`; its type token is
+        // what keeps it out of the playlists. Its badge is a length ("41:18"),
+        // so even if it leaked it would not read as a count.
+        assertTrue(playlists.none { it.playlistId == "PLvideo0000000000000000000" })
+        // The counts come from the thumbnail badge, told apart from a duration
+        // by the `PLAYLISTS` icon: "33 videos" here, "12 videos" on the grid.
+        assertEquals(33, playlists.first { it.title == "Saved mix" }.itemCount)
         assertEquals(12, playlists.first { it.title == "Road trip" }.itemCount)
-        assertEquals(7, playlists.first { it.title == "Saved mix" }.itemCount)
+    }
+
+    @Test
+    fun `pullPlaylists reads a badge count that does not name videos`() = runTest {
+        val transport = FakeTransport().apply {
+            responder = { _, _ -> SyncReply.Http(200, fixture("fe_playlist_aggregation.json")) }
+        }
+
+        val playlists = assertOk(backend(transport).pullPlaylists())
+
+        // Box sets' badge says "36 episodes": it labels the items by what they
+        // are, not with the word "videos", and its text is counted through the
+        // icon-less fallback.
+        assertEquals(36, playlists.first { it.title == "Box sets" }.itemCount)
+    }
+
+    @Test
+    fun `pullPlaylists reads no count from a duration badge or a metadata part`() = runTest {
+        val transport = FakeTransport().apply {
+            responder = { _, _ -> SyncReply.Http(200, fixture("fe_playlist_aggregation.json")) }
+        }
+
+        val playlists = assertOk(backend(transport).pullPlaylists())
+
+        // Live set's only badge is the length "41:18" — a duration is never a
+        // count (it would otherwise read as 41) — and no metadata part is one
+        // either ("Updated 5 days ago" is recency, not five items). A count the
+        // reader cannot trust is 0, i.e. unknown, never a guess.
+        assertEquals(0, playlists.first { it.title == "Live set" }.itemCount)
     }
 
     @Test
@@ -257,6 +298,31 @@ class InnerTubeSyncTest {
 
         // v2 has no setVideoId: removal is impossible and must not be guessed.
         assertEquals("", page.items.single { it.videoId == "v2" }.setVideoId)
+    }
+
+    @Test
+    fun `pullPlaylist reads a virtualised page's lockup rows and their nested token`() = runTest {
+        val transport = FakeTransport().apply {
+            responder = { _, _ -> SyncReply.Http(200, fixture("playlist_lockup_page.json")) }
+        }
+
+        val page = assertOk(backend(transport).pullPlaylist("PLxyz"))
+
+        // The playlist-type lockup on the page is not a membership.
+        assertEquals(listOf("lockup-alpha", "lockup-beta"), page.items.map { it.videoId })
+        val first = page.items[0]
+        // A lockup carries no setVideoId, so the membership stays pull-only.
+        assertEquals("", first.setVideoId)
+        assertEquals("Sample alpha", first.title)
+        assertEquals("Channel One", first.channelName)
+        assertEquals("UCAAAABBBBCCCCDDDDEEEEAA", first.channelId)
+        assertEquals("https://example.com/alpha-large.jpg", first.thumbnail)
+        assertEquals(197, first.durationSeconds) // 3:17
+        assertEquals(1, first.index)
+        assertEquals(3723, page.items[1].durationSeconds) // 1:02:03
+        assertEquals(2, page.items[1].index)
+        // The token is on the inner command; the outer wrapper carries no token.
+        assertEquals("tok-lockup-2", page.next)
     }
 
     // ----- accountChannelId -------------------------------------------------
@@ -378,7 +444,7 @@ class InnerTubeSyncTest {
         assertOk(backend(transport).addToPlaylist("PLxyz", listOf("v1", "v2")))
 
         val request = transport.requests.single()
-        assertEquals("playlist/edit", request.path)
+        assertEquals("browse/edit_playlist", request.path)
         assertEquals("PLxyz", request.extra.string("playlistId"))
         val actions = request.extra.getValue("actions").jsonArray.map { it.jsonObject }
         assertEquals(2, actions.size)
@@ -388,7 +454,7 @@ class InnerTubeSyncTest {
     }
 
     @Test
-    fun `removeFromPlaylist carries the setVideoId per removal`() = runTest {
+    fun `removeFromPlaylist sends the by-video-id action and not the setVideoId`() = runTest {
         val transport = FakeTransport()
 
         assertOk(
@@ -398,10 +464,12 @@ class InnerTubeSyncTest {
             ),
         )
 
+        // `setVideoId` addresses the by-set-video-id action; sending it with a
+        // different action is how a write turns into a 400.
         val action = transport.requests.single().extra.getValue("actions").jsonArray.single().jsonObject
-        assertEquals("ACTION_REMOVE_VIDEO", action.string("action"))
+        assertEquals("ACTION_REMOVE_VIDEO_BY_VIDEO_ID", action.string("action"))
         assertEquals("v9", action.string("removedVideoId"))
-        assertEquals("set-9", action.string("setVideoId"))
+        assertFalse(action.containsKey("setVideoId"))
     }
 
     @Test
@@ -449,7 +517,7 @@ class InnerTubeSyncTest {
         assertOk(backend(transport).renamePlaylist("PLxyz", "New name"))
 
         val request = transport.requests.single()
-        assertEquals("playlist/edit", request.path)
+        assertEquals("browse/edit_playlist", request.path)
         val action = request.extra.getValue("actions").jsonArray.single().jsonObject
         assertEquals("ACTION_SET_PLAYLIST_NAME", action.string("action"))
         assertEquals("New name", action.string("playlistName"))

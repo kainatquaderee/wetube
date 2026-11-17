@@ -172,8 +172,8 @@ data class LibrarySnapshot(
  * a mirror of one account's playlists can never be read as another's. Signed
  * out (and for every record written before scoping existed) the bare key is
  * used, which stays the "signed out" bucket; [adoptLegacyContent] copies the
- * legacy bucket into the scope of the account signed in at first launch. The
- * remaining lists — favourites, resume points, subscriptions, Watch Later and
+ * legacy bucket into the scope of the first account this installation resolves.
+ * The remaining lists — favourites, resume points, subscriptions, Watch Later and
  * the queue — stay global, because they are reconciled with the account by sync
  * rather than by key.
  */
@@ -668,30 +668,32 @@ class LibraryStore internal constructor(
     }
 
     /**
-     * One-shot migration for installations that predate account scoping.
+     * Migration for installations that predate account scoping.
      *
      * History, playlists and the video-metadata cache used to live under bare
-     * keys. The first launch after the upgrade copies them into the scope of the
-     * account that is signed in *now*, so the user's existing history and
-     * playlists are still there; the bare keys stay as the signed-out bucket.
-     * Signed out at that moment means nothing is copied and the legacy records
-     * remain the signed-out library.
+     * keys. The first launch that resolves an account copies them into that
+     * account's scope, so the user's existing history and playlists are still
+     * there; the bare keys stay as the signed-out bucket, so signing out still
+     * shows the library the user had.
      *
-     * A marker makes it run exactly once: an account signed in later must not
-     * inherit a bucket it never owned, and a second run must not overwrite a
-     * scope that has since moved on. A scoped record that already exists is left
-     * alone for the same reason.
+     * A launch with no account resolves nothing and spends nothing: the records
+     * stay readable as the signed-out library and the launch that does resolve
+     * an account adopts them. Recording the migration as done while signed out
+     * would strand exactly those records — a playlist written before scoping
+     * existed would stay invisible to the account that owns it, for good.
+     *
+     * The marker makes it run exactly once *with an owner*: a second run must
+     * not overwrite a scope that has since moved on, and a scoped record that
+     * already exists is left alone for the same reason.
      */
     suspend fun adoptLegacyContent() {
-        val owner = accountKeys.current()
+        val owner = accountKeys.current() ?: return
         dataStore.edit { p ->
             if (p[legacyAdoptedKey] != null) return@edit
-            if (owner != null) {
-                for (base in listOf(historyKey, playlistsKey, videoMetaKey)) {
-                    val legacy = p[base] ?: continue
-                    val scoped = keyFor(base, owner)
-                    if (p[scoped] == null) p[scoped] = legacy
-                }
+            for (base in listOf(historyKey, playlistsKey, videoMetaKey)) {
+                val legacy = p[base] ?: continue
+                val scoped = keyFor(base, owner)
+                if (p[scoped] == null) p[scoped] = legacy
             }
             p[legacyAdoptedKey] = "1"
         }

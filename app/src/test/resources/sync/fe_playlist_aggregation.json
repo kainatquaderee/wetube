@@ -1,53 +1,278 @@
 {
   "contents": {
-    "sectionListRenderer": {
-      "contents": [
+    "twoColumnBrowseResultsRenderer": {
+      "tabs": [
         {
-          "gridRenderer": {
-            "items": [
-              {
-                "gridPlaylistRenderer": {
-                  "playlistId": "PLroadtrip0000000000000000",
-                  "title": { "simpleText": "Road trip" },
-                  "videoCountText": { "simpleText": "12 videos" }
-                }
-              },
-              {
-                "gridPlaylistRenderer": {
-                  "playlistId": "PLfavourites00000000000",
-                  "title": { "simpleText": "Favourites" },
-                  "videoCountText": { "simpleText": "3 videos" }
-                }
-              }
-            ]
-          }
-        },
-        {
-          "itemSectionRenderer": {
-            "contents": [
-              {
-                "lockupViewModel": {
-                  "contentType": "PLAYLIST",
-                  "contentId": "PLlockup000000000000000000",
-                  "metadata": {
-                    "lockupMetadataViewModel": {
-                      "title": { "simpleText": "Saved mix" },
-                      "metadata": {
-                        "contentMetadataViewModel": {
-                          "metadataRows": [
-                            {
-                              "metadataParts": [
-                                { "text": { "simpleText": "7 videos" } }
-                              ]
+          "tabRenderer": {
+            "selected": true,
+            "content": {
+              "richGridRenderer": {
+                "contents": [
+                  {
+                    "richItemRenderer": {
+                      "content": {
+                        "lockupViewModel": {
+                          "contentId": "PLsavedMix0000000000000000",
+                          "contentType": "LOCKUP_CONTENT_TYPE_PLAYLIST",
+                          "contentImage": {
+                            "collectionThumbnailViewModel": {
+                              "primaryThumbnail": {
+                                "thumbnailViewModel": {
+                                  "image": {
+                                    "sources": [
+                                      {
+                                        "url": "https://example.invalid/one-small.jpg",
+                                        "width": 168,
+                                        "height": 94
+                                      },
+                                      {
+                                        "url": "https://example.invalid/one-large.jpg",
+                                        "width": 480,
+                                        "height": 270
+                                      }
+                                    ]
+                                  },
+                                  "overlays": [
+                                    {
+                                      "thumbnailOverlayBadgeViewModel": {
+                                        "thumbnailBadges": [
+                                          {
+                                            "thumbnailBadgeViewModel": {
+                                              "icon": {
+                                                "sources": [
+                                                  { "clientResource": { "imageName": "PLAYLISTS" } }
+                                                ]
+                                              },
+                                              "text": "33 videos",
+                                              "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                                            }
+                                          }
+                                        ],
+                                        "position": "THUMBNAIL_OVERLAY_BADGE_POSITION_BOTTOM_END"
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
                             }
-                          ]
+                          },
+                          "metadata": {
+                            "lockupMetadataViewModel": {
+                              "title": { "content": "Saved mix" },
+                              "metadata": {
+                                "contentMetadataViewModel": {
+                                  "metadataRows": [
+                                    {
+                                      "metadataParts": [
+                                        { "text": { "content": "Private" } },
+                                        { "text": { "content": "Playlist" } },
+                                        { "text": { "content": "Updated today" } },
+                                        { "text": { "content": "View full playlist" } }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "richItemRenderer": {
+                      "content": {
+                        "lockupViewModel": {
+                          "contentId": "PLboxSets000000000000000000",
+                          "contentType": "LOCKUP_CONTENT_TYPE_PLAYLIST",
+                          "contentImage": {
+                            "collectionThumbnailViewModel": {
+                              "primaryThumbnail": {
+                                "thumbnailViewModel": {
+                                  "image": {
+                                    "sources": [{ "url": "https://example.invalid/two.jpg" }]
+                                  },
+                                  "overlays": [
+                                    {
+                                      "thumbnailOverlayBadgeViewModel": {
+                                        "thumbnailBadges": [
+                                          {
+                                            "thumbnailBadgeViewModel": {
+                                              "text": "36 episodes",
+                                              "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                                            }
+                                          }
+                                        ],
+                                        "position": "THUMBNAIL_OVERLAY_BADGE_POSITION_BOTTOM_END"
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "metadata": {
+                            "lockupMetadataViewModel": {
+                              "title": { "content": "Box sets" },
+                              "metadata": {
+                                "contentMetadataViewModel": {
+                                  "metadataRows": [
+                                    {
+                                      "metadataParts": [
+                                        { "text": { "content": "Private" } },
+                                        { "text": { "content": "Playlist" } },
+                                        { "text": { "content": "View full playlist" } }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "richItemRenderer": {
+                      "content": {
+                        "lockupViewModel": {
+                          "contentId": "PLnoCount00000000000000000",
+                          "contentType": "LOCKUP_CONTENT_TYPE_PLAYLIST",
+                          "contentImage": {
+                            "collectionThumbnailViewModel": {
+                              "primaryThumbnail": {
+                                "thumbnailViewModel": {
+                                  "image": {
+                                    "sources": [{ "url": "https://example.invalid/three.jpg" }]
+                                  },
+                                  "overlays": [
+                                    {
+                                      "thumbnailOverlayBadgeViewModel": {
+                                        "thumbnailBadges": [
+                                          {
+                                            "thumbnailBadgeViewModel": {
+                                              "text": "41:18",
+                                              "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                                            }
+                                          }
+                                        ],
+                                        "position": "THUMBNAIL_OVERLAY_BADGE_POSITION_BOTTOM_END"
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "metadata": {
+                            "lockupMetadataViewModel": {
+                              "title": { "content": "Live set" },
+                              "metadata": {
+                                "contentMetadataViewModel": {
+                                  "metadataRows": [
+                                    {
+                                      "metadataParts": [
+                                        { "text": { "content": "Private" } },
+                                        { "text": { "content": "Playlist" } },
+                                        { "text": { "content": "Updated 5 days ago" } }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "richItemRenderer": {
+                      "content": {
+                        "lockupViewModel": {
+                          "contentId": "PLvideo0000000000000000000",
+                          "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                          "contentImage": {
+                            "collectionThumbnailViewModel": {
+                              "primaryThumbnail": {
+                                "thumbnailViewModel": {
+                                  "image": {
+                                    "sources": [{ "url": "https://example.invalid/four.jpg" }]
+                                  },
+                                  "overlays": [
+                                    {
+                                      "thumbnailOverlayBadgeViewModel": {
+                                        "thumbnailBadges": [
+                                          {
+                                            "thumbnailBadgeViewModel": {
+                                              "text": "41:18",
+                                              "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"
+                                            }
+                                          }
+                                        ],
+                                        "position": "THUMBNAIL_OVERLAY_BADGE_POSITION_BOTTOM_END"
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "metadata": {
+                            "lockupMetadataViewModel": {
+                              "title": { "content": "A video row" },
+                              "metadata": {
+                                "contentMetadataViewModel": {
+                                  "metadataRows": [
+                                    {
+                                      "metadataParts": [
+                                        { "text": { "content": "1.2M views" } },
+                                        { "text": { "content": "12 videos" } }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     }
                   }
-                }
+                ]
               }
-            ]
+            }
+          }
+        },
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "gridRenderer": {
+                      "items": [
+                        {
+                          "gridPlaylistRenderer": {
+                            "playlistId": "PLroadtrip0000000000000000",
+                            "title": { "simpleText": "Road trip" },
+                            "videoCountText": { "simpleText": "12 videos" }
+                          }
+                        },
+                        {
+                          "gridPlaylistRenderer": {
+                            "playlistId": "PLfavourites00000000000",
+                            "title": { "simpleText": "Favourites" },
+                            "videoCountText": { "simpleText": "3 videos" }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
           }
         }
       ]

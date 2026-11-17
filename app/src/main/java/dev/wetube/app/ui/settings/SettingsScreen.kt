@@ -685,7 +685,7 @@ private fun AccountSyncSection(
 ) {
     if (!signedIn) {
         Text(
-            "Sign in to sync your subscriptions and favourites with YouTube.",
+            "Sign in to sync your subscriptions, favourites and playlists with YouTube.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -702,8 +702,9 @@ private fun AccountSyncSection(
     if (!settings.syncEnabled) return
 
     Text(
-        "Subscriptions and the Favourites playlist sync two ways. Playlists you create " +
-            "in WeTube stay on this device, and your watch history is never uploaded.",
+        "Subscriptions and the Favourites playlist sync two ways. Your account's " +
+            "playlists are mirrored here read-only, playlists you create in WeTube " +
+            "stay on this device, and your watch history is never uploaded.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )

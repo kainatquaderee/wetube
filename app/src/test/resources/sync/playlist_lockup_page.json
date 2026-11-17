@@ -1,0 +1,243 @@
+{
+  "contents": {
+    "twoColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "itemSectionRenderer": {
+                      "contents": [
+                        {
+                          "lockupViewModel": {
+                            "contentImage": {
+                              "thumbnailViewModel": {
+                                "image": {
+                                  "sources": [
+                                    {
+                                      "url": "https://example.com/alpha-small.jpg",
+                                      "width": 168,
+                                      "height": 94
+                                    },
+                                    {
+                                      "url": "https://example.com/alpha-large.jpg",
+                                      "width": 336,
+                                      "height": 188
+                                    }
+                                  ]
+                                },
+                                "overlays": [
+                                  {
+                                    "thumbnailBottomOverlayViewModel": {
+                                      "badges": [
+                                        {
+                                          "thumbnailBadgeViewModel": {
+                                            "text": "3:17"
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                ]
+                              }
+                            },
+                            "metadata": {
+                              "lockupMetadataViewModel": {
+                                "title": { "content": "Sample alpha" },
+                                "image": {
+                                  "decoratedAvatarViewModel": {
+                                    "avatar": {
+                                      "avatarViewModel": {
+                                        "image": {
+                                          "sources": [
+                                            {
+                                              "url": "https://example.com/one.jpg",
+                                              "width": 68,
+                                              "height": 68
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "a11yLabel": "Go to channel",
+                                    "rendererContext": {
+                                      "commandContext": {
+                                        "onTap": {
+                                          "innertubeCommand": {
+                                            "browseEndpoint": {
+                                              "browseId": "UCAAAABBBBCCCCDDDDEEEEAA"
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "metadata": {
+                                  "contentMetadataViewModel": {
+                                    "metadataRows": [
+                                      {
+                                        "metadataParts": [
+                                          { "text": { "content": "Channel One" } }
+                                        ]
+                                      },
+                                      {
+                                        "metadataParts": [
+                                          { "text": { "content": "12K views" } },
+                                          { "text": { "content": "2 years ago" } }
+                                        ]
+                                      }
+                                    ],
+                                    "delimiter": " \u2022 "
+                                  }
+                                }
+                              }
+                            },
+                            "contentId": "lockup-alpha",
+                            "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                            "rendererContext": {
+                              "commandContext": {
+                                "onTap": {
+                                  "innertubeCommand": {
+                                    "watchEndpoint": {
+                                      "videoId": "lockup-alpha",
+                                      "index": 0
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "lockupViewModel": {
+                            "contentImage": {
+                              "thumbnailViewModel": {
+                                "image": {
+                                  "sources": [
+                                    {
+                                      "url": "https://example.com/beta-small.jpg",
+                                      "width": 168,
+                                      "height": 94
+                                    }
+                                  ]
+                                },
+                                "overlays": [
+                                  {
+                                    "thumbnailBottomOverlayViewModel": {
+                                      "badges": [
+                                        {
+                                          "thumbnailBadgeViewModel": {
+                                            "text": "1:02:03"
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                ]
+                              }
+                            },
+                            "metadata": {
+                              "lockupMetadataViewModel": {
+                                "title": { "content": "Sample beta" },
+                                "image": {
+                                  "decoratedAvatarViewModel": {
+                                    "avatar": {
+                                      "avatarViewModel": {
+                                        "image": {
+                                          "sources": [
+                                            {
+                                              "url": "https://example.com/two.jpg",
+                                              "width": 68,
+                                              "height": 68
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "rendererContext": {
+                                      "commandContext": {
+                                        "onTap": {
+                                          "innertubeCommand": {
+                                            "browseEndpoint": {
+                                              "browseId": "UCAAAABBBBCCCCDDDDEEEEBB"
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                "metadata": {
+                                  "contentMetadataViewModel": {
+                                    "metadataRows": [
+                                      {
+                                        "metadataParts": [
+                                          { "text": { "content": "Channel Two" } }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            },
+                            "contentId": "lockup-beta",
+                            "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                            "rendererContext": {
+                              "commandContext": {
+                                "onTap": {
+                                  "innertubeCommand": {
+                                    "watchEndpoint": {
+                                      "videoId": "lockup-beta",
+                                      "index": 1
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        {
+                          "lockupViewModel": {
+                            "metadata": {
+                              "lockupMetadataViewModel": {
+                                "title": { "content": "Sample playlist" }
+                              }
+                            },
+                            "contentId": "PLnotamembership000000000000",
+                            "contentType": "LOCKUP_CONTENT_TYPE_PLAYLIST"
+                          }
+                        },
+                        {
+                          "continuationItemViewModel": {
+                            "trigger": "CONTINUATION_TRIGGER_ON_ITEM_SHOWN",
+                            "continuationCommand": {
+                              "innertubeCommand": {
+                                "commandMetadata": {
+                                  "webCommandMetadata": {
+                                    "sendPost": true,
+                                    "apiUrl": "/youtubei/v1/browse"
+                                  }
+                                },
+                                "continuationCommand": {
+                                  "token": "tok-lockup-2",
+                                  "request": "CONTINUATION_REQUEST_TYPE_BROWSE"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -35,7 +35,7 @@ import java.io.File
  * exercised, not a mock.
  *
  * It also covers account scoping (history, playlists and the metadata cache
- * carry the signed-in account's key, everything else stays bare), the one-shot
+ * carry the signed-in account's key, everything else stays bare), the
  * [LibraryStore.adoptLegacyContent] migration, and the read-only mirrors of the
  * account's own playlists ([LibraryStore.applyRemotePlaylistPull]).
  */
@@ -432,17 +432,42 @@ class LibraryStoreTest {
     }
 
     @Test
-    fun `adoption runs once, so an account signed in later inherits nothing`() = runBlocking {
+    fun `a signed-out launch spends nothing, so the account that signs in later adopts`() =
+        runBlocking {
+            val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+            legacy.addToHistory(video)
+            legacy.createPlaylist("Road trip")
+
+            // The first launch after the upgrade happened signed out. Nothing is
+            // copied, and nothing is spent either: the records stay readable as
+            // the signed-out library and the launch that does resolve an account
+            // takes them. Recording the migration as done here would leave a
+            // pre-upgrade playlist invisible to the account that owns it, for
+            // good.
+            legacy.adoptLegacyContent()
+
+            assertTrue(store.history.first().isEmpty())
+
+            store.adoptLegacyContent()
+
+            assertEquals(listOf(video.id), store.history.first().map { it.id })
+            assertEquals(listOf("Road trip"), store.playlists.first().map { it.name })
+            assertEquals(listOf(video.id), legacy.history.first().map { it.id })
+        }
+
+    @Test
+    fun `adoption is spent by the account that claimed it`() = runBlocking {
         val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
         legacy.addToHistory(video)
 
-        // The first launch after the upgrade happened signed out: nothing to
-        // copy, but the migration is still spent.
-        legacy.adoptLegacyContent()
         store.adoptLegacyContent()
+        val second = libraryFor("second-key")
+        second.adoptLegacyContent()
 
-        assertTrue(store.history.first().isEmpty())
-        assertEquals(listOf(video.id), legacy.history.first().map { it.id })
+        // The bucket is claimed once: an account signed in later must not
+        // inherit records it never owned.
+        assertEquals(listOf(video.id), store.history.first().map { it.id })
+        assertTrue(second.history.first().isEmpty())
     }
 
     @Test

@@ -312,15 +312,15 @@ class SyncEngine(
      * account owns, minus the favourites mirror (the Favourites tab already
      * represents that playlist).
      *
-     * Membership is re-pulled only when the account's item count differs from
-     * what the mirror stored — the count is the only change signal YouTube gives
-     * without a per-playlist request — and at most [MAX_PLAYLIST_ITEM_PULLS] of
-     * them per sync, so an account with many playlists cannot turn one sync into
-     * a burst of requests. A playlist over the budget, or whose pull fails, is
-     * still reported with its title and count and no items: the library keeps
-     * the ids it already has and the next sync tries again. Unlike the
-     * favourites pull, one playlist's failure does not fail the sync — the other
-     * playlists are still worth having.
+     * Membership is re-pulled when the account reports an item count that
+     * differs from what the mirror stored — the count is the only change signal
+     * YouTube gives without a per-playlist request — and at most
+     * [MAX_PLAYLIST_ITEM_PULLS] of them per sync, so an account with many
+     * playlists cannot turn one sync into a burst of requests. A playlist over
+     * the budget, or whose pull fails, is still reported with its title and
+     * count and no items: the library keeps the ids it already has and the next
+     * sync tries again. Unlike the favourites pull, one playlist's failure does
+     * not fail the sync — the other playlists are still worth having.
      *
      * The list is deliberately unfiltered and uncapped beyond that: the library
      * drops a mirror whose id is blank or collides with a local playlist, and
@@ -339,7 +339,12 @@ class SyncEngine(
         for (playlist in playlists) {
             val id = playlist.playlistId
             if (id.isBlank() || id == favouritesPlaylistId) continue
-            val settled = storedCounts[id] == playlist.itemCount
+            // A count of zero means the account did not report one this time
+            // (an unreadable label, or a collection YouTube renders without a
+            // count), so it is never evidence that the stored items are current:
+            // treating it as settled would leave a mirror pulled once and never
+            // refreshed.
+            val settled = playlist.itemCount > 0 && storedCounts[id] == playlist.itemCount
             if (settled || budget <= 0) {
                 mirrors += RemotePlaylistMirror(id, playlist.title, playlist.itemCount)
                 continue

@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 /**
@@ -45,6 +46,17 @@ internal class InnerTubeSync(
     private val display: String,
     private val transport: SyncTransport,
     private val json: Json,
+    /**
+     * Where one debug line per read goes, or nothing.
+     *
+     * A read that answers `2xx` with a body this class cannot interpret is
+     * indistinguishable, to the engine, from an account that owns nothing: both
+     * are `Ok(emptyList())`. Naming the endpoint and what came back is the only
+     * way to tell those apart from a log. It is injected rather than logged here
+     * so this file stays free of Android imports and I/O, and defaults to a
+     * no-op so a test never has to supply one.
+     */
+    private val log: (String) -> Unit = {},
 ) : SyncBackend {
 
     override val displayName: String = display
@@ -103,16 +115,31 @@ internal class InnerTubeSync(
      * Every playlist the account owns, from the `FEplaylist_aggregation` tab.
      *
      * Both renderer families are read: the older `gridPlaylistRenderer` and the
-     * web's `lockupViewModel` with `contentType == "PLAYLIST"`. An empty account
-     * is `Ok(emptyList())`.
+     * web's `lockupViewModel`, which labels a playlist
+     * `contentType: "LOCKUP_CONTENT_TYPE_PLAYLIST"`. The same renderer also
+     * serves video rows (a virtualised playlist page is nothing else, §2.3), so a
+     * row is classified by its type token rather than by its shape. An empty
+     * account is `Ok(emptyList())`.
      *
      * The authoritative source of the WeTube-owned favourites mirror is
      * `AccountSyncState.favouritesPlaylistId`; a playlist is never recognised as
      * owned because of its title.
+     *
+     * A playlist whose item count reads `0` is either genuinely uncounted or
+     * counted in a shape this reader does not know, and the two look identical
+     * to the caller. The count is the only change signal the engine has, so
+     * every pull names the ids with the counts it read: a `0` beside a playlist
+     * that visibly has items is the whole diagnosis, and one debug line per sync
+     * is what it costs.
      */
     override suspend fun pullPlaylists(): OpResult<List<RemotePlaylist>> =
         perform("browse", buildJsonObject { put("browseId", "FEplaylist_aggregation") }) { root ->
-            root.playlistRenderers()
+            val playlists = root.playlistRenderers()
+            log(
+                "FEplaylist_aggregation counts: " +
+                    playlists.joinToString { "${it.playlistId}=${it.itemCount}" },
+            )
+            playlists
         }
 
     /**
@@ -124,13 +151,26 @@ internal class InnerTubeSync(
      * and is required to remove it, so it is copied verbatim when present and
      * left empty when absent — never guessed, because a wrong value would remove
      * the wrong video or fail confusingly.
+     *
+     * The web serves the rows themselves in two shapes, and a playlist large
+     * enough to be virtualised comes back in the second one; both are read by
+     * [playlistMemberships].
      */
     override suspend fun pullPlaylist(playlistId: String, next: String?): OpResult<PlaylistPage> {
         val extra = buildJsonObject {
             if (next != null) put("continuation", next) else put("browseId", "VL$playlistId")
         }
         return perform("browse", extra) { root ->
-            PlaylistPage(items = root.playlistVideoRenderers(), next = root.nextContinuation())
+            val items = root.playlistMemberships()
+            val next = root.nextContinuation()
+            if (items.isEmpty() && next == null) {
+                // A page with no rows and nowhere to continue is either a
+                // genuinely empty playlist or one whose rows are in a shape this
+                // reader does not know — to the caller they are the same value,
+                // so name the keys this body did carry.
+                log("${extra.brief()} 2xx and no playlist rows; keys: ${root.keyCensus()}")
+            }
+            PlaylistPage(items = items, next = next)
         }
     }
 
@@ -177,7 +217,8 @@ internal class InnerTubeSync(
     /**
      * Renames [playlistId].
      *
-     * UNVERIFIED: `playlist/edit` with `ACTION_SET_PLAYLIST_NAME` (§3.2).
+     * `browse/edit_playlist` with `ACTION_SET_PLAYLIST_NAME` (§3.2). Whether the
+     * endpoint accepts a rename action at all is still unverified.
      */
     override suspend fun renamePlaylist(playlistId: String, title: String): OpResult<Unit> =
         editPlaylist(
@@ -193,7 +234,7 @@ internal class InnerTubeSync(
     /**
      * Changes [playlistId]'s visibility.
      *
-     * UNVERIFIED: `playlist/edit` with `ACTION_SET_PLAYLIST_PRIVACY` (§3.2). The
+     * `browse/edit_playlist` with `ACTION_SET_PLAYLIST_PRIVACY` (§3.2). The
      * documented enum values are the same words [PlaylistPrivacy] already uses.
      */
     override suspend fun setPlaylistPrivacy(
@@ -212,9 +253,9 @@ internal class InnerTubeSync(
     /**
      * Adds [videoIds] to [playlistId].
      *
-     * UNVERIFIED: `playlist/edit` with one `ACTION_ADD_VIDEO` action per id
-     * (§3.2). The action list is the batch the write planner already chunks, so
-     * a transport call maps one-to-one to a planned op.
+     * `browse/edit_playlist` with one `ACTION_ADD_VIDEO` action per id (§3.2).
+     * The action list is the batch the write planner already chunks, so a
+     * transport call maps one-to-one to a planned op.
      */
     override suspend fun addToPlaylist(playlistId: String, videoIds: List<String>): OpResult<Unit> =
         editPlaylist(
@@ -232,10 +273,13 @@ internal class InnerTubeSync(
     /**
      * Removes [removals] from [playlistId].
      *
-     * UNVERIFIED: `playlist/edit` with `ACTION_REMOVE_VIDEO` and both
-     * `removedVideoId` and `setVideoId` per removal (§2.3, §3.3). A blank
-     * `setVideoId` is copied as-is rather than guessed: the protocol says such an
-     * item is pull-only, and the engine is responsible for not queuing it.
+     * `browse/edit_playlist` with `ACTION_REMOVE_VIDEO_BY_VIDEO_ID` and
+     * `removedVideoId` per removal (§2.3, §3.3). The membership's `setVideoId`
+     * is deliberately not sent: it is only meaningful to the by-set-video-id
+     * action, and an unrecognised member is how a write turns into a `400`.
+     * A blank `setVideoId` is still copied into the record verbatim by the
+     * puller rather than guessed — the protocol says such an item is pull-only,
+     * and the engine is responsible for not queuing it.
      */
     override suspend fun removeFromPlaylist(
         playlistId: String,
@@ -245,9 +289,8 @@ internal class InnerTubeSync(
         buildJsonArray {
             removals.forEach { item ->
                 add(buildJsonObject {
-                    put("action", "ACTION_REMOVE_VIDEO")
+                    put("action", "ACTION_REMOVE_VIDEO_BY_VIDEO_ID")
                     put("removedVideoId", item.videoId)
-                    put("setVideoId", item.setVideoId)
                 })
             }
         },
@@ -295,12 +338,31 @@ internal class InnerTubeSync(
             return classify(e, code = null)
         }
 
-        return when (reply) {
+        val result = when (reply) {
             is SyncReply.Unreachable -> OpResult.Retryable(reply.reason)
             is SyncReply.Http ->
                 if (reply.code in 200..299) successful(reply.body, parse)
                 else classifyHttpStatus(reply.code)
         }
+        log("$path -> ${result.summary()}")
+        return result
+    }
+
+    /**
+     * What a read returned, in one line: a count where there is one, the reason
+     * otherwise. Sizes are what matters — a shape this class cannot read and an
+     * account that owns nothing both arrive as `Ok(emptyList())`.
+     */
+    private fun <T> OpResult<T>.summary(): String = when (this) {
+        is OpResult.Ok -> when (val value = value) {
+            is Collection<*> -> "${value.size} items"
+            is Map<*, *> -> "${value.size} entries"
+            else -> value.toString().take(120)
+        }
+
+        is OpResult.Retryable -> "retryable: $reason"
+        is OpResult.Terminal -> "terminal: $reason"
+        is OpResult.AuthRequired -> "auth required: $reason"
     }
 
     /** Interprets a `2xx` body: auth wall, then structure, then [parse]. */
@@ -315,15 +377,27 @@ internal class InnerTubeSync(
         }
         val value = runCatching { parse(root) }.getOrNull()
             ?: return OpResult.Terminal("response did not contain the expected value")
+        if (value is Collection<*> && value.isEmpty()) {
+            // An empty account and an unreadable reply are the same value to the
+            // caller, so name the keys this body did carry: that is what says
+            // whether the renderer shape moved.
+            log("${body.length}B 2xx and nothing read; keys: ${root.keyCensus()}")
+        }
         return OpResult.Ok(value)
     }
 
     private suspend fun write(path: String, extra: JsonObject): OpResult<Unit> =
         perform(path, extra) { Unit }
 
+    /**
+     * One playlist edit, on the endpoint the web client actually posts to.
+     *
+     * `playlist/edit` was our guess from the old API and answers `404`; the web
+     * player's own playlist edits go to `browse/edit_playlist` (§3.2).
+     */
     private suspend fun editPlaylist(playlistId: String, actions: JsonArray): OpResult<Unit> =
         write(
-            "playlist/edit",
+            "browse/edit_playlist",
             buildJsonObject {
                 put("playlistId", playlistId)
                 put("actions", actions)
@@ -410,7 +484,7 @@ internal class InnerTubeSync(
         return ids.map { RemoteChannel(channelId = it, title = "") }
     }
 
-    /** `gridPlaylistRenderer` and PLAYLIST `lockupViewModel` entries. */
+    /** `gridPlaylistRenderer` and playlist `lockupViewModel` entries. */
     private fun JsonObject.playlistRenderers(): List<RemotePlaylist> {
         val found = ArrayList<RemotePlaylist>()
         fun walk(element: JsonElement) {
@@ -444,39 +518,94 @@ internal class InnerTubeSync(
     }
 
     /**
-     * A web lockup playlist. Its title and item count live under
-     * `metadata.lockupMetadataViewModel`, with the count in one of the metadata
-     * text parts as e.g. `"12 videos"`.
+     * A web lockup playlist, or `null` for the video rows built from the same
+     * renderer.
+     *
+     * The title lives under `metadata.lockupMetadataViewModel`; the item count
+     * does not (§2.2), and is read off the thumbnail badge by [lockupItemCount].
+     * The type is tested for the token `PLAYLIST` rather than for one whole
+     * spelling, because the web writes `"LOCKUP_CONTENT_TYPE_PLAYLIST"` while a
+     * bare `"PLAYLIST"` is what the older shape used.
      */
     private fun JsonObject.toLockupPlaylist(): RemotePlaylist? {
-        if (str("contentType") != "PLAYLIST") return null
+        if (!str("contentType").orEmpty().contains(PLAYLIST_TYPE_TOKEN, ignoreCase = true)) return null
         val id = str("contentId")?.takeIf { it.isNotBlank() } ?: return null
-        val meta = this["metadata"].obj()?.get("lockupMetadataViewModel").obj()
-        val title = meta?.get("title").text().orEmpty()
-        val countText = meta?.get("metadata").obj()
-            ?.get("contentMetadataViewModel").obj()
-            ?.get("metadataRows").objects()
-            .orEmpty()
-            .flatMap { it["metadataParts"].objects() }
-            .mapNotNull { it["text"].text() }
-            .firstOrNull { it.contains("video", ignoreCase = true) }
-            .orEmpty()
+        val metadata = this["metadata"].obj()?.get("lockupMetadataViewModel").obj()
         return RemotePlaylist(
             playlistId = id,
-            title = title,
-            itemCount = parseCount(countText).toCount(),
+            title = metadata?.get("title").text().orEmpty(),
+            itemCount = lockupItemCount(),
         )
     }
 
-    /** `playlistVideoRenderer` entries, in page order. */
-    private fun JsonObject.playlistVideoRenderers(): List<RemotePlaylistItem> {
+    /**
+     * A playlist lockup's item count, read off the badge painted over the
+     * thumbnail.
+     *
+     * The count is not in the metadata text parts (§2.2): those name the
+     * channel, the privacy and the "View full playlist" affordance, and never a
+     * number of items — which is why a parts-based read returned `0` for every
+     * playlist. It is instead the thumbnail badge under `contentImage`, and that
+     * badge is told apart from a duration by the `PLAYLISTS` icon it carries
+     * ([PLAYLISTS_BADGE_ICON]).
+     *
+     * A duration badge is never read as a count. A badge without the icon is
+     * accepted only when its own text names videos or episodes
+     * ([ITEM_COUNT_LABEL]) — the narrow fallback for a badge whose icon this
+     * reader has not seen. Anything else reads `0`, which the engine takes as
+     * "count unknown" and re-pulls, never as "empty".
+     */
+    private fun JsonObject.lockupItemCount(): Int {
+        val badges = this["contentImage"].obj()?.findAll("thumbnailBadgeViewModel").orEmpty()
+        val text = badges
+            .firstOrNull { badge ->
+                badge.badgeIconNames().any { it.equals(PLAYLISTS_BADGE_ICON, ignoreCase = true) }
+            }
+            ?.str("text")
+            ?: badges.mapNotNull { it.str("text") }.firstOrNull { ITEM_COUNT_LABEL.containsMatchIn(it) }
+            ?: return 0
+        return parseCount(text).toCount()
+    }
+
+    /** The `clientResource` image names on a badge's icon, in written order. */
+    private fun JsonObject.badgeIconNames(): List<String> =
+        findAll("clientResource").mapNotNull { it.str("imageName") }
+
+    /**
+     * Every text part of a lockup's `contentMetadataViewModel`, in the order the
+     * web wrote them.
+     *
+     * The membership reader's first part is the video's channel (§2.3). The
+     * playlist reader deliberately does *not* read a count from these parts —
+     * they name the channel, the privacy and "View full playlist", never a
+     * number (§2.2) — so nothing here shares that mistake.
+     */
+    private fun JsonObject?.lockupMetadataTexts(): List<String> =
+        this?.findAll("contentMetadataViewModel")
+            .orEmpty()
+            .flatMap { it["metadataRows"].objects() }
+            .flatMap { it["metadataParts"].objects() }
+            .mapNotNull { it["text"].text() }
+
+    /**
+     * The page's memberships, in page order, from both shapes the web serves:
+     * the legacy `playlistVideoRenderer`, and the `lockupViewModel` rows a
+     * virtualised (large) playlist is returned as (see [toLockupVideoItem]).
+     *
+     * One walker rather than two lists so the rows keep the order the page wrote
+     * them in, whichever mix of shapes it used.
+     */
+    private fun JsonObject.playlistMemberships(): List<RemotePlaylistItem> {
         val found = ArrayList<RemotePlaylistItem>()
         fun walk(element: JsonElement) {
             when (element) {
                 is JsonObject -> element.forEach { (key, value) ->
-                    if (key == "playlistVideoRenderer") {
-                        (value as? JsonObject)?.toRemotePlaylistItem()?.let(found::add)
+                    val item = when (key) {
+                        "playlistVideoRenderer" -> (value as? JsonObject)?.toRemotePlaylistItem()
+                        "lockupViewModel" -> (value as? JsonObject)?.toLockupVideoItem()
+                        else -> null
                     }
+                    if (item != null) found.add(item)
                     walk(value)
                 }
 
@@ -519,12 +648,64 @@ internal class InnerTubeSync(
     }
 
     /**
+     * One membership out of a `lockupViewModel` row, or `null` for the playlist
+     * lockups built from the same renderer (see [toLockupPlaylist]).
+     *
+     * A playlist large enough for the web to virtualise its page is served this
+     * way instead of as `playlistVideoRenderer`s. Such a row carries **no
+     * `setVideoId`**, so everything read here is pull-only and
+     * [RemotePlaylistItem.setVideoId] is deliberately left empty rather than
+     * filled in with the `videoId`.
+     *
+     * Each field sits in a different view model:
+     * - the video id is the lockup's own `contentId`;
+     * - the title and the channel's avatar hang off `metadata.lockupMetadataViewModel`;
+     * - the thumbnail is the largest `contentImage.thumbnailViewModel.image` source;
+     * - the duration is a thumbnail badge, read through the shared
+     *   [parseDurationLabel] so it means here what it means everywhere else;
+     * - the channel id is the row's only channel-shaped `browseEndpoint` (the
+     *   avatar's own tap target);
+     * - the position is the row's `watchEndpoint.index`, which counts from zero
+     *   where the legacy renderer's `index` counts from one.
+     */
+    private fun JsonObject.toLockupVideoItem(): RemotePlaylistItem? {
+        if (!str("contentType").orEmpty().contains(VIDEO_TYPE_TOKEN, ignoreCase = true)) return null
+        val videoId = str("contentId")?.takeIf { it.isNotBlank() } ?: return null
+        val metadata = this["metadata"].obj()?.get("lockupMetadataViewModel").obj()
+        val duration = findAll("thumbnailBadgeViewModel")
+            .firstNotNullOfOrNull { parseDurationLabel(it["text"].text()).takeIf { seconds -> seconds > 0 } }
+        return RemotePlaylistItem(
+            videoId = videoId,
+            setVideoId = "",
+            index = findAll("watchEndpoint")
+                .firstNotNullOfOrNull { (it["index"] as? JsonPrimitive)?.intOrNull }
+                ?.plus(1)
+                ?: 0,
+            title = metadata?.get("title").text().orEmpty(),
+            channelName = metadata.lockupMetadataTexts().firstOrNull().orEmpty(),
+            channelId = findAll("browseEndpoint")
+                .firstNotNullOfOrNull { it.str("browseId")?.takeIf(CHANNEL_ID::matches) }
+                .orEmpty(),
+            thumbnail = this["contentImage"].obj()
+                ?.get("thumbnailViewModel").obj()
+                ?.get("image").thumbnailUrl().orEmpty(),
+            durationSeconds = duration ?: 0,
+        )
+    }
+
+    /**
      * The next page token, from every shape the renderer tree uses: a
-     * `continuationItemRenderer` (whose command `findAll` already finds), the
-     * older `nextContinuationData`, or a bare `continuations` entry.
+     * `continuationItemRenderer` or `continuationItemViewModel` (whose command
+     * `findAll` already finds), the older `nextContinuationData`, or a bare
+     * `continuations` entry.
+     *
+     * The command key is searched rather than taken from the first match,
+     * because the web wraps one `continuationCommand` inside another: the outer
+     * object holds only `innertubeCommand`, and the token is on the inner one.
      */
     private fun JsonObject.nextContinuation(): String? =
-        findAll("continuationCommand").firstOrNull()?.str("token")?.takeIf { it.isNotBlank() }
+        findAll("continuationCommand")
+            .firstNotNullOfOrNull { it.str("token")?.takeIf(String::isNotBlank) }
             ?: findAll("nextContinuationData").firstOrNull()
                 ?.str("continuation")?.takeIf { it.isNotBlank() }
 
@@ -569,13 +750,74 @@ internal class InnerTubeSync(
     /** `parseCount` is a `Long`; [RemotePlaylist.itemCount] is an `Int`. */
     private fun Long.toCount(): Int = coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
 
+    /**
+     * The distinct object keys in a reply, in first-seen order.
+     *
+     * This exists for one question: a `2xx` this class read nothing from. The
+     * answer is always a key name (`lockupViewModel` gained a field, a renderer
+     * was renamed), and a census names the shapes that were there instead of
+     * dumping a body that can run to hundreds of kilobytes. Bounded on both axes
+     * — keys and characters — so a debug line stays a log line.
+     */
+    private fun JsonObject.keyCensus(limit: Int = 80): String {
+        val keys = LinkedHashSet<String>()
+        fun walk(element: JsonElement) {
+            if (keys.size >= limit) return
+            when (element) {
+                is JsonObject -> element.forEach { (key, value) ->
+                    keys.add(key)
+                    walk(value)
+                }
+
+                is JsonArray -> element.forEach(::walk)
+                else -> Unit
+            }
+        }
+        walk(this)
+        return keys.joinToString(" ").take(MAX_CENSUS_CHARS)
+    }
+
     private companion object {
+        /** Cap on the key census a debug line prints. */
+        const val MAX_CENSUS_CHARS = 2000
+
         /**
          * A YouTube channel id: `UC` plus 22 id characters. The fallback surface
          * has no stable field label to trust, so an id that does not match this
          * shape is rejected rather than added to the set.
          */
         val CHANNEL_ID = Regex("^UC[A-Za-z0-9_-]{22}$")
+
+        /**
+         * The token inside a lockup's `contentType` that marks a playlist. The
+         * value is spelled `"LOCKUP_CONTENT_TYPE_PLAYLIST"` today and was a bare
+         * `"PLAYLIST"` before, so only the token is trusted.
+         */
+        const val PLAYLIST_TYPE_TOKEN = "PLAYLIST"
+
+        /**
+         * The token inside a lockup's `contentType` that marks one video, i.e.
+         * a playlist *membership* rather than a playlist. Bounded to the token
+         * for the same reason as [PLAYLIST_TYPE_TOKEN]; the two spells
+         * (`"LOCKUP_CONTENT_TYPE_VIDEO"` / `"LOCKUP_CONTENT_TYPE_PLAYLIST"`) do
+         * not overlap, so a row is classified by which one it carries.
+         */
+        const val VIDEO_TYPE_TOKEN = "VIDEO"
+
+        /**
+         * The icon the web puts on the badge that counts a playlist's items
+         * (§2.2). A duration badge carries `MUSIC` or no icon at all, so the
+         * icon is what separates "2 videos" from "41:18" on the same page.
+         */
+        const val PLAYLISTS_BADGE_ICON = "PLAYLISTS"
+
+        /**
+         * A badge whose text names what it counts, e.g. `"12 videos"` /
+         * `"36 episodes"`. Only a badge that names a countable thing this way is
+         * read as a count when its icon is unknown, so a duration badge
+         * (`"41:18"`) is never mistaken for one.
+         */
+        val ITEM_COUNT_LABEL = Regex("\\b(?:videos?|episodes?)\\b", RegexOption.IGNORE_CASE)
     }
 }
 
