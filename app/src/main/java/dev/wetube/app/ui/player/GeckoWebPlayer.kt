@@ -3,6 +3,8 @@ package dev.wetube.app.ui.player
 import android.content.Context
 import android.graphics.Color
 import android.util.Log
+import android.view.Gravity
+import android.widget.TextView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -109,7 +111,13 @@ internal fun EmbeddedGeckoPlayer(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val runtime = remember { GeckoEngine.get(context) }
+    // Built by GeckoEngine.warmUp in Application.onCreate, never created here:
+    // creating the runtime while the process is RESUMED is what killed the engine.
+    val runtime = GeckoEngine.get()
+    if (runtime == null) {
+        EmbeddedEngineUnavailable(modifier)
+        return
+    }
     val session = remember(videoId) {
         GeckoSession(
             GeckoSessionSettings.Builder()
@@ -191,26 +199,61 @@ internal fun EmbeddedGeckoPlayer(
  * recreated after it is released, so it is created once and kept for the life
  * of the app rather than tied to the player screen.
  */
-private object GeckoEngine {
-    private var runtime: GeckoRuntime? = null
+internal object GeckoEngine {
+    private val gate = EngineGate<GeckoRuntime>()
 
+    /**
+     * Builds the process's single [GeckoRuntime], and is the only place allowed
+     * to do so.
+     *
+     * GeckoView permits one runtime per process and cannot rebuild it after a
+     * failed create, so creation happens once, early, and its outcome is kept.
+     *
+     * Why early matters: `GeckoRuntime.create` ends by registering a
+     * ProcessLifecycleOwner observer, and LifecycleRegistry replays the owner's
+     * current state synchronously. Called from a Compose frame the process is
+     * already RESUMED, so the replay runs Gecko's
+     * `LifecycleListener.onResume` before its own handler thread exists;
+     * GeckoView posts through that handler without a null check. The result is
+     * a NullPointerException out of `create()` on debug builds, and a native
+     * crash in Gecko's launcher thread on release builds - the player pane
+     * flashes white and the whole app process disappears, with nothing to
+     * report but a signal 11.
+     *
+     * Called from Application.onCreate the process lifecycle is still
+     * INITIALIZED, nothing is replayed, and the first real resume arrives long
+     * after the engine exists.
+     */
     @Synchronized
-    fun get(context: Context): GeckoRuntime {
-        runtime?.let { return it }
-        val settings = GeckoRuntimeSettings.Builder()
-            .javaScriptEnabled(true)
-            // Gecko's own console goes to logcat in debug builds, where it is
-            // the only view into what the page did.
-            .consoleOutput(BuildConfig.DEBUG)
-            .build()
-        return GeckoRuntime.create(context.applicationContext, settings).also {
-            runtime = it
-            // The app's session lives in this process, not in the engine's
-            // profile, so the route into the cookie store is set up with the
-            // runtime it belongs to (see [WebCookieBridge]).
-            WebCookieBridge.prepare(it)
+    fun warmUp(context: Context) {
+        if (gate.settled) return
+        try {
+            val settings = GeckoRuntimeSettings.Builder()
+                .javaScriptEnabled(true)
+                // Gecko's own console goes to logcat in debug builds, where
+                // that is the only view of what the page did.
+                .consoleOutput(BuildConfig.DEBUG)
+                .build()
+            val created = GeckoRuntime.create(context.applicationContext, settings)
+            // The app's session lives in the process, not in the engine's
+            // profile, so the cookie store is routed onto the runtime we own
+            // (see [WebCookieBridge]).
+            WebCookieBridge.prepare(created)
+            gate.succeed(created)
+        } catch (t: Throwable) {
+            // Terminal by construction: a half-built runtime cannot be thrown
+            // away and replaced, so the player states the failure instead of
+            // retrying into a broken engine.
+            gate.fail(t)
+            Log.e("WeTube", "Gecko runtime creation failed", t)
         }
     }
+
+    /** The runtime once [warmUp] succeeded; null while warming up or after it failed. */
+    fun get(): GeckoRuntime? = gate.ready
+
+    /** Non-null only after a terminal warm-up failure. */
+    val failed: Throwable? get() = gate.failed
 }
 
 /**
@@ -438,3 +481,27 @@ private const val MOBILE_YOUTUBE_ORIGIN = "https://m.youtube.com"
  * nothing else breaks.
  */
 internal val embeddedPageHeaderHeight = 48.dp
+
+/**
+ * Stands in for the embedded page when the engine could not be built.
+ *
+ * Showing why beats the alternatives that came before it: a white pane that
+ * looks like a slow page, or a finished activity with no explanation. The
+ * process stays alive and the rest of the app keeps working.
+ */
+@Composable
+private fun EmbeddedEngineUnavailable(modifier: Modifier = Modifier) {
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            TextView(ctx).apply {
+                text = "The embedded player could not start on this device.\nOpen the video in the normal player instead."
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                gravity = Gravity.CENTER
+                setBackgroundColor(Color.BLACK)
+                setPadding(64, 64, 64, 64)
+            }
+        },
+    )
+}

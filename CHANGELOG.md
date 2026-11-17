@@ -1,8 +1,32 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.11 (versionCode 31).
+Security. This release is 0.3.12 (versionCode 32).
 
+
+## 0.3.12 - the engine stops taking the app down with it (2026-11-18)
+
+Some videos opened the embedded page and the app disappeared: a white pane, then
+the home screen. Nothing landed in the crash log, which is why it took a device
+to explain it.
+
+### Fixed
+
+**The engine is built when the process starts, not when a player opens.** Built
+from inside the player, the runtime was created while the app was already
+foreground, and Gecko replayed that resume into itself before its own thread
+existed: a null handler, an uncaught exception, and Gecko's crash handler turning
+it into a silent process kill. Building it in `Application.onCreate` happens
+before the first resume, so nothing is replayed.
+
+**Only the app process builds it.** `onCreate` runs once per process, and Gecko
+spawns a content process per tab, a GPU process and a crash helper. A runtime
+built inside those is fatal, and the crash helper refuses outright, so the
+warm-up is scoped to the default process.
+
+**A failed warm-up is visible instead of a white pane.** The player says the
+engine is unavailable and leaves the rest of the app working, instead of opening
+a blank frame that outlives the engine.
 
 ## 0.3.11 — a browser engine for the one wall our own player can't pass (2026-11-17)
 

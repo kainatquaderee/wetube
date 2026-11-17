@@ -25,8 +25,8 @@ android {
         applicationId = "dev.wetube.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 31
-        versionName = "0.3.11"
+        versionCode = 32
+        versionName = "0.3.12"
 
         // The ABIs this app ships at all. `splits` below decides how they are
         // divided across APKs, but the universal APK is not filtered by those

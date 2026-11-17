@@ -4,6 +4,7 @@ import android.app.Application
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.ui.player.GeckoEngine
 
 class WeTubeApp : Application(), ImageLoaderFactory {
 
@@ -12,6 +13,18 @@ class WeTubeApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        // Built here, not from the player screen: the process lifecycle is still
+        // INITIALIZED in onCreate, and creating the runtime any later replays a
+        // resume into Gecko before its handler exists. See GeckoEngine.warmUp.
+        //
+        // Only the default process may do it. Application.onCreate runs once per
+        // process, and Gecko spawns a content process per tab plus a crash helper;
+        // a runtime built inside one of those is fatal, and the crash helper
+        // refuses outright ("Crash handler service must run in a separate
+        // process").
+        if (Application.getProcessName() == packageName) {
+            GeckoEngine.warmUp(this)
+        }
         locator = ServiceLocator(this)
         // Work left queued by a process that stopped is picked up here: the
         // download service is not restarted by the platform, so without this a
