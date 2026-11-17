@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import dev.wetube.app.data.backend.MatureHiddenException
 import dev.wetube.app.data.model.VideoItem
 
 /** View-friendly count, e.g. `222000 -> "222K"`. Thin alias for the shared helper. */
@@ -69,13 +70,22 @@ fun countOf(count: Int, singular: String, plural: String = "${singular}s"): Stri
 fun friendlyError(t: Throwable): String {
     val raw = t.message.orEmpty()
     return when {
-        // YouTube answers 200 with this reason instead of streams when it wants
-        // an attestation token. It is per video and often clears by itself.
+        // An age wall is the one refusal the app can work around, and only for
+        // a session YouTube is willing to speak to: signing in (with mature
+        // content allowed) turns it into YouTube's own web player, so the copy
+        // names both conditions instead of claiming playback is impossible.
         raw.contains("confirm your age", ignoreCase = true) ||
             raw.contains("inappropriate for some users", ignoreCase = true) ->
-            "This video is age-restricted, and YouTube will not stream it here. Signing in " +
-                "is not enough — YouTube requires a browser check that WeTube will not fake. " +
-                "Everything else plays normally."
+            "This video is age-restricted. YouTube streams those only to a signed-in session, " +
+                "in its own browser player — sign in under Settings, with \"Show mature content\" " +
+                "on, to watch it. Everything else plays normally."
+        // The mature-content switch is off and this video is already known to be
+        // age-restricted. The backend wrote the one sentence that matters — turn
+        // the switch on — so it is shown as it stands, not replaced by a generic
+        // failure. Matched by type and not by wording: a transport error carries
+        // the server's own text, and a body that happens to mention the phrase
+        // must not be echoed back to the viewer.
+        t is MatureHiddenException -> raw
         raw.contains("not a bot", ignoreCase = true) ->
             "YouTube asked this network to sign in before playing this video. " +
                 "It usually clears in a few minutes; try again, pick another video, " +
