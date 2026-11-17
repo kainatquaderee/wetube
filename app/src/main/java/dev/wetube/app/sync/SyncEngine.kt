@@ -7,6 +7,7 @@ import dev.wetube.app.data.backend.RemotePlaylist
 import dev.wetube.app.data.backend.RemotePlaylistItem
 import dev.wetube.app.data.backend.SyncBackend
 import dev.wetube.app.data.local.LibraryStore
+import dev.wetube.app.data.local.RemotePlaylistMirror
 import dev.wetube.app.data.local.SyncMetadataStore
 import dev.wetube.app.data.local.SyncSummary
 import dev.wetube.app.data.model.VideoItem
@@ -156,6 +157,12 @@ class SyncEngine(
         val channels: List<RemoteChannel>,
         val playlists: List<RemotePlaylist>,
         val favouriteItems: List<RemotePlaylistItem>,
+        /**
+         * The account's own playlists, as mirrors to store locally. Empty when
+         * the account returned none, which the library reads as "nothing to
+         * change" rather than "delete every mirror".
+         */
+        val playlistMirrors: List<RemotePlaylistMirror> = emptyList(),
     )
 
     /** A first sync paused at the consent gate, with everything the push needs. */
@@ -284,7 +291,10 @@ class SyncEngine(
         val favouriteItems = if (favouritesId.isBlank()) {
             emptyList()
         } else {
-            pullPlaylistPages(backend, favouritesId) ?: return null
+            when (val r = fetchPlaylistPages(backend, favouritesId)) {
+                is OpResult.Ok -> r.value
+                else -> return failFrom(r)
+            }
         }
         return RemoteSnapshot(
             target = target,
@@ -293,24 +303,87 @@ class SyncEngine(
             channels = channels,
             playlists = playlists,
             favouriteItems = favouriteItems,
+            playlistMirrors = pullMirrors(backend, accountKey, playlists, favouritesId),
         )
     }
 
-    /** Every page of one playlist; `null` on the first failed page. */
-    private suspend fun pullPlaylistPages(backend: SyncBackend, playlistId: String): List<RemotePlaylistItem>? {
+    /**
+     * The mirrors the library should hold after this sync: one per playlist the
+     * account owns, minus the favourites mirror (the Favourites tab already
+     * represents that playlist).
+     *
+     * Membership is re-pulled only when the account's item count differs from
+     * what the mirror stored — the count is the only change signal YouTube gives
+     * without a per-playlist request — and at most [MAX_PLAYLIST_ITEM_PULLS] of
+     * them per sync, so an account with many playlists cannot turn one sync into
+     * a burst of requests. A playlist over the budget, or whose pull fails, is
+     * still reported with its title and count and no items: the library keeps
+     * the ids it already has and the next sync tries again. Unlike the
+     * favourites pull, one playlist's failure does not fail the sync — the other
+     * playlists are still worth having.
+     *
+     * The list is deliberately unfiltered and uncapped beyond that: the library
+     * drops a mirror whose id is blank or collides with a local playlist, and
+     * applies its own [LibraryStore.MAX_PLAYLISTS] bound, so the rule about what
+     * may be stored lives in one place.
+     */
+    private suspend fun pullMirrors(
+        backend: SyncBackend,
+        accountKey: String,
+        playlists: List<RemotePlaylist>,
+        favouritesPlaylistId: String,
+    ): List<RemotePlaylistMirror> {
+        val storedCounts = library.remotePlaylistCounts(accountKey)
+        var budget = MAX_PLAYLIST_ITEM_PULLS
+        val mirrors = ArrayList<RemotePlaylistMirror>(playlists.size)
+        for (playlist in playlists) {
+            val id = playlist.playlistId
+            if (id.isBlank() || id == favouritesPlaylistId) continue
+            val settled = storedCounts[id] == playlist.itemCount
+            if (settled || budget <= 0) {
+                mirrors += RemotePlaylistMirror(id, playlist.title, playlist.itemCount)
+                continue
+            }
+            budget--
+            val items = when (val r = fetchPlaylistPages(backend, id)) {
+                is OpResult.Ok -> r.value
+                else -> null
+            }
+            mirrors += RemotePlaylistMirror(
+                playlistId = id,
+                title = playlist.title,
+                itemCount = playlist.itemCount,
+                items = items?.map { it.toVideoItem() },
+            )
+        }
+        return mirrors
+    }
+
+    /**
+     * Every page of one playlist, as a transport result so the caller decides
+     * what a failure means: the favourites pull fails the whole sync, while a
+     * mirror keeps what it already had.
+     */
+    private suspend fun fetchPlaylistPages(
+        backend: SyncBackend,
+        playlistId: String,
+    ): OpResult<List<RemotePlaylistItem>> {
         val items = ArrayList<RemotePlaylistItem>()
         var next: String? = null
         var pages = 0
         do {
-            val page = when (val r = backend.pullPlaylist(playlistId, next)) {
-                is OpResult.Ok -> r.value
-                else -> return failFrom(r)
+            when (val page = backend.pullPlaylist(playlistId, next)) {
+                is OpResult.Ok -> {
+                    items += page.value.items
+                    next = page.value.next
+                }
+                is OpResult.Retryable -> return page
+                is OpResult.Terminal -> return page
+                is OpResult.AuthRequired -> return page
             }
-            items += page.items
-            next = page.next
             pages++
         } while (next != null && pages < MAX_PLAYLIST_PAGES)
-        return items
+        return OpResult.Ok(items)
     }
 
     private suspend fun buildPlan(accountKey: String, remote: RemoteSnapshot): SyncPlan {
@@ -359,6 +432,10 @@ class SyncEngine(
         if (favouriteAdds.isNotEmpty() || plan.favourites.pullDeletes.isNotEmpty()) {
             library.applyFavouritePull(favouriteAdds, plan.favourites.pullDeletes, accountKey, at)
         }
+        // The account's own playlists, mirrored read-only. Called even for an
+        // empty list: the store treats "none reported" as nothing to do, so a
+        // collection that failed to render can never empty the user's library.
+        library.applyRemotePlaylistPull(accountKey, remote.playlistMirrors, at)
     }
 
     private suspend fun preview(plan: SyncPlan, remote: RemoteSnapshot): SyncPreview = SyncPreview(
@@ -595,6 +672,14 @@ class SyncEngine(
 
         /** A pull this large is almost certainly a pagination bug, so it is bounded. */
         const val MAX_PLAYLIST_PAGES = 50
+
+        /**
+         * How many playlist memberships one sync may re-pull. Each one is a
+         * request (plus its pages), so an account with many playlists fills in
+         * over a few syncs instead of stalling the first one on a long chain of
+         * calls.
+         */
+        const val MAX_PLAYLIST_ITEM_PULLS = 25
 
         /** How long a burst of local changes is allowed to settle before syncing. */
         const val DEBOUNCE_MILLIS = 2_000L

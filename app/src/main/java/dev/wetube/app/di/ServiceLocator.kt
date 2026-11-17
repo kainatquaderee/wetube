@@ -43,6 +43,7 @@ import dev.wetube.app.sync.SyncEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -108,6 +109,11 @@ class ServiceLocator(context: Context) {
         json,
         object : AccountKeySource {
             override suspend fun current(): String? = auth.accountKey.first()
+
+            // The real flow, not the interface's emit-once default: the library
+            // must follow a switch while the process is alive, not only at the
+            // next launch.
+            override fun currentKey(): Flow<String?> = auth.accountKey
         },
     )
     val backup = BackupStore(library, settings, json)
@@ -167,6 +173,18 @@ class ServiceLocator(context: Context) {
                 downloads.start()
             }
         }
+    }
+
+    /**
+     * Claims history, playlists and cached video metadata written before those
+     * lists became account-scoped (see [LibraryStore.adoptLegacyContent]).
+     *
+     * Off the main thread and behind the same process scope as
+     * [resumePendingDownloads], because it is a one-time DataStore write and
+     * nothing on screen depends on it finishing first.
+     */
+    fun adoptLegacyContent() {
+        appScope.launch { library.adoptLegacyContent() }
     }
 
     val ageGate = AgeGateStore(appContext)

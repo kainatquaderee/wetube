@@ -17,6 +17,10 @@ class WeTubeApp : Application(), ImageLoaderFactory {
         // download service is not restarted by the platform, so without this a
         // record stranded mid-queue would wait for the user's next download.
         locator.resumePendingDownloads()
+        // Content written before history and playlists became account-scoped sits
+        // under bare keys. Claim it for the account signed in on this first
+        // launch so the upgrade does not look like a wipe.
+        locator.adoptLegacyContent()
     }
 
     /**

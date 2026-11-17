@@ -8,8 +8,11 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.wetube.app.core.decodeEntities
 import dev.wetube.app.data.model.VideoItem
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -37,6 +40,18 @@ interface AccountKeySource {
 
     suspend fun current(): String?
 
+    /**
+     * The same key as a flow, so a library read can follow an account switch.
+     *
+     * The default emits [current] once and then completes, which is all a fake
+     * source in a test needs (and all any implementation that cannot switch
+     * accounts can do). The production source overrides it with the real
+     * `AuthStore` flow; without that override a signed-in-then-switched library
+     * would keep showing the previous account's content until the process
+     * restarted.
+     */
+    fun currentKey(): Flow<String?> = flow { emit(current()) }
+
     companion object {
         /** The source used when no account is signed in. */
         val SignedOut: AccountKeySource = object : AccountKeySource {
@@ -49,17 +64,22 @@ interface AccountKeySource {
 data class ResumeEntry(val video: VideoItem, val positionMs: Long, val updatedAt: Long)
 
 /**
- * A WeTube-local playlist, independent of any account.
+ * A playlist the Library shows, either device-local or mirrored from the
+ * signed-in account.
  *
- * The [id] is generated locally with a `local:` prefix (see
+ * A local playlist's [id] is generated locally with a `local:` prefix (see
  * [LibraryStore.createPlaylist]) so it can never collide with a remote playlist
  * id: local playlists are device content and are deliberately never synced or
  * reconciled with the account, so nothing here can be mistaken for a playlist
- * the account owns. It keeps only video ids rather than full [VideoItem]s, so a
- * playlist stays a small list; a bounded metadata cache
- * ([LibraryStore.videoMeta]) holds the display fields of the ids it names so it
- * renders without a network call. Watch Later and the queue, which must always
- * render, keep the whole item instead.
+ * the account owns. A mirrored playlist instead reuses the YouTube playlist id
+ * and is flagged [remote]; it is a read-only projection of the account (see
+ * [LibraryStore.applyRemotePlaylistPull]) and is never written back.
+ *
+ * A playlist keeps only video ids rather than full [VideoItem]s, so it stays a
+ * small list; a bounded metadata cache ([LibraryStore.videoMeta]) holds the
+ * display fields of the ids it names so it renders without a network call.
+ * Watch Later and the queue, which must always render, keep the whole item
+ * instead.
  */
 @Serializable
 data class LocalPlaylist(
@@ -68,6 +88,30 @@ data class LocalPlaylist(
     val videoIds: List<String> = emptyList(),
     val createdAt: Long = 0,
     val updatedAt: Long = 0,
+    /** True for a mirror of one of the account's own playlists; read-only here. */
+    val remote: Boolean = false,
+    /**
+     * The item count YouTube reports for a [remote] playlist. It is what decides
+     * whether the next sync re-pulls the items, and what the row counts when the
+     * items themselves were not pulled. Always 0 for a local playlist.
+     */
+    val remoteCount: Int = 0,
+)
+
+/**
+ * One playlist the account owns, as the sync engine hands it to
+ * [LibraryStore.applyRemotePlaylistPull].
+ *
+ * [itemCount] is YouTube's own count and is what the mirror stores; [items] is
+ * the membership pulled this sync, or `null` when the pull was skipped because
+ * the count had not changed or because this sync's budget ran out. `null` means
+ * "keep what is stored" — the ids *and* the count — never "empty".
+ */
+data class RemotePlaylistMirror(
+    val playlistId: String,
+    val title: String,
+    val itemCount: Int,
+    val items: List<VideoItem>? = null,
 )
 
 /**
@@ -96,7 +140,10 @@ data class LibrarySnapshot(
     val watchLater: List<VideoItem> = emptyList(),
     /** Device-local play queue, in play order. */
     val queue: List<VideoItem> = emptyList(),
-    /** Device-local playlists; each stores only video ids, cached in [videoMeta]. */
+    /**
+     * Playlists: the user's own (ids beginning `local:`) plus read-only mirrors
+     * of the account's; each stores only video ids, cached in [videoMeta].
+     */
     val playlists: List<LocalPlaylist> = emptyList(),
     /**
      * Device-local cache of the display metadata for videos a playlist names by
@@ -117,8 +164,18 @@ data class LibrarySnapshot(
  * subscribe or favourite records a `pendingOp` in the same store a future sync
  * engine reads. Only subscriptions and favourites are synced; the Watch Later,
  * queue, local-playlist collections and the video-metadata cache are device-only
- * and never touch the sync metadata. Content behaviour is unchanged whether or
- * not an account is signed in; only the metadata is account-gated.
+ * and never touch the sync metadata.
+ *
+ * History, playlists and the video-metadata cache are *account-scoped*: their
+ * DataStore keys carry an `@<accountKey>` suffix while an account is signed in,
+ * so two accounts on one device never see each other's history or playlists and
+ * a mirror of one account's playlists can never be read as another's. Signed
+ * out (and for every record written before scoping existed) the bare key is
+ * used, which stays the "signed out" bucket; [adoptLegacyContent] copies the
+ * legacy bucket into the scope of the account signed in at first launch. The
+ * remaining lists — favourites, resume points, subscriptions, Watch Later and
+ * the queue — stay global, because they are reconciled with the account by sync
+ * rather than by key.
  */
 class LibraryStore internal constructor(
     private val dataStore: DataStore<Preferences>,
@@ -138,6 +195,30 @@ class LibraryStore internal constructor(
     private val playlistsKey = stringPreferencesKey("playlists")
     private val videoMetaKey = stringPreferencesKey("video_meta")
 
+    /** Set once [adoptLegacyContent] has run; its presence makes that a no-op. */
+    private val legacyAdoptedKey = stringPreferencesKey("content_scoped_v1")
+
+    /**
+     * The DataStore key holding [base] for [accountKey].
+     *
+     * A blank key means signed out and yields [base] itself, so the historical
+     * keys keep working as the signed-out bucket and an existing installation
+     * reads its records unchanged until [adoptLegacyContent] moves them.
+     */
+    private fun keyFor(base: Preferences.Key<String>, accountKey: String?): Preferences.Key<String> =
+        if (accountKey.isNullOrBlank()) base else stringPreferencesKey("${base.name}@$accountKey")
+
+    /**
+     * Reads [base] from the scope of the account that is signed in *now*, and
+     * follows a switch: the inner read is re-collected against the new key.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun <T> scoped(base: Preferences.Key<String>, decode: (String?) -> T): Flow<T> =
+        accountKeys.currentKey().flatMapLatest { accountKey ->
+            val key = keyFor(base, accountKey)
+            dataStore.data.map { decode(it[key]) }
+        }
+
     private val videoList = ListSerializer(VideoItem.serializer())
     private val resumeList = ListSerializer(ResumeEntry.serializer())
     private val playlistList = ListSerializer(LocalPlaylist.serializer())
@@ -145,8 +226,9 @@ class LibraryStore internal constructor(
     /** Shared with [SyncMetadataStore], so both read and write identical JSON. */
     private val syncCodec = SyncMetadataCodec(json)
 
-    val history: Flow<List<VideoItem>> = dataStore.data.map { p ->
-        decodeVideos(p[historyKey]).map(::displayDecoded)
+    /** Watch history of the account that is signed in now (or of the signed-out bucket). */
+    val history: Flow<List<VideoItem>> = scoped(historyKey) { raw ->
+        decodeVideos(raw).map(::displayDecoded)
     }
 
     val favourites: Flow<List<VideoItem>> = dataStore.data.map { p ->
@@ -173,25 +255,27 @@ class LibraryStore internal constructor(
         decodeVideos(p[queueKey]).map(::displayDecoded)
     }
 
-    /** WeTube-local playlists, in creation order. Device-local; never synced. */
-    val playlists: Flow<List<LocalPlaylist>> = dataStore.data.map { p ->
-        decodePlaylists(p[playlistsKey])
-    }
+    /**
+     * Playlists for the account that is signed in now: local ones in creation
+     * order, then the read-only mirrors of the account's own playlists.
+     */
+    val playlists: Flow<List<LocalPlaylist>> = scoped(playlistsKey, ::decodePlaylists)
 
     /**
-     * Display metadata for the videos a local playlist names by id, keyed by id,
-     * most recently cached first. Device-local; never synced. It is what lets an
-     * id-only playlist render a row without a network call.
+     * Display metadata for the videos a playlist names by id, keyed by id, most
+     * recently cached first, for the account that is signed in now. It is what
+     * lets an id-only playlist render a row without a network call.
      */
-    val videoMeta: Flow<Map<String, VideoItem>> = dataStore.data.map { p ->
-        decodeVideos(p[videoMetaKey]).map(::displayDecoded).associateBy { it.id }
+    val videoMeta: Flow<Map<String, VideoItem>> = scoped(videoMetaKey) { raw ->
+        decodeVideos(raw).map(::displayDecoded).associateBy { it.id }
     }
 
     suspend fun addToHistory(video: VideoItem) {
+        val key = keyFor(historyKey, accountKeys.current())
         dataStore.edit { p ->
-            val current = decodeVideos(p[historyKey])
-            val next = (listOf(video) + current.filterNot { it.id == video.id }).take(200)
-            p[historyKey] = json.encodeToString(videoList, next)
+            val current = decodeVideos(p[key])
+            val next = (listOf(video) + current.filterNot { it.id == video.id }).take(MAX_HISTORY)
+            p[key] = json.encodeToString(videoList, next)
         }
     }
 
@@ -284,7 +368,8 @@ class LibraryStore internal constructor(
     }
 
     suspend fun clearHistory() {
-        dataStore.edit { it.remove(historyKey) }
+        val key = keyFor(historyKey, accountKeys.current())
+        dataStore.edit { it.remove(key) }
     }
 
     // ----- Local collections (device-only, never synced) --------------------
@@ -375,26 +460,28 @@ class LibraryStore internal constructor(
         require(trimmed.isNotEmpty()) { "A playlist name cannot be blank." }
         val now = System.currentTimeMillis()
         val playlist = LocalPlaylist(
-            id = "local:${UUID.randomUUID()}",
+            id = "$LOCAL_PLAYLIST_PREFIX${UUID.randomUUID()}",
             name = trimmed,
             createdAt = now,
             updatedAt = now,
         )
+        val key = keyFor(playlistsKey, accountKeys.current())
         dataStore.edit { p ->
-            val current = decodePlaylists(p[playlistsKey])
+            val current = decodePlaylists(p[key])
             val combined = current + playlist
             val next = if (combined.size <= MAX_PLAYLISTS) {
                 combined
             } else {
-                // Evict the least recently updated; ties fall back to creation
-                // order, so trimming stays deterministic.
-                val evicted = combined.sortedBy { it.updatedAt }
-                    .take(combined.size - MAX_PLAYLISTS)
-                    .map { it.id }
-                    .toHashSet()
+                // Evict the least recently updated, oldest first. A remote mirror
+                // is evicted before any local playlist: it is a projection of the
+                // account and the next sync brings it straight back, while a local
+                // playlist is the only copy of what the user built.
+                val byAge = combined.filter { it.remote }.sortedBy { it.updatedAt } +
+                    combined.filterNot { it.remote }.sortedBy { it.updatedAt }
+                val evicted = byAge.take(combined.size - MAX_PLAYLISTS).map { it.id }.toHashSet()
                 combined.filterNot { it.id in evicted }
             }
-            p[playlistsKey] = json.encodeToString(playlistList, next)
+            p[key] = json.encodeToString(playlistList, next)
         }
         return playlist
     }
@@ -410,13 +497,16 @@ class LibraryStore internal constructor(
         updatePlaylist(id) { it.copy(name = trimmed) }
     }
 
-    /** Deletes the playlist with [id]; an unknown id is ignored. */
+    /** Deletes the playlist with [id]; an unknown or mirrored id is ignored. */
     suspend fun deletePlaylist(id: String) {
+        val key = keyFor(playlistsKey, accountKeys.current())
         dataStore.edit { p ->
-            val current = decodePlaylists(p[playlistsKey])
-            val next = current.filterNot { it.id == id }
-            if (next.size == current.size) return@edit
-            p[playlistsKey] = json.encodeToString(playlistList, next)
+            val current = decodePlaylists(p[key])
+            // A mirrored playlist belongs to the account: deleting it here would
+            // only hide it until the next sync, so the request is refused.
+            val target = current.firstOrNull { it.id == id }
+            if (target == null || target.remote) return@edit
+            p[key] = json.encodeToString(playlistList, current.filterNot { it.id == id })
         }
     }
 
@@ -468,6 +558,145 @@ class LibraryStore internal constructor(
         updatePlaylist(playlistId) { it.copy(videoIds = videoIds.take(MAX_PLAYLIST_ITEMS)) }
     }
 
+    // ----- Mirrors of the account's own playlists ---------------------------
+
+    /**
+     * The item count stored for each mirrored playlist of [accountKey], keyed by
+     * playlist id. The sync engine compares this with what the account reports to
+     * decide which mirrors need their items re-pulled.
+     */
+    suspend fun remotePlaylistCounts(accountKey: String): Map<String, Int> =
+        decodePlaylists(dataStore.data.first()[keyFor(playlistsKey, accountKey)])
+            .filter { it.remote }
+            .associate { it.id to it.remoteCount }
+
+    /**
+     * Replaces the mirrored half of [accountKey]'s playlists with [mirrors].
+     *
+     * Local playlists are never touched: they stay, in their existing order, at
+     * the front of the list, and the mirrors follow in the order the account
+     * returned them. A playlist that is still on the account keeps its
+     * `createdAt`, and its `updatedAt` only moves when its title, item count or
+     * items actually changed — so the tab does not reshuffle on a quiet sync.
+     *
+     * A mirror whose [RemotePlaylistMirror.items] is `null` keeps both the ids
+     * and the item count it already had, so a skipped or failed item pull is
+     * retried by the next sync instead of being recorded as up to date; a mirror
+     * that has never been pulled stores a count of 0 for the same reason.
+     *
+     * Item metadata is cached in the *same* transaction as the id lists, so a
+     * mirrored playlist renders as soon as it appears. Both lists are capped
+     * ([MAX_PLAYLISTS], [MAX_PLAYLIST_ITEMS]); local playlists win the outer cap,
+     * because a dropped mirror is re-pulled by the next sync while a dropped
+     * local playlist is gone.
+     *
+     * An empty [mirrors] is a deliberate no-op. The account can answer "no
+     * playlists" for a reason that is not "there are none" (the aggregation tab
+     * failing to render, a signed-out cookie jar), and acting on that would
+     * delete every mirror the user can see.
+     *
+     * Returns how many mirrors were stored.
+     */
+    suspend fun applyRemotePlaylistPull(
+        accountKey: String,
+        mirrors: List<RemotePlaylistMirror>,
+        at: Long,
+    ): Int {
+        if (mirrors.isEmpty()) return 0
+        val listKey = keyFor(playlistsKey, accountKey)
+        val metaKey = keyFor(videoMetaKey, accountKey)
+        var stored = 0
+        dataStore.edit { p ->
+            val current = decodePlaylists(p[listKey])
+            val existing = current.associateBy { it.id }
+            val locals = current.filterNot { it.remote }
+            val mirrored = ArrayList<LocalPlaylist>(mirrors.size)
+            val pulledMeta = ArrayList<VideoItem>()
+            for (mirror in mirrors) {
+                if (mirrored.size + locals.size >= MAX_PLAYLISTS) break
+                // A local id can never look like a playlist id, but a crafted
+                // backup could try; a mirror may not overwrite local content.
+                if (mirror.playlistId.isBlank() || mirror.playlistId.startsWith(LOCAL_PLAYLIST_PREFIX)) continue
+                val previous = existing[mirror.playlistId]?.takeIf { it.remote }
+                val items = mirror.items
+                val videoIds = when {
+                    items != null -> items.map { it.id }.take(MAX_PLAYLIST_ITEMS)
+                    previous != null -> previous.videoIds
+                    // Never pulled yet (over this sync's budget, or the item pull
+                    // failed): an empty list is honest, and `remoteCount = 0`
+                    // below makes the next sync try again.
+                    else -> emptyList()
+                }
+                // A mirror whose items were not pulled this sync keeps the count
+                // it already had, so a skipped or failed pull cannot look like
+                // "up to date" and strand an empty playlist forever.
+                val remoteCount = when {
+                    items != null -> mirror.itemCount
+                    previous != null -> previous.remoteCount
+                    else -> 0
+                }
+                items?.let { list -> pulledMeta += list.take(MAX_PLAYLIST_ITEMS) }
+                val name = mirror.title.ifBlank { previous?.name.orEmpty() }
+                val changed = previous == null ||
+                    previous.name != name ||
+                    previous.videoIds != videoIds ||
+                    previous.remoteCount != remoteCount
+                mirrored += LocalPlaylist(
+                    id = mirror.playlistId,
+                    name = name,
+                    videoIds = videoIds,
+                    createdAt = previous?.createdAt ?: at,
+                    updatedAt = if (changed) {
+                        maxOf(at, (previous?.updatedAt ?: 0L) + 1)
+                    } else {
+                        previous?.updatedAt ?: at
+                    },
+                    remote = true,
+                    remoteCount = remoteCount,
+                )
+            }
+            stored = mirrored.size
+            val next = locals + mirrored
+            if (next != current) p[listKey] = json.encodeToString(playlistList, next)
+            if (pulledMeta.isNotEmpty()) {
+                val meta = decodeVideos(p[metaKey])
+                val merged = mergeVideoMeta(meta, pulledMeta, MAX_VIDEO_META)
+                if (merged !== meta) p[metaKey] = json.encodeToString(videoList, merged)
+            }
+        }
+        return stored
+    }
+
+    /**
+     * One-shot migration for installations that predate account scoping.
+     *
+     * History, playlists and the video-metadata cache used to live under bare
+     * keys. The first launch after the upgrade copies them into the scope of the
+     * account that is signed in *now*, so the user's existing history and
+     * playlists are still there; the bare keys stay as the signed-out bucket.
+     * Signed out at that moment means nothing is copied and the legacy records
+     * remain the signed-out library.
+     *
+     * A marker makes it run exactly once: an account signed in later must not
+     * inherit a bucket it never owned, and a second run must not overwrite a
+     * scope that has since moved on. A scoped record that already exists is left
+     * alone for the same reason.
+     */
+    suspend fun adoptLegacyContent() {
+        val owner = accountKeys.current()
+        dataStore.edit { p ->
+            if (p[legacyAdoptedKey] != null) return@edit
+            if (owner != null) {
+                for (base in listOf(historyKey, playlistsKey, videoMetaKey)) {
+                    val legacy = p[base] ?: continue
+                    val scoped = keyFor(base, owner)
+                    if (p[scoped] == null) p[scoped] = legacy
+                }
+            }
+            p[legacyAdoptedKey] = "1"
+        }
+    }
+
     // ----- Local video-metadata cache ---------------------------------------
 
     /**
@@ -482,11 +711,12 @@ class LibraryStore internal constructor(
      */
     suspend fun cacheVideos(videos: List<VideoItem>) {
         if (videos.isEmpty()) return
+        val key = keyFor(videoMetaKey, accountKeys.current())
         dataStore.edit { p ->
-            val current = decodeVideos(p[videoMetaKey])
+            val current = decodeVideos(p[key])
             val next = mergeVideoMeta(current, videos, MAX_VIDEO_META)
             if (next === current) return@edit
-            p[videoMetaKey] = json.encodeToString(videoList, next)
+            p[key] = json.encodeToString(videoList, next)
         }
     }
 
@@ -512,34 +742,44 @@ class LibraryStore internal constructor(
      *
      * The new stamp is at least one millisecond past the old one so two edits in
      * the same millisecond still leave a strictly newer `updatedAt`.
+     *
+     * A mirrored playlist is refused: its contents are a projection of the
+     * account (see [applyRemotePlaylistPull]), so a local edit to one would be
+     * discarded by the next sync. The UI hides those actions; this is the guard
+     * that makes the rule true for every caller.
      */
     private suspend fun updatePlaylist(
         id: String,
         cachedVideo: VideoItem? = null,
         block: (LocalPlaylist) -> LocalPlaylist,
     ) {
+        val scope = accountKeys.current()
+        val listKey = keyFor(playlistsKey, scope)
+        val metaKey = keyFor(videoMetaKey, scope)
         dataStore.edit { p ->
-            val current = decodePlaylists(p[playlistsKey])
+            val current = decodePlaylists(p[listKey])
             val index = current.indexOfFirst { it.id == id }
             if (index < 0) return@edit
+            if (current[index].remote) return@edit
             if (cachedVideo != null) {
-                val meta = decodeVideos(p[videoMetaKey])
+                val meta = decodeVideos(p[metaKey])
                 val merged = mergeVideoMeta(meta, listOf(cachedVideo), MAX_VIDEO_META)
-                if (merged !== meta) p[videoMetaKey] = json.encodeToString(videoList, merged)
+                if (merged !== meta) p[metaKey] = json.encodeToString(videoList, merged)
             }
             val existing = current[index]
             val updated = block(existing)
             if (updated == existing) return@edit
             val stamped = updated.copy(updatedAt = maxOf(System.currentTimeMillis(), existing.updatedAt + 1))
             val next = current.toMutableList().apply { this[index] = stamped }
-            p[playlistsKey] = json.encodeToString(playlistList, next)
+            p[listKey] = json.encodeToString(playlistList, next)
         }
     }
 
     suspend fun snapshot(): LibrarySnapshot {
+        val scope = accountKeys.current()
         val prefs = dataStore.data.first()
         return LibrarySnapshot(
-            history = decodeVideos(prefs[historyKey]),
+            history = decodeVideos(prefs[keyFor(historyKey, scope)]),
             favourites = decodeVideos(prefs[favouritesKey]),
             resume = prefs[resumeKey]
                 ?.let { runCatching { json.decodeFromString(resumeList, it) }.getOrNull() }
@@ -549,8 +789,8 @@ class LibraryStore internal constructor(
             // back here keeps a backup from carrying more than the app allows.
             watchLater = decodeVideos(prefs[watchLaterKey]).take(MAX_WATCH_LATER),
             queue = decodeVideos(prefs[queueKey]).take(MAX_QUEUE),
-            playlists = decodePlaylists(prefs[playlistsKey]).take(MAX_PLAYLISTS),
-            videoMeta = decodeVideos(prefs[videoMetaKey]).take(MAX_VIDEO_META),
+            playlists = decodePlaylists(prefs[keyFor(playlistsKey, scope)]).take(MAX_PLAYLISTS),
+            videoMeta = decodeVideos(prefs[keyFor(videoMetaKey, scope)]).take(MAX_VIDEO_META),
         )
     }
 
@@ -779,6 +1019,10 @@ class LibraryStore internal constructor(
      * before it can write.
      */
     suspend fun restore(snapshot: LibrarySnapshot) {
+        val scope = accountKeys.current()
+        val historyKey = keyFor(this.historyKey, scope)
+        val playlistsKey = keyFor(this.playlistsKey, scope)
+        val videoMetaKey = keyFor(this.videoMetaKey, scope)
         dataStore.edit { p ->
             p[historyKey] = json.encodeToString(videoList, snapshot.history.take(MAX_HISTORY))
             p[favouritesKey] = json.encodeToString(videoList, snapshot.favourites.take(MAX_FAVOURITES))
@@ -855,6 +1099,13 @@ class LibraryStore internal constructor(
         /** Local playlists, and the items one playlist may hold. */
         const val MAX_PLAYLISTS = 100
         const val MAX_PLAYLIST_ITEMS = 500
+
+        /**
+         * Prefix of every locally generated playlist id. It is what tells a local
+         * playlist from a mirror of an account playlist (which reuses the YouTube
+         * id), and it makes a collision with a remote id impossible.
+         */
+        const val LOCAL_PLAYLIST_PREFIX = "local:"
 
         /**
          * Display metadata for the ids a local playlist names. A bound on
