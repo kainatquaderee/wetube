@@ -690,9 +690,12 @@ class InnerTubeBackend(
         var answer: JsonObject? = null
         // A refusal carries YouTube's own explanation in
         // `playabilityStatus.reason` — "Sign in to confirm your age", for
-        // instance. Every profile refuses the same video for the same reason,
-        // so the first explanation is kept: the player shows it to the viewer
-        // and the mature-content filter matches on it.
+        // instance. The first explanation is kept, except that an age wall
+        // replaces it whenever it turns up: the player shows the explanation to
+        // the viewer and the mature-content filter matches on it, and an age
+        // wall becomes an [AgeGateException] instead, which is what tells the
+        // player screen the video is worth reopening in YouTube's own web
+        // player.
         var refusal: String? = null
         for (profile in playbackProfileOrder(skipLeading = fallback)) {
             val attempt = playerFor(profile, id)
@@ -700,15 +703,33 @@ class InnerTubeBackend(
                 answer = attempt.response
                 break
             }
-            if (refusal == null) refusal = attempt.refusal
+            // An age wall outranks the order: it is the only refusal the app can
+            // answer, so it must not be lost because another profile happened to
+            // speak first with a reason of its own.
+            if (refusal == null || (!isAgeWallMessage(refusal) && isAgeWallMessage(attempt.refusal))) {
+                refusal = attempt.refusal
+            }
         }
-        val response = answer
-            ?: throw IOException(refusal ?: "YouTube did not answer the player request.")
+        val response = answer ?: throw refusalException(refusal)
 
         playerMemoId = id
         playerMemoAt = SystemClock.elapsedRealtime()
         playerMemo = response
         response
+    }
+
+    /**
+     * The failure for a resolve that every profile refused.
+     *
+     * An age wall gets its own type because it is the one refusal the player
+     * screen can work around: YouTube streams such a video only to a browser,
+     * so the screen reopens it there instead of showing an error. Every other
+     * refusal keeps the plain [IOException] that carries YouTube's sentence.
+     */
+    private fun refusalException(reason: String?): IOException = when {
+        reason == null -> IOException("YouTube did not answer the player request.")
+        isAgeWallMessage(reason) -> AgeGateException(reason)
+        else -> IOException(reason)
     }
 
     /**

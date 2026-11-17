@@ -69,7 +69,7 @@ class ContentFilterBackend(
         return try {
             delegate.video(id)
         } catch (e: IOException) {
-            if (isAgeWall(e.message)) runCatching { ageGate.mark(id) }
+            if (isAgeWallMessage(e.message)) runCatching { ageGate.mark(id) }
             throw e
         }
     }
@@ -113,11 +113,4 @@ class ContentFilterBackend(
      * the InnerTube transport is wrapped by this filter.
      */
     override val sync: SyncBackend? get() = delegate.sync
-
-    private fun isAgeWall(message: String?): Boolean {
-        val text = message.orEmpty()
-        return text.contains("confirm your age", ignoreCase = true) ||
-            text.contains("age-restricted", ignoreCase = true) ||
-            text.contains("inappropriate for some users", ignoreCase = true)
-    }
 }
