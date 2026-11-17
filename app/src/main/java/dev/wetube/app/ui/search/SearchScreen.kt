@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -45,12 +46,16 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import dev.wetube.app.core.youtubeVideoId
+import dev.wetube.app.data.model.FeedBlock
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.ui.FeedShelfRow
 import dev.wetube.app.ui.LoadingBox
 import dev.wetube.app.ui.MessageBox
 import dev.wetube.app.ui.VideoCard
+import dev.wetube.app.ui.appendFeedPage
 import dev.wetube.app.ui.friendlyError
+import dev.wetube.app.ui.nextFeedToken
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -60,6 +65,14 @@ data class SearchUiState(
     val loading: Boolean = false,
     val loadingMore: Boolean = false,
     val results: List<VideoItem> = emptyList(),
+    /**
+     * The same page as [results], kept in the order the search returned it.
+     *
+     * A result page interleaves video rows with shelves — the Shorts rows in
+     * particular — and flattening it would lose both. Empty means this transport
+     * has no shelves (Invidious, Piped), and the list is shown from [results].
+     */
+    val blocks: List<FeedBlock> = emptyList(),
     val suggestions: List<String> = emptyList(),
     val nextPage: String? = null,
     val error: String? = null,
@@ -104,7 +117,8 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
                 state = state.copy(
                     loading = false,
                     results = page.videos.distinctBy { it.id },
-                    nextPage = page.nextPage,
+                    blocks = page.blocks,
+                    nextPage = nextFeedToken(page.nextPage, null),
                 )
             }.onFailure {
                 state = state.copy(loading = false, error = friendlyError(it))
@@ -129,7 +143,8 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
                     state = state.copy(
                         loadingMore = false,
                         results = (state.results + page.videos).distinctBy { it.id },
-                        nextPage = page.nextPage,
+                        blocks = appendFeedPage(state.blocks, page.blocks),
+                        nextPage = nextFeedToken(page.nextPage, next),
                     )
                 } else {
                     state = state.copy(loadingMore = false)
@@ -157,6 +172,7 @@ fun SearchScreen(
     locator: ServiceLocator,
     onVideoClick: (String) -> Unit,
     onChannelClick: (String) -> Unit,
+    onShortsClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: SearchViewModel = viewModel(factory = SearchViewModel.factory(locator))
@@ -250,7 +266,7 @@ fun SearchScreen(
 
         when {
             state.loading -> LoadingBox()
-            state.error != null && state.results.isEmpty() -> MessageBox(
+            state.error != null && state.results.isEmpty() && state.blocks.isEmpty() -> MessageBox(
                 title = "Search failed",
                 body = state.error,
             ) {
@@ -260,7 +276,7 @@ fun SearchScreen(
                 title = "Search",
                 body = "Find videos, or paste a link to watch something specific.",
             )
-            state.results.isEmpty() -> MessageBox(
+            state.results.isEmpty() && state.blocks.isEmpty() -> MessageBox(
                 title = "No results",
                 body = "Nothing matched \"${state.query}\".",
             )
@@ -268,14 +284,46 @@ fun SearchScreen(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
             ) {
-                items(state.results, key = { it.id }) { video ->
-                    VideoCard(
-                        video = video,
-                        onClick = { onVideoClick(video.id) },
-                        onChannelClick = {
-                            if (video.channelId.isNotBlank()) onChannelClick(video.channelId)
+                if (state.blocks.isEmpty()) {
+                    // A transport without shelves (Invidious, Piped) only has
+                    // the flat list, so it is shown as rows rather than as
+                    // nothing at all.
+                    items(state.results, key = { it.id }) { video ->
+                        VideoCard(
+                            video = video,
+                            onClick = { onVideoClick(video.id) },
+                            onChannelClick = {
+                                if (video.channelId.isNotBlank()) onChannelClick(video.channelId)
+                            },
+                        )
+                    }
+                } else {
+                    itemsIndexed(
+                        state.blocks,
+                        key = { index, block ->
+                            when (block) {
+                                is FeedBlock.Video -> block.video.id
+                                is FeedBlock.Shelf -> "shelf/$index/${block.shelf.title}"
+                            }
                         },
-                    )
+                    ) { _, block ->
+                        when (block) {
+                            is FeedBlock.Video -> VideoCard(
+                                video = block.video,
+                                onClick = { onVideoClick(block.video.id) },
+                                onChannelClick = {
+                                    val channel = block.video.channelId
+                                    if (channel.isNotBlank()) onChannelClick(channel)
+                                },
+                            )
+
+                            is FeedBlock.Shelf -> FeedShelfRow(
+                                shelf = block.shelf,
+                                onVideoClick = { onVideoClick(it.id) },
+                                onShortsClick = { onShortsClick(it.id) },
+                            )
+                        }
+                    }
                 }
                 // The next page is requested by the visibility effect above;
                 // this footer only reports progress and offers a retry if the

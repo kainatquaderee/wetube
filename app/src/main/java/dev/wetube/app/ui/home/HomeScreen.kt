@@ -2,28 +2,20 @@ package dev.wetube.app.ui.home
 
 import android.os.SystemClock
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -44,11 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -58,19 +46,16 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import coil.compose.AsyncImage
 import dev.wetube.app.data.model.FeedChip
-import dev.wetube.app.data.model.FeedShelf
-import dev.wetube.app.data.model.HomeBlock
-import dev.wetube.app.data.model.VideoItem
+import dev.wetube.app.data.model.FeedBlock
 import dev.wetube.app.di.ServiceLocator
-import dev.wetube.app.ui.Badge
+import dev.wetube.app.ui.FeedShelfRow
 import dev.wetube.app.ui.LoadingBox
 import dev.wetube.app.ui.MessageBox
 import dev.wetube.app.ui.VideoCard
-import dev.wetube.app.ui.compactCount
-import dev.wetube.app.ui.formatDuration
+import dev.wetube.app.ui.appendFeedPage
 import dev.wetube.app.ui.friendlyError
+import dev.wetube.app.ui.nextFeedToken
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
@@ -78,7 +63,7 @@ import kotlinx.coroutines.launch
 
 data class HomeUiState(
     val loading: Boolean = true,
-    val blocks: List<HomeBlock> = emptyList(),
+    val blocks: List<FeedBlock> = emptyList(),
     /**
      * The account's chip bar, in the order the server sent it. Empty means the
      * backend has no bar at all (a native or third-party transport), in which
@@ -98,42 +83,6 @@ data class HomeUiState(
     /** True while an extra page is being appended below the list. */
     val appending: Boolean = false,
 )
-
-/**
- * Appends [page] to [existing], keeping the order both lists arrived in and
- * dropping anything already shown.
- *
- * The feed repeats items across continuations, and a shelf can repeat a video
- * that also appears as a row; appending blindly would duplicate cards and, worse,
- * give two list entries the same Compose key. A shelf that ends up with nothing
- * new is dropped rather than left on the page as an empty row.
- */
-internal fun appendHomePage(existing: List<HomeBlock>, page: List<HomeBlock>): List<HomeBlock> {
-    if (page.isEmpty()) return existing
-    val seen = existing.flatMap { it.videos }.mapTo(HashSet()) { it.id }
-    val appended = ArrayList<HomeBlock>(page.size)
-    for (block in page) {
-        when (block) {
-            is HomeBlock.Video -> if (seen.add(block.video.id)) appended += block
-            is HomeBlock.Shelf -> {
-                val items = block.shelf.items.filter { seen.add(it.id) }
-                if (items.isNotEmpty()) {
-                    appended += HomeBlock.Shelf(block.shelf.copy(items = items))
-                }
-            }
-        }
-    }
-    return if (appended.isEmpty()) existing else existing + appended
-}
-
-/**
- * The token to keep for the next page, or `null` to stop paginating.
- *
- * A blank token, or the same token coming back unchanged, would ask for the
- * page that was just read; both end the feed instead of looping on it.
- */
-internal fun nextFeedToken(next: String?, pageJustRead: String?): String? =
-    next?.takeIf { it.isNotBlank() && it != pageJustRead }
 
 /** How many cards before the end the next page is requested. */
 private const val FEED_PREFETCH_DISTANCE = 6
@@ -240,7 +189,7 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
                 // its own result owns the list now.
                 if (startedGeneration != generation) return@launch
                 state = state.copy(
-                    blocks = appendHomePage(state.blocks, page.blocks),
+                    blocks = appendFeedPage(state.blocks, page.blocks),
                     chips = page.chips.ifEmpty { state.chips },
                     nextPage = nextFeedToken(page.nextPage, token),
                     appending = false,
@@ -427,13 +376,13 @@ fun HomeScreen(
                             state.blocks,
                             key = { index, block ->
                                 when (block) {
-                                    is HomeBlock.Video -> block.video.id
-                                    is HomeBlock.Shelf -> "shelf/$index/${block.shelf.title}"
+                                    is FeedBlock.Video -> block.video.id
+                                    is FeedBlock.Shelf -> "shelf/$index/${block.shelf.title}"
                                 }
                             },
                         ) { _, block ->
                             when (block) {
-                                is HomeBlock.Video -> VideoCard(
+                                is FeedBlock.Video -> VideoCard(
                                     video = block.video,
                                     onClick = { onVideoClick(block.video.id) },
                                     onChannelClick = {
@@ -442,19 +391,10 @@ fun HomeScreen(
                                     },
                                 )
 
-                                is HomeBlock.Shelf -> FeedShelfRow(
+                                is FeedBlock.Shelf -> FeedShelfRow(
                                     shelf = block.shelf,
-                                    onClick = { video ->
-                                        // A clip in a Shorts shelf opens the
-                                        // Shorts player on that clip, which is
-                                        // what the shelf is for; every other
-                                        // shelf is a row of ordinary videos.
-                                        if (block.shelf.isShorts) {
-                                            onShortsClick(video.id)
-                                        } else {
-                                            onVideoClick(video.id)
-                                        }
-                                    },
+                                    onVideoClick = { onVideoClick(it.id) },
+                                    onShortsClick = { onShortsClick(it.id) },
                                 )
                             }
                         }
@@ -476,114 +416,6 @@ fun HomeScreen(
                     }
                 }
             }
-        }
-    }
-}
-
-/**
- * One shelf of the feed: its title and a horizontally scrolling row of cards.
- *
- * Shorts shelves keep the app's portrait cards, so a clip looks the way it does
- * in the Shorts tab; every other shelf is a row of ordinary 16:9 videos.
- */
-@Composable
-private fun FeedShelfRow(
-    shelf: FeedShelf,
-    onClick: (VideoItem) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp, bottom = 4.dp),
-    ) {
-        val heading = shelf.title.ifBlank { if (shelf.isShorts) "Shorts" else "" }
-        if (heading.isNotBlank()) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (shelf.isShorts) {
-                    Icon(
-                        imageVector = Icons.Default.PlayCircle,
-                        contentDescription = null,
-                        tint = Color(0xFFFF0033),
-                        modifier = Modifier.size(20.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                }
-                Text(
-                    text = heading,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(shelf.items, key = { it.id }) { item ->
-                FeedShelfCard(item, portrait = shelf.isShorts, onClick = { onClick(item) })
-            }
-        }
-    }
-}
-
-/** A card inside a shelf, sized for its shelf rather than for the full-width feed. */
-@Composable
-private fun FeedShelfCard(
-    video: VideoItem,
-    portrait: Boolean,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .width(if (portrait) 148.dp else 220.dp)
-            .clickable(onClick = onClick),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(if (portrait) 9f / 16f else 16f / 9f)
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-        ) {
-            AsyncImage(
-                model = video.thumbnail,
-                contentDescription = video.title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-            if (video.live) {
-                Badge("LIVE", Color(0xFFFF0033))
-            } else if (video.durationSeconds > 0) {
-                Badge(formatDuration(video.durationSeconds), Color(0xCC000000), Alignment.BottomEnd)
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = video.title,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        val meta = buildList {
-            if (video.channelName.isNotBlank()) add(video.channelName)
-            if (video.views > 0) add("${compactCount(video.views)} views")
-        }.joinToString(" · ")
-        if (meta.isNotBlank()) {
-            Text(
-                text = meta,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }

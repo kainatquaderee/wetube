@@ -5,7 +5,7 @@ import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.FeedPage
-import dev.wetube.app.data.model.HomeBlock
+import dev.wetube.app.data.model.FeedBlock
 import dev.wetube.app.data.model.HomePage
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.StreamFormat
@@ -52,6 +52,22 @@ class ContentFilterBackend(
         return kept
     }
 
+    /**
+     * Drops the blocks, and the cards inside them, that [kept] does not hold.
+     *
+     * A shelf that loses every card is dropped rather than left as an empty row,
+     * and a row keeps its place among the shelves that survive.
+     */
+    private fun List<FeedBlock>.keeping(kept: Set<String>): List<FeedBlock> = mapNotNull { block ->
+        when (block) {
+            is FeedBlock.Video -> block.takeIf { block.video.id in kept }
+            is FeedBlock.Shelf -> {
+                val items = block.shelf.items.filter { it.id in kept }
+                if (items.isEmpty()) null else FeedBlock.Shelf(block.shelf.copy(items = items))
+            }
+        }
+    }
+
     override suspend fun trending(region: String): List<VideoItem> = visible(delegate.trending(region))
 
     override suspend fun trendingPage(region: String, nextPage: String?): FeedPage {
@@ -68,26 +84,22 @@ class ContentFilterBackend(
     override suspend fun homeFeed(region: String, nextPage: String?, chip: String?): HomePage {
         val page = delegate.homeFeed(region, nextPage, chip)
         val kept = visible(page.videos).mapTo(HashSet()) { it.id }
-        return page.copy(
-            blocks = page.blocks.mapNotNull { block ->
-                when (block) {
-                    is HomeBlock.Video -> block.takeIf { block.video.id in kept }
-                    is HomeBlock.Shelf -> {
-                        val items = block.shelf.items.filter { it.id in kept }
-                        if (items.isEmpty()) {
-                            null
-                        } else {
-                            HomeBlock.Shelf(block.shelf.copy(items = items))
-                        }
-                    }
-                }
-            },
-        )
+        return page.copy(blocks = page.blocks.keeping(kept))
     }
 
+    /**
+     * The flat list and the blocks are filtered against one pass over both, so a
+     * block cannot be filtered by a set the list was never part of: search's
+     * blocks carry cards (Shorts in particular) the flat list does not.
+     */
     override suspend fun search(query: String, nextPage: String?): SearchResult {
         val result = delegate.search(query, nextPage)
-        return result.copy(videos = visible(result.videos))
+        val all = (result.videos + result.blocks.flatMap { it.videos }).distinctBy { it.id }
+        val kept = visible(all).mapTo(HashSet()) { it.id }
+        return result.copy(
+            videos = result.videos.filter { it.id in kept },
+            blocks = result.blocks.keeping(kept),
+        )
     }
 
     override suspend fun video(id: String): VideoDetail {

@@ -183,6 +183,12 @@ fun WeTubeRoot(
                         locator = locator,
                         onVideoClick = { id -> navController.navigate("watch/$id") },
                         onChannelClick = { id -> navController.navigate("channel/$id") },
+                        // A Shorts row in the results opens the Shorts section
+                        // on the tapped clip, the same way Home's shelf does.
+                        onShortsClick = { id ->
+                            shortsStart = id
+                            navController.navigate("shorts") { launchSingleTop = true }
+                        },
                     )
                 }
                 composable("library") {

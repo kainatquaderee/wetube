@@ -126,10 +126,18 @@ data class Comment(
     val id: String = "",
 )
 
+/**
+ * One page of results.
+ *
+ * [blocks] keeps the answer in the order it came in, so a Shorts shelf stays
+ * where the search put it among the video rows; transports that have no shelves
+ * leave it empty and the caller falls back to [videos].
+ */
 data class SearchResult(
     val videos: List<VideoItem>,
     val channels: List<ChannelInfo> = emptyList(),
     val nextPage: String? = null,
+    val blocks: List<FeedBlock> = emptyList(),
 )
 
 /**
@@ -158,7 +166,7 @@ data class FeedChip(
 )
 
 /**
- * A shelf inside the feed: one titled horizontal row.
+ * A shelf inside a feed or a result page: one titled horizontal row.
  *
  * [isShorts] is carried by the shelf itself (YouTube marks the Shorts shelf with
  * its brand icon), not guessed from [title], because the title is localised and
@@ -170,11 +178,11 @@ data class FeedShelf(
     val isShorts: Boolean = false,
 )
 
-/** One element of the front page, in the order the feed returned it. */
-sealed interface HomeBlock {
-    data class Video(val video: VideoItem) : HomeBlock
+/** One element of a page, in the order the answer returned it. */
+sealed interface FeedBlock {
+    data class Video(val video: VideoItem) : FeedBlock
 
-    data class Shelf(val shelf: FeedShelf) : HomeBlock
+    data class Shelf(val shelf: FeedShelf) : FeedBlock
 
     /** Every video this block shows; a shelf contributes all of its cards. */
     val videos: List<VideoItem>
@@ -190,10 +198,10 @@ sealed interface HomeBlock {
  * The blocks are kept in feed order rather than flattened into a video list,
  * because a shelf's position among the videos is part of what the page looks
  * like: the Shorts shelf sits between two rows of videos and moves as the feed
- * changes. A transport that has no shelves simply returns [HomeBlock.Video]s.
+ * changes. A transport that has no shelves simply returns [FeedBlock.Video]s.
  */
 data class HomePage(
-    val blocks: List<HomeBlock> = emptyList(),
+    val blocks: List<FeedBlock> = emptyList(),
     val chips: List<FeedChip> = emptyList(),
     val nextPage: String? = null,
 ) {

@@ -16,7 +16,7 @@ import dev.wetube.app.data.model.CommentThreadInfo
 import dev.wetube.app.data.model.FeedChip
 import dev.wetube.app.data.model.FeedPage
 import dev.wetube.app.data.model.FeedShelf
-import dev.wetube.app.data.model.HomeBlock
+import dev.wetube.app.data.model.FeedBlock
 import dev.wetube.app.data.model.HomePage
 import dev.wetube.app.data.model.Playback
 import dev.wetube.app.data.model.SearchResult
@@ -479,7 +479,7 @@ class InnerTubeBackend(
             // A surface whose renderers this reader does not know (the older
             // native feeds) still gets its videos, as a flat list.
             blocks = if (entries.isEmpty()) {
-                videos().map { HomeBlock.Video(it) }
+                videos().map { FeedBlock.Video(it) }
             } else {
                 feedBlocks(entries) { it.feedCard() }
             },
@@ -684,9 +684,14 @@ class InnerTubeBackend(
             if (nextPage != null) put("continuation", nextPage) else put("query", query)
         }
         val response = call("search", web, extra)
+        // The answer is read twice: [videos] is the flat list a caller without a
+        // block renderer can still show, and the blocks keep the order the
+        // search returned, so its Shorts shelves stay between the video rows.
+        val entries = searchEntries(response)
         return SearchResult(
             videos = response.videos(),
-            nextPage = response.continuationToken(),
+            nextPage = feedNextToken(entries),
+            blocks = feedBlocks(entries) { it.feedCard() },
         )
     }
 
@@ -1467,6 +1472,30 @@ internal fun feedEntries(body: JsonObject): List<JsonObject> {
 }
 
 /**
+ * The ordered entries of a search answer.
+ *
+ * Both pages say the same thing in different places. A first page lists its
+ * groups in the primary column's `sectionListRenderer`; a continuation appends
+ * them under `onResponseReceivedCommands[0].appendContinuationItemsAction`. Each
+ * group is an `itemSectionRenderer` wrapping its cards, so the wrappers are
+ * flattened away and what is left is one list in the order the search sent it —
+ * videos, channel shelves and Shorts shelves interleaved as they appear.
+ */
+internal fun searchEntries(body: JsonObject): List<JsonObject> {
+    val sections = body.findArray("continuationItems")?.objects().orEmpty()
+        .ifEmpty {
+            (body.findObject("sectionListRenderer")?.get("contents") as? JsonArray)
+                ?.objects()
+                .orEmpty()
+        }
+    return sections.flatMap { section ->
+        (section["itemSectionRenderer"].obj()?.get("contents") as? JsonArray)
+            ?.objects()
+            ?: listOf(section)
+    }
+}
+
+/**
  * The page's entries as blocks, in the order the feed gave them.
  *
  * An entry this app cannot show — a Playables card, a statement banner, the
@@ -1480,18 +1509,18 @@ internal fun feedEntries(body: JsonObject): List<JsonObject> {
 internal fun feedBlocks(
     entries: List<JsonObject>,
     card: (JsonObject) -> VideoItem?,
-): List<HomeBlock> {
-    val blocks = ArrayList<HomeBlock>(entries.size)
+): List<FeedBlock> {
+    val blocks = ArrayList<FeedBlock>(entries.size)
     val seen = HashSet<String>()
     for (entry in entries) {
         val single = feedEntryCard(entry, card)
         if (single != null) {
-            if (seen.add(single.id)) blocks += HomeBlock.Video(single)
+            if (seen.add(single.id)) blocks += FeedBlock.Video(single)
             continue
         }
         val shelf = feedShelf(entry, card) ?: continue
         val items = shelf.items.filter { seen.add(it.id) }
-        if (items.isNotEmpty()) blocks += HomeBlock.Shelf(shelf.copy(items = items))
+        if (items.isNotEmpty()) blocks += FeedBlock.Shelf(shelf.copy(items = items))
     }
     return blocks
 }
@@ -1514,29 +1543,67 @@ internal fun feedEntryCard(entry: JsonObject, card: (JsonObject) -> VideoItem?):
 /**
  * A titled row of cards, or `null` when the entry is not a shelf.
  *
- * [FeedShelf.isShorts] is decided by the brand icon YouTube puts on the shelf,
- * never by the title: titles are localised, so the same shelf reads "Shorts" in
- * one language and something else in the next.
+ * Three shapes answer to "shelf": the account's own `richShelfRenderer`, the
+ * web's `gridShelfViewModel` (which is what a search puts its Shorts rows in),
+ * and a search's plain `shelfRenderer`, whose cards sit one level down inside
+ * the list renderer that holds them. They differ only in where the title, the
+ * cards and the brand icon are kept.
+ *
+ * [FeedShelf.isShorts] is decided by the brand icon YouTube puts on the shelf —
+ * an `iconType` on the native shape, an image source on the web one — never by
+ * the title: titles are localised, so the same shelf reads "Shorts" in one
+ * language and something else in the next.
  */
 internal fun feedShelf(entry: JsonObject, card: (JsonObject) -> VideoItem?): FeedShelf? {
-    val renderer = (entry["richSectionRenderer"].obj()?.get("content") as? JsonObject)
+    val rich = (entry["richSectionRenderer"].obj()?.get("content") as? JsonObject)
         ?.get("richShelfRenderer").obj()
         ?: entry["richShelfRenderer"].obj()
+    if (rich != null) {
+        return feedShelfOf(
+            title = rich["title"].text().orEmpty(),
+            items = (rich["contents"] as? JsonArray).objects().mapNotNull { item ->
+                (item["richItemRenderer"].obj()?.get("content") as? JsonObject)?.let(card)
+                    ?: card(item)
+            },
+            isShorts = rich["icon"].obj()?.str("iconType")?.startsWith(SHORTS_BRAND) == true,
+        )
+    }
+
+    val grid = entry["gridShelfViewModel"].obj()
+    if (grid != null) {
+        val header = grid["header"].obj()?.get("sectionHeaderViewModel").obj()
+        return feedShelfOf(
+            title = header?.get("headline").text().orEmpty(),
+            items = grid["contents"].objects().mapNotNull(card),
+            isShorts = header?.get("leadingAccessory").obj()
+                ?.get("image").obj()
+                ?.findAll("clientResource").orEmpty()
+                .any { it.str("imageName")?.startsWith(SHORTS_BRAND) == true },
+        )
+    }
+
+    val plain = entry["shelfRenderer"].obj() ?: return null
+    val content = plain["content"].obj()
+    val contents = (content?.get("verticalListRenderer").obj()?.get("items") as? JsonArray)
+        ?: (content?.get("horizontalListRenderer").obj()?.get("items") as? JsonArray)
+        ?: (content?.get("gridRenderer").obj()?.get("items") as? JsonArray)
         ?: return null
-    val contents = renderer["contents"] as? JsonArray ?: return null
-    val items = contents.objects()
-        .mapNotNull { item ->
-            (item["richItemRenderer"].obj()?.get("content") as? JsonObject)?.let(card)
-                ?: card(item)
-        }
-        .distinctBy { it.id }
-    if (items.isEmpty()) return null
-    return FeedShelf(
-        title = renderer["title"].text().orEmpty(),
-        items = items,
-        isShorts = renderer["icon"].obj()?.str("iconType")?.startsWith("YOUTUBE_SHORTS") == true,
+    return feedShelfOf(
+        title = plain["title"].text().orEmpty(),
+        items = contents.objects().mapNotNull(card),
+        isShorts = false,
     )
 }
+
+/** A shelf holding the cards [card] could read, or `null` when it read none. */
+private fun feedShelfOf(title: String, items: List<VideoItem>, isShorts: Boolean): FeedShelf? {
+    val distinct = items.distinctBy { it.id }
+    if (distinct.isEmpty()) return null
+    return FeedShelf(title = title, items = distinct, isShorts = isShorts)
+}
+
+/** How YouTube's brand icon is named, on both the native and the web shape. */
+private const val SHORTS_BRAND = "YOUTUBE_SHORTS"
 
 /**
  * The account's chip bar, in the order the server sent it.

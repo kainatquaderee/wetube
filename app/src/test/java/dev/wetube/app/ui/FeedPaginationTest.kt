@@ -1,7 +1,7 @@
-package dev.wetube.app.ui.home
+package dev.wetube.app.ui
 
 import dev.wetube.app.data.model.FeedShelf
-import dev.wetube.app.data.model.HomeBlock
+import dev.wetube.app.data.model.FeedBlock
 import dev.wetube.app.data.model.VideoItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -22,19 +22,19 @@ class FeedPaginationTest {
 
     private fun video(id: String) = VideoItem(id = id, title = "Video $id", channelName = "Channel")
 
-    private fun row(id: String) = HomeBlock.Video(video(id))
+    private fun row(id: String) = FeedBlock.Video(video(id))
 
     private fun shelf(title: String, vararg ids: String) =
-        HomeBlock.Shelf(FeedShelf(title = title, items = ids.map(::video)))
+        FeedBlock.Shelf(FeedShelf(title = title, items = ids.map(::video)))
 
-    private fun ids(blocks: List<HomeBlock>) = blocks.flatMap { it.videos }.map { it.id }
+    private fun ids(blocks: List<FeedBlock>) = blocks.flatMap { it.videos }.map { it.id }
 
     @Test
     fun `a page is appended after the blocks already shown`() {
         val existing = listOf(row("a"), row("b"))
         val page = listOf(row("c"), row("d"))
 
-        val merged = appendHomePage(existing, page)
+        val merged = appendFeedPage(existing, page)
 
         assertEquals(listOf("a", "b", "c", "d"), ids(merged))
     }
@@ -42,7 +42,7 @@ class FeedPaginationTest {
     @Test
     fun `an item repeated across pages is not shown twice`() {
         // YouTube can repeat the last card of one page at the head of the next.
-        val merged = appendHomePage(listOf(row("a"), row("b")), listOf(row("b"), row("c")))
+        val merged = appendFeedPage(listOf(row("a"), row("b")), listOf(row("b"), row("c")))
 
         assertEquals(listOf("a", "b", "c"), ids(merged))
     }
@@ -51,12 +51,12 @@ class FeedPaginationTest {
     fun `a page that only repeats known blocks changes nothing`() {
         val existing = listOf(row("a"), row("b"))
 
-        assertSame(existing, appendHomePage(existing, listOf(row("a"), row("b"))))
+        assertSame(existing, appendFeedPage(existing, listOf(row("a"), row("b"))))
     }
 
     @Test
     fun `an item repeated inside one page is shown once`() {
-        val merged = appendHomePage(emptyList(), listOf(row("c"), row("c"), row("d")))
+        val merged = appendFeedPage(emptyList(), listOf(row("c"), row("c"), row("d")))
 
         assertEquals(listOf("c", "d"), ids(merged))
     }
@@ -65,37 +65,37 @@ class FeedPaginationTest {
     fun `an empty page leaves the list untouched`() {
         val existing = listOf(row("a"))
 
-        assertSame(existing, appendHomePage(existing, emptyList()))
+        assertSame(existing, appendFeedPage(existing, emptyList()))
     }
 
     @Test
     fun `a shelf is appended whole, in its place among the rows`() {
-        val merged = appendHomePage(
+        val merged = appendFeedPage(
             listOf(row("a")),
             listOf(row("b"), shelf("A shelf", "c", "d"), row("e")),
         )
 
         assertEquals(4, merged.size)
-        assertTrue(merged[1] is HomeBlock.Video)
-        assertTrue(merged[2] is HomeBlock.Shelf)
-        assertEquals("A shelf", (merged[2] as HomeBlock.Shelf).shelf.title)
+        assertTrue(merged[1] is FeedBlock.Video)
+        assertTrue(merged[2] is FeedBlock.Shelf)
+        assertEquals("A shelf", (merged[2] as FeedBlock.Shelf).shelf.title)
         assertEquals(listOf("a", "b", "c", "d", "e"), ids(merged))
     }
 
     @Test
     fun `a shelf page keeps only the cards not already shown`() {
-        val merged = appendHomePage(listOf(row("a")), listOf(shelf("A shelf", "a", "b")))
+        val merged = appendFeedPage(listOf(row("a")), listOf(shelf("A shelf", "a", "b")))
 
         assertEquals(2, merged.size)
         assertEquals(listOf("a", "b"), ids(merged))
-        assertEquals(listOf("b"), (merged[1] as HomeBlock.Shelf).shelf.items.map { it.id })
+        assertEquals(listOf("b"), (merged[1] as FeedBlock.Shelf).shelf.items.map { it.id })
     }
 
     @Test
     fun `a shelf whose cards are all repeats is not appended`() {
         val existing = listOf(row("a"))
 
-        assertSame(existing, appendHomePage(existing, listOf(shelf("A shelf", "a"))))
+        assertSame(existing, appendFeedPage(existing, listOf(shelf("A shelf", "a"))))
     }
 
     @Test

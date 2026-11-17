@@ -4,7 +4,7 @@ import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
 import dev.wetube.app.data.model.FeedPage
-import dev.wetube.app.data.model.HomeBlock
+import dev.wetube.app.data.model.FeedBlock
 import dev.wetube.app.data.model.HomePage
 import dev.wetube.app.data.model.SearchResult
 import dev.wetube.app.data.model.StreamFormat
@@ -55,11 +55,20 @@ interface TubeBackend {
         chip: String? = null,
     ): HomePage = trendingPage(region, nextPage).let { page ->
         HomePage(
-            blocks = page.videos.map { HomeBlock.Video(it) },
+            blocks = page.videos.map { FeedBlock.Video(it) },
             nextPage = page.nextPage,
         )
     }
 
+    /**
+     * One page of results: the flat video list, and the same page kept in the
+     * order the search returned it.
+     *
+     * A result page interleaves video rows with shelves — the Shorts rows among
+     * them — so [SearchResult.blocks] is what preserves that order. A transport
+     * that cannot produce shelves leaves it empty, and Search then renders
+     * [SearchResult.videos] instead of showing nothing.
+     */
     suspend fun search(query: String, nextPage: String? = null): SearchResult
 
     suspend fun video(id: String): VideoDetail
