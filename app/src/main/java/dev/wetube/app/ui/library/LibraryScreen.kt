@@ -200,11 +200,17 @@ private fun libraryTabLabel(tab: Int): String = when (tab) {
 /**
  * The subtitle for a playlist row, e.g. `0 videos`, `1 video`, `12 videos`.
  *
+ * A mirrored playlist counts what YouTube reports rather than what this device
+ * has cached: membership is only re-pulled when the count changes, so the stored
+ * ids can be a sync behind, and the account's own number is the honest one.
+ *
  * Pure and separate so the pluralisation is unit-tested rather than buried in
  * two Compose call sites (the Library tab and the add-to-playlist sheet).
  */
-internal fun playlistItemCount(playlist: LocalPlaylist): String =
-    if (playlist.videoIds.size == 1) "1 video" else "${playlist.videoIds.size} videos"
+internal fun playlistItemCount(playlist: LocalPlaylist): String {
+    val count = maxOf(playlist.remoteCount, playlist.videoIds.size)
+    return if (count == 1) "1 video" else "$count videos"
+}
 
 @Composable
 fun LibraryScreen(
@@ -442,8 +448,11 @@ private fun PlaylistRow(playlist: LocalPlaylist, onClick: () -> Unit) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            // A mirrored playlist says so: it cannot be renamed, deleted or
+            // added to here, and the caption is what explains that before the
+            // user has to find out by tapping.
             Text(
-                playlistItemCount(playlist),
+                if (playlist.remote) "YouTube · ${playlistItemCount(playlist)}" else playlistItemCount(playlist),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

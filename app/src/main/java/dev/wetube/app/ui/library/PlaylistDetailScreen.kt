@@ -330,46 +330,72 @@ fun PlaylistDetailScreen(
                     if (videos.isNotEmpty()) {
                         TextButton(onClick = { viewModel.playAll(onVideoClick) }) { Text("Play all") }
                     }
-                    Box {
-                        IconButton(onClick = { menuOpen = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
-                        }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Rename") },
-                                onClick = {
-                                    menuOpen = false
-                                    renaming = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete") },
-                                onClick = {
-                                    menuOpen = false
-                                    confirmingDelete = true
-                                },
-                            )
+                    // A mirrored playlist belongs to the account, and WeTube does
+                    // not write to it, so there is no rename or delete to offer.
+                    if (playlist?.remote == false) {
+                        Box {
+                            IconButton(onClick = { menuOpen = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                            }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Rename") },
+                                    onClick = {
+                                        menuOpen = false
+                                        renaming = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete") },
+                                    onClick = {
+                                        menuOpen = false
+                                        confirmingDelete = true
+                                    },
+                                )
+                            }
                         }
                     }
                 },
             )
         },
     ) { padding ->
-        if (videos.isEmpty() && !resolving) {
-            MessageBox(
-                title = "This playlist is empty",
-                body = "Add videos from a video's More menu → Add to playlist.",
-                modifier = Modifier.padding(padding),
-            )
-        } else {
-            PlaylistVideoList(
-                videos = videos,
-                resolving = resolving,
-                onVideoClick = onVideoClick,
-                onRemove = viewModel::remove,
-                onMove = viewModel::reorder,
-                modifier = Modifier.padding(padding),
-            )
+        val remote = playlist?.remote == true
+        Column(Modifier.padding(padding)) {
+            if (remote) {
+                Text(
+                    "From your YouTube account",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+            Box(Modifier.weight(1f)) {
+                if (videos.isEmpty() && !resolving) {
+                    if (remote) {
+                        // The account's playlist can change without this device
+                        // doing anything, so the wording says where the videos
+                        // would come from rather than blaming the user.
+                        MessageBox(
+                            title = "No videos here yet",
+                            body = "This playlist has no videos on YouTube.",
+                        )
+                    } else {
+                        MessageBox(
+                            title = "This playlist is empty",
+                            body = "Add videos from a video's More menu → Add to playlist.",
+                        )
+                    }
+                } else {
+                    PlaylistVideoList(
+                        videos = videos,
+                        resolving = resolving,
+                        editable = !remote,
+                        onVideoClick = onVideoClick,
+                        onRemove = viewModel::remove,
+                        onMove = viewModel::reorder,
+                    )
+                }
+            }
         }
     }
 
@@ -406,11 +432,16 @@ fun PlaylistDetailScreen(
  * It mirrors the queue screen's list down to the single measured row height,
  * which is what turns a drag distance into a row count without hard-coding a
  * height that a font scale could invalidate.
+ *
+ * [editable] is false for a mirrored playlist: no drag handle and no Remove,
+ * because the next sync would undo either one. The rows themselves still open
+ * the video.
  */
 @Composable
 private fun PlaylistVideoList(
     videos: List<VideoItem>,
     resolving: Boolean,
+    editable: Boolean,
     onVideoClick: (String) -> Unit,
     onRemove: (String) -> Unit,
     onMove: (Int, Int) -> Unit,
@@ -424,6 +455,7 @@ private fun PlaylistVideoList(
                 video = video,
                 index = index,
                 size = videos.size,
+                editable = editable,
                 rowHeightPx = rowHeightPx,
                 onHeightMeasured = { height -> rowHeightPx = height.toFloat().coerceAtLeast(1f) },
                 onClick = { onVideoClick(video.id) },
@@ -454,6 +486,7 @@ private fun PlaylistRow(
     video: VideoItem,
     index: Int,
     size: Int,
+    editable: Boolean,
     rowHeightPx: Float,
     onHeightMeasured: (Int) -> Unit,
     onClick: () -> Unit,
@@ -466,18 +499,22 @@ private fun PlaylistRow(
             .onGloballyPositioned { onHeightMeasured(it.size.height) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ReorderHandle(
-            index = index,
-            size = size,
-            rowHeightPx = rowHeightPx,
-            onMove = onMove,
-        )
+        if (editable) {
+            ReorderHandle(
+                index = index,
+                size = size,
+                rowHeightPx = rowHeightPx,
+                onMove = onMove,
+            )
+        }
         CompactVideoRow(
             video = video,
             onClick = onClick,
             modifier = Modifier.weight(1f),
         )
-        TextButton(onClick = onRemove) { Text("Remove") }
+        if (editable) {
+            TextButton(onClick = onRemove) { Text("Remove") }
+        }
     }
 }
 
@@ -509,6 +546,11 @@ private fun DeletePlaylistDialog(
  * than only an action list. "New playlist" stays available even when the list
  * is empty, so the very first playlist can be made without leaving playback —
  * the sheet borrows the same [PlaylistNameDialog] the Library uses.
+ *
+ * Playlists mirrored from the account are left out: WeTube does not write to
+ * them, so offering one would mean an add that silently does nothing. When
+ * there are any, a caption says where they live, so a user looking for a
+ * playlist they can see on YouTube is not left wondering where it went.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -521,6 +563,8 @@ internal fun AddToPlaylistSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var naming by remember { mutableStateOf(false) }
+    val local = remember(playlists) { playlists.filterNot { it.remote } }
+    val hasMirrored = local.size != playlists.size
 
     if (naming) {
         PlaylistNameDialog(
@@ -553,7 +597,7 @@ internal fun AddToPlaylistSheet(
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             )
-            playlists.forEach { playlist ->
+            local.forEach { playlist ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -588,6 +632,14 @@ internal fun AddToPlaylistSheet(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 4.dp),
             ) { Text("New playlist") }
+            if (hasMirrored) {
+                Text(
+                    "Playlists from your YouTube account can only be changed on YouTube.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                )
+            }
         }
     }
 }
