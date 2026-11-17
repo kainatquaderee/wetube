@@ -4,6 +4,7 @@ import dev.wetube.app.data.content.AgeGateStore
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
+import dev.wetube.app.data.model.CommentThreadInfo
 import dev.wetube.app.data.model.FeedPage
 import dev.wetube.app.data.model.FeedBlock
 import dev.wetube.app.data.model.HomePage
@@ -36,6 +37,8 @@ class ContentFilterBackend(
 ) : TubeBackend {
 
     override val displayName: String get() = delegate.displayName
+
+    override val supportsSearchFilters: Boolean get() = delegate.supportsSearchFilters
 
     private suspend fun showMature(): Boolean = settings.settings.first().showMature
 
@@ -91,9 +94,18 @@ class ContentFilterBackend(
      * The flat list and the blocks are filtered against one pass over both, so a
      * block cannot be filtered by a set the list was never part of: search's
      * blocks carry cards (Shorts in particular) the flat list does not.
+     *
+     * The filter selection is forwarded untouched — the mature-content switch has
+     * nothing to say about which results the viewer asked for — and the
+     * capability is forwarded with it, so wrapping the transport never hides that
+     * it can filter.
      */
-    override suspend fun search(query: String, nextPage: String?): SearchResult {
-        val result = delegate.search(query, nextPage)
+    override suspend fun search(
+        query: String,
+        nextPage: String?,
+        filters: SearchFilters,
+    ): SearchResult {
+        val result = delegate.search(query, nextPage, filters)
         val all = (result.videos + result.blocks.flatMap { it.videos }).distinctBy { it.id }
         val kept = visible(all).mapTo(HashSet()) { it.id }
         return result.copy(
@@ -102,12 +114,12 @@ class ContentFilterBackend(
         )
     }
 
-    override suspend fun video(id: String): VideoDetail {
+    override suspend fun video(id: String, fallback: PlaybackFallback): VideoDetail {
         if (!showMature() && runCatching { ageGate.isRestricted(id) }.getOrDefault(false)) {
             throw MatureHiddenException()
         }
         return try {
-            delegate.video(id)
+            delegate.video(id, fallback)
         } catch (e: IOException) {
             if (isAgeWallMessage(e.message)) runCatching { ageGate.mark(id) }
             throw e
@@ -122,6 +134,15 @@ class ContentFilterBackend(
     override suspend fun comments(id: String): List<Comment> = delegate.comments(id)
 
     override suspend fun commentsPage(token: String): CommentPage = delegate.commentsPage(token)
+
+    override suspend fun commentThread(id: String): CommentThreadInfo = delegate.commentThread(id)
+
+// Posting is a capability, not a listing: forwarding it keeps the filter layer
+// from hiding what the transport can do, and a transport without one stays
+// without one.
+override val commentComposer: CommentComposer? get() = delegate.commentComposer
+
+    override val commentReactions: CommentReactions? get() = delegate.commentReactions
 
     override suspend fun related(id: String): List<VideoItem> = visible(delegate.related(id))
 

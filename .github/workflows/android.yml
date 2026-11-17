@@ -11,12 +11,21 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only for the build job; only the publish job below may write, and only
+# to the release it is publishing.
 permissions:
-  contents: write
+  contents: read
+
+env:
+  # The APK assertions compare the packaged manifest against these values, so a
+  # version bump that misses either file fails the build instead of shipping a
+  # mislabelled artifact.
+  WETUBE_VERSION_NAME: "0.3.11"
+  WETUBE_VERSION_CODE: "31"
 
 jobs:
   android:
-    name: Lint, build, package
+    name: Lint, test, build, package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,17 +74,158 @@ jobs:
             } >> "$GITHUB_ENV"
             echo "Release APK will be signed with the configured key." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No signing secret set; the release APK falls back to the debug key." >> "$GITHUB_STEP_SUMMARY"
+            echo "No signing secret set. \`assembleRelease\` will fail while packaging: app/build.gradle.kts throws instead of falling back to the debug key, and only \`-PallowDebugSigning=true\` opts a local test build into debug signing." >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::No release signing secret; the release package step is expected to fail."
           fi
 
       - name: Lint
         run: ./gradlew lintDebug
 
+      # Runs before anything is packaged or uploaded: a failing unit test must
+      # stop the run even though it would not change the APKs themselves.
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest
+
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
+      # Produces app-<abi>-release.apk for each shipped ABI plus the universal
+      # app-universal-release.apk; see the splits block in app/build.gradle.kts.
       - name: Build release APK
         run: ./gradlew assembleRelease
+
+      # Everything below is what the upload and the release depend on: the
+      # packaged manifest, the Gecko engine payload in every split, the native
+      # library packaging the engine needs at runtime, and a valid signature.
+      # The assertions run on the APKs as built, before any artifact is
+      # uploaded, so a green run cannot publish a broken package.
+      - name: Verify release APKs
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          build_tools="$(find "$sdk_root/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          for tool in aapt2 zipalign apksigner; do
+            test -x "$build_tools/$tool" || {
+              echo "::error::$tool not found in $build_tools"; exit 1; }
+          done
+          python3 - "app/build/outputs/apk/release" \
+            "$build_tools/aapt2" "$build_tools/zipalign" "$build_tools/apksigner" \
+            "$WETUBE_VERSION_NAME" "$WETUBE_VERSION_CODE" <<'PY'
+          import os
+          import subprocess
+          import sys
+          import zipfile
+
+          apk_dir, aapt2, zipalign, apksigner, want_name, want_code = sys.argv[1:7]
+          want_code = int(want_code)
+
+          abis = ["arm64-v8a", "armeabi-v7a", "x86_64"]
+          gecko = ["libxul.so", "libmozglue.so", "libnss3.so", "libgkcodecs.so"]
+          assets = [
+              "assets/webcookies/background.js",
+              "assets/webcookies/manifest.json",
+              "assets/omni.ja",
+          ]
+
+          expected = {"app-universal-release.apk": abis}
+          for abi in abis:
+              expected[f"app-{abi}-release.apk"] = [abi]
+
+          failures = []
+
+
+          def fail(msg):
+              failures.append(msg)
+
+
+          actual = sorted(name for name in os.listdir(apk_dir) if name.endswith(".apk"))
+          if actual != sorted(expected):
+              fail(f"release APKs are {actual}, expected {sorted(expected)}")
+
+          print(f"{'APK':34} {'MiB':>7}  {'version':16} {'ABIs':30} checks")
+          for apk_name, apk_abis in expected.items():
+              path = os.path.join(apk_dir, apk_name)
+              if not os.path.exists(path):
+                  continue
+
+              tree = subprocess.run(
+                  [aapt2, "dump", "xmltree", "--file", "AndroidManifest.xml", path],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              ).stdout
+              code = version_name = extract = None
+              for line in tree.splitlines():
+                  if "versionCode(0x0101021b)=" in line:
+                      code = int(line.rsplit("=", 1)[1].strip())
+                  elif "versionName(0x0101021c)=" in line:
+                      version_name = line.split('"')[1]
+                  elif "extractNativeLibs(0x010104ea)=" in line:
+                      extract = line.rsplit("=", 1)[1].strip()
+
+              if code != want_code:
+                  fail(f"{apk_name}: versionCode is {code}, expected {want_code}")
+              if version_name != want_name:
+                  fail(f"{apk_name}: versionName is {version_name}, expected {want_name}")
+              if extract != "false":
+                  fail(f"{apk_name}: extractNativeLibs is {extract}, expected false")
+
+              with zipfile.ZipFile(path) as apk:
+                  infos = apk.infolist()
+                  names = {info.filename for info in infos}
+                  lib_abis = sorted({n.split("/")[1] for n in names if n.startswith("lib/")})
+                  if lib_abis != apk_abis:
+                      fail(f"{apk_name}: native libraries for {lib_abis}, expected {apk_abis}")
+                  for abi in apk_abis:
+                      missing = [f"lib/{abi}/{lib}" for lib in gecko if f"lib/{abi}/{lib}" not in names]
+                      if missing:
+                          fail(f"{apk_name}: missing Gecko libraries {missing}")
+                  for asset in assets:
+                      if asset not in names:
+                          fail(f"{apk_name}: missing {asset}")
+                      elif apk.getinfo(asset).file_size == 0:
+                          fail(f"{apk_name}: {asset} is empty")
+                  # extractNativeLibs="false" only works when the libraries are
+                  # stored uncompressed; the engine maps them out of the APK.
+                  packed = [
+                      i.filename
+                      for i in infos
+                      if i.filename.endswith(".so") and i.compress_type != zipfile.ZIP_STORED
+                  ]
+                  if packed:
+                      fail(f"{apk_name}: native libraries are compressed: {packed[:3]}")
+
+              aligned = subprocess.run(
+                  [zipalign, "-c", "-P", "16", "4", path],
+                  capture_output=True,
+                  text=True,
+              )
+              if aligned.returncode != 0:
+                  fail(
+                      f"{apk_name}: not 16 KB aligned (zipalign exited "
+                      f"{aligned.returncode}): {aligned.stdout}{aligned.stderr}".strip()
+                  )
+
+              signed = subprocess.run(
+                  [apksigner, "verify", "--print-certs", path],
+                  capture_output=True,
+                  text=True,
+              )
+              if signed.returncode != 0:
+                  fail(f"{apk_name}: signature does not verify: {signed.stdout}{signed.stderr}".strip())
+
+              mib = os.path.getsize(path) / (1024 * 1024)
+              print(
+                  f"{apk_name:34} {mib:7.1f}  {version_name} ({code})    "
+                  f"{', '.join(lib_abis):30} 16K aligned, signed"
+              )
+
+          if failures:
+              for failure in failures:
+                  print(f"::error::{failure}")
+              sys.exit(1)
+          print("All APK assertions passed.")
+          PY
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -91,10 +241,26 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
+  # Publishing is the only thing that needs write access, so it lives in its own
+  # job instead of granting `contents: write` to every step that compiles and
+  # runs this repository's code.
+  publish:
+    name: Publish release
+    needs: android
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: wetube-release
+          path: release-apk
+
       - name: Publish release for tags
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/release/*.apk
+          files: release-apk/*.apk
           generate_release_notes: true
           fail_on_unmatched_files: true

@@ -39,6 +39,14 @@ class SyncReconcilerTest {
     private fun tombstone(id: String, account: String = key): Map<String, Tombstone> =
         mapOf(id to Tombstone(id = id, accountKey = account, deletedAt = 1L, source = DeleteSource.LOCAL))
 
+    /**
+     * The same records a store would hand over when one entity has one for each
+     * of two accounts: the diff reads them by value, so the map keys here are
+     * deliberately meaningless and identical for both.
+     */
+    private fun <T> records(vararg records: T): Map<String, T> =
+        records.mapIndexed { index, record -> "record$index" to record }.toMap()
+
     private fun diff(
         kind: SyncKind = SyncKind.SUBSCRIPTION,
         local: Set<String> = emptySet(),
@@ -132,6 +140,51 @@ class SyncReconcilerTest {
         val result = diff(remote = setOf("a"), tombstones = tombstone(id, account = "other"))
         assertEquals(listOf("a"), result.quarantined)
         assertTrue(result.pullAdds.isEmpty())
+    }
+
+    @Test
+    fun `the reconciling account's record decides, not another account's for the same id`() {
+        val id = favouriteKey("v1")
+        // Both accounts have this clip on record, and the metadata is one flat
+        // map, so both records reach the diff. Taking whichever came last read
+        // the other account's baseline as this account's — or quarantined the id
+        // outright — so this account's own change was never planned.
+        val entries = records(
+            SyncEntry(id = id, accountKey = key, localUpdatedAt = 2L, basePresent = true),
+            SyncEntry(id = id, accountKey = "other", localUpdatedAt = 1L, basePresent = false),
+        )
+
+        val result = diff(kind = SyncKind.FAVOURITE, local = setOf("v1"), entries = entries)
+
+        assertTrue(result.quarantined.isEmpty())
+        assertEquals(listOf("v1"), result.diverged)
+        assertFalse(result.hasPush)
+    }
+
+    @Test
+    fun `the reconciling account's tombstone decides, not another account's`() {
+        val id = favouriteKey("v1")
+        // This account deleted the clip after a sync confirmed the account holds
+        // it, so its own record has a baseline and its own tombstone says the id
+        // is gone. The other account's tombstone says nothing about that; reading
+        // it instead quarantined the id and dropped the removal on the floor.
+        val tombstones = records(
+            Tombstone(id = id, accountKey = key, deletedAt = 2L, source = DeleteSource.LOCAL),
+            Tombstone(id = id, accountKey = "other", deletedAt = 1L, source = DeleteSource.LOCAL),
+        )
+        val entries = records(
+            SyncEntry(id = id, accountKey = key, localUpdatedAt = 1L, basePresent = true),
+        )
+
+        val result = diff(
+            kind = SyncKind.FAVOURITE,
+            remote = setOf("v1"),
+            entries = entries,
+            tombstones = tombstones,
+        )
+
+        assertTrue(result.quarantined.isEmpty())
+        assertEquals(listOf("v1"), result.pushDeletes)
     }
 
     @Test

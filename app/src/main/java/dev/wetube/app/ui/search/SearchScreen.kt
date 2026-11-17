@@ -17,12 +17,16 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -33,6 +37,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +51,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import dev.wetube.app.core.youtubeVideoId
+import dev.wetube.app.data.backend.SearchFilters
 import dev.wetube.app.data.model.FeedBlock
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
@@ -54,6 +60,7 @@ import dev.wetube.app.ui.LoadingBox
 import dev.wetube.app.ui.MessageBox
 import dev.wetube.app.ui.VideoCard
 import dev.wetube.app.ui.appendFeedPage
+import dev.wetube.app.ui.countOf
 import dev.wetube.app.ui.friendlyError
 import dev.wetube.app.ui.nextFeedToken
 import kotlinx.coroutines.Job
@@ -77,6 +84,23 @@ data class SearchUiState(
     val nextPage: String? = null,
     val error: String? = null,
     val searched: Boolean = false,
+    /**
+     * The filter selection this result list belongs to.
+     *
+     * Held here, in the session's own state, rather than in the screen: the
+     * selection is part of the search (its continuation token was minted for it),
+     * so paging, a rotation or a trip to the player must come back to the same
+     * filtered list instead of losing it.
+     */
+    val filters: SearchFilters = SearchFilters(),
+    /**
+     * Whether this transport can apply [filters].
+     *
+     * Starts `true` because InnerTube, the default transport, can; the answer is
+     * only known once the backend is built, and the modal says so when it turns
+     * out to be `false` instead of offering an Apply that would be dropped.
+     */
+    val filtersSupported: Boolean = true,
 )
 
 class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
@@ -85,6 +109,15 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
         private set
 
     private var suggestJob: Job? = null
+
+    init {
+        // The transport is built lazily from settings, so its capabilities can
+        // only be read through the suspending locator — once, on the first frame.
+        viewModelScope.launch {
+            val supported = runCatching { locator.backend().supportsSearchFilters }
+            state = state.copy(filtersSupported = supported.getOrDefault(state.filtersSupported))
+        }
+    }
 
     fun onQueryChange(query: String) {
         state = state.copy(query = query)
@@ -103,9 +136,11 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
     fun search(query: String = state.query) {
         if (query.isBlank()) return
         suggestJob?.cancel()
+        val filters = state.filters
         viewModelScope.launch {
             state = state.copy(
                 query = query,
+                filters = filters,
                 loading = true,
                 loadingMore = false,
                 error = null,
@@ -113,7 +148,11 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
                 searched = true,
             )
             runCatching {
-                val page = locator.backend().search(query)
+                val backend = locator.backend()
+                // Read here as well as in init: a transport switched in Settings
+                // must be noticed by the next search, not only by the next screen.
+                state = state.copy(filtersSupported = backend.supportsSearchFilters)
+                val page = backend.search(query, filters = filters)
                 state = state.copy(
                     loading = false,
                     results = page.videos.distinctBy { it.id },
@@ -134,12 +173,14 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
         if (state.loadingMore) return
         state = state.copy(loadingMore = true, error = null)
         val query = state.query
+        val filters = state.filters
         viewModelScope.launch {
             runCatching {
-                val page = locator.backend().search(query, next)
-                // A new search may have landed while this request was in
-                // flight; its results must not be appended to the new list.
-                if (state.query == query) {
+                val page = locator.backend().search(query, next, filters)
+                // A new search — or a filter change, which restarts the search —
+                // may have landed while this request was in flight; its results
+                // must not be appended to the new list.
+                if (state.query == query && state.filters == filters) {
                     state = state.copy(
                         loadingMore = false,
                         results = (state.results + page.videos).distinctBy { it.id },
@@ -156,8 +197,27 @@ class SearchViewModel(private val locator: ServiceLocator) : ViewModel() {
     }
 
     fun clear() {
-        state = SearchUiState()
+        // The query and its results go; the filter selection stays. Clearing the
+        // field is about the text the viewer typed, and silently dropping a
+        // choice they made would make the next search look wrong at random.
+        state = SearchUiState(filters = state.filters, filtersSupported = state.filtersSupported)
     }
+
+    /**
+     * Takes a new filter selection and re-runs the current search with it.
+     *
+     * The query is kept — the filter modal narrows what was searched for, it does
+     * not start a new search — and re-running is what makes the list match; with
+     * nothing searched yet there is nothing to re-run and the selection is simply
+     * remembered for the next search.
+     */
+    fun applyFilters(filters: SearchFilters) {
+        state = state.copy(filters = filters)
+        if (state.searched && state.query.isNotBlank()) search()
+    }
+
+    /** Drops the selection and re-runs the search, for the chip over the results. */
+    fun clearFilters() = applyFilters(SearchFilters())
 
     companion object {
         fun factory(locator: ServiceLocator) = viewModelFactory {
@@ -180,6 +240,10 @@ fun SearchScreen(
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
+    var menuOpen by remember { mutableStateOf(false) }
+    // Saved, so a rotation with the modal open does not silently close it and
+    // throw away a half-made selection.
+    var filtersOpen by rememberSaveable { mutableStateOf(false) }
 
     // A search is submitted from the keyboard action or a suggestion; either
     // way the keyboard and focus go away so the results are not half-covered.
@@ -222,25 +286,55 @@ fun SearchScreen(
     }
 
     Column(modifier.fillMaxSize()) {
-        OutlinedTextField(
-            value = state.query,
-            onValueChange = viewModel::onQueryChange,
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            placeholder = { Text("Search or paste a link") },
-            singleLine = true,
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-            trailingIcon = {
-                if (state.query.isNotEmpty()) {
-                    IconButton(onClick = viewModel::clear) {
-                        Icon(Icons.Default.Close, contentDescription = "Clear")
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = state.query,
+                onValueChange = viewModel::onQueryChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Search or paste a link") },
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (state.query.isNotEmpty()) {
+                        IconButton(onClick = viewModel::clear) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear")
+                        }
                     }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { submit() }),
+            )
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "More options",
+                        // Tinted while a filter is on: the chip over the results
+                        // says how many, but this says it before the first result
+                        // is even read.
+                        tint = if (state.filters.activeCount > 0) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
                 }
-            },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { submit() }),
-        )
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Search filters") },
+                        onClick = {
+                            menuOpen = false
+                            filtersOpen = true
+                        },
+                    )
+                }
+            }
+        }
 
         if (state.suggestions.isNotEmpty() && !state.loading) {
             LazyColumn(modifier = Modifier.fillMaxWidth()) {
@@ -264,6 +358,17 @@ fun SearchScreen(
             return@Column
         }
 
+        // Above the results and not tucked into a menu: a filtered list that
+        // looks like an unfiltered one is the one thing that makes a search feel
+        // broken, so the count and the way out both stay on screen.
+        if (state.filters.activeCount > 0) {
+            FilterCountChip(
+                count = state.filters.activeCount,
+                onClear = viewModel::clearFilters,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+
         when {
             state.loading -> LoadingBox()
             state.error != null && state.results.isEmpty() && state.blocks.isEmpty() -> MessageBox(
@@ -278,8 +383,16 @@ fun SearchScreen(
             )
             state.results.isEmpty() && state.blocks.isEmpty() -> MessageBox(
                 title = "No results",
-                body = "Nothing matched \"${state.query}\".",
-            )
+                body = if (state.filters.activeCount > 0) {
+                    "Nothing matched \"${state.query}\" with these filters."
+                } else {
+                    "Nothing matched \"${state.query}\"."
+                },
+            ) {
+                if (state.filters.activeCount > 0) {
+                    Button(onClick = viewModel::clearFilters) { Text("Clear filters") }
+                }
+            }
             else -> LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -350,4 +463,44 @@ fun SearchScreen(
             }
         }
     }
+
+    if (filtersOpen) {
+        SearchFiltersSheet(
+            filters = state.filters,
+            supported = state.filtersSupported,
+            onApply = { chosen ->
+                filtersOpen = false
+                viewModel.applyFilters(chosen)
+            },
+            onDismiss = { filtersOpen = false },
+        )
+    }
+}
+
+/**
+ * The count of active filters, with the action that drops them.
+ *
+ * It sits over the results rather than inside the overflow menu because its job
+ * is to stop a narrowed list from being mistaken for a broken one: it names what
+ * is on, and one tap puts the list back to the whole result set.
+ */
+@Composable
+private fun FilterCountChip(
+    count: Int,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    InputChip(
+        selected = true,
+        onClick = onClear,
+        modifier = modifier,
+        label = { Text(countOf(count, "filter")) },
+        trailingIcon = {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Clear filters",
+                modifier = Modifier.size(16.dp),
+            )
+        },
+    )
 }

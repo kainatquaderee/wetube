@@ -64,6 +64,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -71,9 +72,11 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import dev.wetube.app.core.isValidVideoId
+import dev.wetube.app.data.backend.PlaybackFallback
 import dev.wetube.app.data.model.CommentThreadInfo
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
+import dev.wetube.app.data.prefs.AppSettings
 import dev.wetube.app.di.ServiceLocator
 import dev.wetube.app.player.CaptionSession
 import dev.wetube.app.player.StreamResolver
@@ -117,6 +120,129 @@ data class ShortsUiState(
 )
 
 /**
+ * Puts a feed that landed after the viewer opened a clip *behind* that clip.
+ *
+ * The reel's first item must never become page 0 when the viewer asked for a
+ * shelf clip: the opened clip keeps the page the pager is already on, and the
+ * feed follows it so swiping still reaches the rest of the reel. A clip the feed
+ * also carries is taken out of the feed, because one clip must not become two
+ * pages.
+ */
+internal fun feedBehindOpened(opened: List<VideoItem>, feed: List<VideoItem>): List<VideoItem> {
+    val already = opened.mapTo(HashSet()) { it.id }
+    return opened + feed.filterNot { it.id in already }
+}
+
+/** What a feed response that has just landed should do to the reel on screen. */
+internal enum class FeedArrival {
+
+    /** It is the answer to the load that is still in flight: it replaces the reel. */
+    Replace,
+
+    /** It is stale, but the opened clip is still on screen: the feed goes behind it. */
+    MergeBehindOpened,
+
+    /**
+     * It is stale and nothing on screen is waiting for it. Dropping is the only
+     * safe answer: appending it would put one feed under another.
+     */
+    Drop,
+}
+
+/**
+ * Decides what a feed response may do, so the rule can be pinned without a
+ * ViewModel, a backend or a device.
+ *
+ * A response is identified by the generation its load took when it started,
+ * which is why a load must take the next one on *entry*: two overlapping loads
+ * that read the same number both look fresh, and then the older one can land
+ * last, replace the newer reel and call `play(0)` over it. When the generation
+ * has moved on, the response is stale, and the only thing that still makes it
+ * useful is a clip the viewer opened from Home: its pages belong behind that
+ * clip.
+ *
+ * A stale response is merged only while the reel it was requested for is still
+ * the one on screen ([responseReel] against [currentReel]). The opened clip
+ * cannot stand in for that: an account switch replaces the reel and clears the
+ * marker, but the viewer can open a shelf clip of the new account before the old
+ * account's feed lands, and the marker then names a clip on screen that the
+ * response knows nothing about. The reel number is what still tells the two
+ * apart — the old feed's pages must be dropped rather than appended to a reel
+ * that now belongs to somebody else.
+ */
+internal fun feedArrival(
+    responseGeneration: Int,
+    currentGeneration: Int,
+    responseReel: Int,
+    currentReel: Int,
+    openedClipId: String?,
+    showingClipId: String?,
+): FeedArrival = when {
+    responseGeneration == currentGeneration -> FeedArrival.Replace
+    responseReel != currentReel -> FeedArrival.Drop
+    openedClipId != null && showingClipId == openedClipId -> FeedArrival.MergeBehindOpened
+    else -> FeedArrival.Drop
+}
+
+/**
+ * The counter that says which in-flight request is still the one the screen is
+ * waiting for.
+ *
+ * Every new request — a feed load, a clip resolve — takes the next number, and
+ * a response may only be applied while its number is still the latest. Taking
+ * the number when the request *starts* is the point: a response cannot read the
+ * counter later and conclude it is current.
+ */
+internal class ResponseGeneration {
+
+    private var latest = 0
+
+    /** The number the newest request took. */
+    val current: Int get() = latest
+
+    /** Starts a request; its response is fresh only until the next one starts. */
+    fun next(): Int = ++latest
+
+    /** Whether the response to [ticket] is still the one being waited for. */
+    fun isCurrent(ticket: Int): Boolean = ticket == latest
+}
+
+/**
+ * What a prefetched clip was resolved for: the reel it belongs to and the clip
+ * it plays.
+ */
+internal data class PrefetchStamp(val reel: Int, val videoId: String)
+
+/**
+ * Whether a prefetched clip still describes the reel on screen.
+ *
+ * A prefetch finishes on its own schedule, so it can outlive the reel it was
+ * started for: an account switch or a reload replaces the feed, and an entry
+ * resolved for the old one must be neither handed to the viewer nor written
+ * back. The clip's id alone cannot tell the two reels apart — a fresh account
+ * can recommend the same clip — which is why the reel's number is part of the
+ * stamp. Checked on both ends, because a resolve can finish before the reload
+ * and still be taken after it.
+ */
+internal fun prefetchStillApplies(
+    stamp: PrefetchStamp,
+    reel: Int,
+    videos: List<VideoItem>,
+): Boolean = stamp.reel == reel && videos.any { it.id == stamp.videoId }
+
+/**
+ * What a prefetched clip was resolved for.
+ *
+ * The quality picks the stream, so an entry is only usable for the quality it
+ * was built with. The dislike setting is deliberately *not* part of the key:
+ * the count is never prefetched (see [ShortsViewModel.resolveStream]), so an
+ * entry holds no count and one resolved before the setting was switched on is
+ * still a usable stream.
+ */
+internal fun prefetchKey(videoId: String, settings: AppSettings): String =
+    "$videoId|${settings.videoQuality}"
+
+/**
  * Shorts get their own surface: one clip at a time, full height, swipe up for
  * the next. Playback still goes through the shared media session, so audio and
  * the notification behave exactly like the normal player.
@@ -131,13 +257,43 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
     private var playing = -1
 
     /** Guards against a slow response for an old page overwriting a newer one. */
-    private var generation = 0
+    private val generation = ResponseGeneration()
+
+    /**
+     * The clip the viewer opened from a Shorts shelf ([start]) while it is the
+     * one the reel is showing.
+     *
+     * A feed response that lands after the viewer opened a clip is stale, but
+     * its pages are still wanted behind that clip, so the marker is what lets
+     * such a response be merged instead of dropped — as long as the response was
+     * requested for the reel still on screen, which is what [reel] decides. It
+     * is cleared whenever the reel is replaced — by [load] and on an account
+     * switch — because pages from the previous feed belong to somebody else's
+     * reel and appending them would put one account's clips into another's.
+     */
+    private var openedClipId: String? = null
+
+    /**
+     * Identifies the reel on screen; bumped whenever [load] replaces it.
+     *
+     * A prefetched clip belongs to the reel it was resolved for, and the clip's
+     * id cannot tell two reels apart because a new account recommends some of
+     * the same clips. See [prefetchStillApplies].
+     */
+    private var reel = 0
 
     /**
      * Recovery attempts for the clip on screen. Reset whenever a genuinely new
      * clip is resolved, so a clip that is merely unplayable cannot loop.
      */
     private var recoveries = 0
+
+    /**
+     * Clips resolved while the previous one played, keyed by [prefetchKey]. Small
+     * on purpose: only the pages after the one on screen can be useful, and a
+     * reel is unbounded.
+     */
+    private val prefetched = PrefetchCache<String, PrefetchedClip>(PREFETCH_CACHE_SIZE)
 
     init {
         load()
@@ -153,28 +309,87 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
                     return@collect
                 }
                 playing = -1
-                generation++
+                // The reel on screen belongs to the account that is leaving:
+                // forget where it was and whose clip the viewer opened from Home,
+                // so no page of it can be merged into the new account's reel.
+                openedClipId = null
                 state = ShortsUiState()
+                // load() takes the next generation, which also retires every
+                // response still in flight for the old account.
                 load()
             }
         }
     }
 
     fun load() {
+        // Taken on entry, not when the request leaves: two overlapping loads must
+        // not share a number, or both count as fresh and the older reel can land
+        // last and call play(0) over the newer one.
+        val request = generation.next()
+        // A feed that is being fetched now replaces whatever was resolved for the
+        // one before it; an account switch lands here too, which is why the
+        // cache is dropped rather than kept warm.
+        reel++
+        // The reel this response will belong to, taken here for the same reason
+        // as [request]: a later account switch moves [reel] on, and this
+        // response's pages must not land in anything but the reel they were
+        // requested for. See [feedArrival].
+        val requestReel = reel
+        openedClipId = null
+        prefetched.clear()
         viewModelScope.launch {
             state = state.copy(loading = state.videos.isEmpty(), error = null)
             runCatching { locator.backend().shorts() }
                 .onSuccess { videos ->
-                    state = state.copy(loading = false, videos = videos)
-                    if (videos.isEmpty()) {
-                        state = state.copy(error = "No Shorts right now.")
-                    } else {
-                        play(0)
+                    val arrival = feedArrival(
+                        responseGeneration = request,
+                        currentGeneration = generation.current,
+                        responseReel = requestReel,
+                        currentReel = reel,
+                        openedClipId = openedClipId,
+                        showingClipId = showingClipId(),
+                    )
+                    when (arrival) {
+                        FeedArrival.Replace -> {
+                            state = state.copy(loading = false, videos = videos)
+                            if (videos.isEmpty()) {
+                                state = state.copy(error = "No Shorts right now.")
+                            } else {
+                                play(0)
+                            }
+                        }
+                        FeedArrival.MergeBehindOpened -> {
+                            // The opened clip keeps its page and the reel arrives
+                            // behind it, so a swipe continues into the feed.
+                            // Nothing is started here: the opened clip is already
+                            // resolving or playing, and index 0 is now that clip.
+                            state = state.copy(
+                                loading = false,
+                                videos = feedBehindOpened(state.videos, videos),
+                            )
+                            // The pages behind the opened clip only arrived just
+                            // now, so the first swipe into the feed would otherwise
+                            // be the one that has to wait.
+                            if (playing >= 0) prefetch(playing)
+                        }
+                        // A newer load owns the screen; applying or reporting this
+                        // one would overwrite the reel it is about to show.
+                        FeedArrival.Drop -> Unit
                     }
                 }
-                .onFailure { state = state.copy(loading = false, error = friendlyError(it)) }
+                .onFailure { failure ->
+                    // A stale failure is not news: the request that replaced it
+                    // reports for itself, and clearing `loading` here would stop
+                    // the newer request's spinner.
+                    if (generation.isCurrent(request)) {
+                        state = state.copy(loading = false, error = friendlyError(failure))
+                    }
+                }
         }
     }
+
+    /** The id of the clip the reel is showing, or `null` when it is between pages. */
+    private fun showingClipId(): String? = state.videos.getOrNull(playing)?.id
 
     /**
      * Opens the section on one specific clip.
@@ -188,6 +403,10 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
     fun start(videoId: String) {
         if (!isValidVideoId(videoId)) return
         val existing = state.videos.indexOfFirst { it.id == videoId }
+        // The clip the viewer opened, remembered until the reel is replaced (see
+        // [openedClipId]): the feed that lands behind it may be merged under this
+        // clip, and nothing else may be.
+        openedClipId = videoId
         // A requested clip is a new page, so the "already playing" short-circuit
         // in [play] must not keep whatever was loaded before it.
         playing = -1
@@ -225,6 +444,9 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
      * Resolves and starts the clip on [index]. Repeated calls for the same page
      * are ignored.
      *
+     * A clip that was resolved ahead of the swipe is taken from [prefetched]
+     * instead of being looked up again, which is what keeps a swipe instant.
+     *
      * [recover] is set by [playbackFailed] after a stream URL was refused: it
      * skips the "same clip already loaded" short-circuit and asks the backend
      * to drop the profile whose URL just failed, exactly like the full player.
@@ -244,6 +466,9 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
                 val loaded = player.currentMediaItem?.mediaId
                 if (loaded == video.id) {
                     if (!player.isPlaying) player.play()
+                    // Nothing was resolved for the pages ahead while the section
+                    // was away, so the next swipe has to be made instant again.
+                    prefetch(index)
                     return
                 }
                 // `loaded` being a different clip — or null, because the shared
@@ -252,38 +477,109 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
             }
         }
         playing = index
-        val request = ++generation
+        val request = generation.next()
         viewModelScope.launch {
             val result = runCatching {
                 val settings = locator.settings.settings.first()
-                // The URL that just failed came from the leading profile; ask
-                // the backend to start from the next one so the retry is not
-                // the same request that was already rejected.
-                if (recover) locator.backend().forcePlaybackFallback()
-                val detail = locator.backend().video(video.id)
-                val item = StreamResolver.mediaItem(
-                    detail,
-                    audioOnly = false,
-                    preferredHeight = settings.videoQuality,
-                ) ?: error("This clip has no playable stream.")
-                val dislikes = if (settings.showDislikes) {
-                    locator.dislikes.dislikes(video.id)
+                if (recover) {
+                    // The URL that just failed came from the leading profile; ask
+                    // the backend to start from the next one so the retry is not
+                    // the same request that was already rejected.
+                    locator.backend().forcePlaybackFallback()
+                    resolveStream(video.id, settings, PlaybackFallback.Inherit) to settings
                 } else {
-                    null
+                    // A hit here was resolved for exactly these settings while
+                    // the previous clip played.
+                    val fresh = { entry: PrefetchedClip ->
+                        prefetchStillApplies(entry.stamp, reel, state.videos)
+                    }
+                    val cached = prefetched.take(prefetchKey(video.id, settings), fresh)
+                    (cached?.clip ?: resolveStream(video.id, settings, PlaybackFallback.Inherit)) to
+                        settings
                 }
-                Triple(detail, item, dislikes)
             }
             // A newer swipe already asked for another clip; this response is
             // stale and must not start playing over the visible page.
-            if (request != generation) return@launch
-            result
-                .onSuccess { (detail, item, dislikes) ->
-                    state = state.copy(detail = detail, dislikes = dislikes, error = null)
-                    captions.attach(detail)
-                    locator.playback.play(item, speed = 1f, startAtMs = 0L)
-                    locator.library.addToHistory(detail.item)
-                }
-                .onFailure { state = state.copy(error = friendlyError(it)) }
+            if (!generation.isCurrent(request)) return@launch
+            result.fold(
+                onSuccess = { (clip, settings) ->
+                    state = state.copy(detail = clip.detail, dislikes = null, error = null)
+                    captions.attach(clip.detail)
+                    locator.playback.play(clip.item, speed = 1f, startAtMs = 0L)
+                    locator.library.addToHistory(clip.detail.item)
+                    // This clip has the screen; resolve what a swipe would land
+                    // on now, rather than when the swipe happens.
+                    prefetch(index)
+                    // The count is a second request to a third-party instance, so
+                    // it waits until the picture is already playing — and it is
+                    // only ever asked for the clip on screen. A swipe in the
+                    // meantime makes this answer stale, hence the check.
+                    val dislikes = dislikesFor(video.id, settings)
+                    if (generation.isCurrent(request)) state = state.copy(dislikes = dislikes)
+                },
+                onFailure = { state = state.copy(error = friendlyError(it)) },
+            )
+        }
+    }
+
+    /**
+     * Turns [videoId] into what the media session plays: the backend's player
+     * response and the stream picked for the viewer's quality.
+     *
+     * Stream only, deliberately. The dislike count is a request to a third-party
+     * instance that may track nothing at all, so prefetching it would make every
+     * swipe ask about clips nobody is watching; [play] fetches the count for the
+     * clip that actually has the screen.
+     *
+     * [fallback] stays a parameter of the call: a prefetch passes
+     * [PlaybackFallback.Never] and can neither consume a recovery request left by
+     * [play] nor be turned into a recovery itself.
+     */
+    private suspend fun resolveStream(
+        videoId: String,
+        settings: AppSettings,
+        fallback: PlaybackFallback,
+    ): ResolvedClip {
+        val detail = locator.backend().video(videoId, fallback)
+        val item = StreamResolver.mediaItem(
+            detail,
+            audioOnly = false,
+            preferredHeight = settings.videoQuality,
+        ) ?: error("This clip has no playable stream.")
+        return ResolvedClip(detail = detail, item = item)
+    }
+
+    /** The dislike count for the clip on screen, or `null` when the rail hides it. */
+    private suspend fun dislikesFor(videoId: String, settings: AppSettings): Long? =
+        if (settings.showDislikes) locator.dislikes.dislikes(videoId) else null
+
+    /**
+     * Resolves the clips just after [from] while the viewer is on it, so the
+     * next swipe has no lookup to wait on.
+     *
+     * Deliberately background work: it neither touches the media session nor the
+     * state the screen reads, so no clip can start before the viewer swipes to
+     * it, and resume points, captions and the rail are left to [play]. A result
+     * that no longer belongs to the reel — a feed refresh or an account switch
+     * happened while this was in flight — is dropped instead of cached, and so is
+     * a cached entry that no longer belongs to the reel by the time it is taken.
+     */
+    private fun prefetch(from: Int) {
+        val resolvedFor = reel
+        for (index in (from + 1)..(from + PREFETCH_AHEAD)) {
+            val video = state.videos.getOrNull(index) ?: break
+            viewModelScope.launch {
+                val settings = locator.settings.settings.first()
+                val key = prefetchKey(video.id, settings)
+                if (prefetched.contains(key)) return@launch
+                runCatching { resolveStream(video.id, settings, PlaybackFallback.Never) }
+                    .onSuccess { clip ->
+                        val entry = PrefetchedClip(clip, PrefetchStamp(resolvedFor, video.id))
+                        if (prefetchStillApplies(entry.stamp, reel, state.videos)) {
+                            prefetched.put(key, entry)
+                        }
+                    }
+            }
         }
     }
 
@@ -334,10 +630,65 @@ class ShortsViewModel(private val locator: ServiceLocator) : ViewModel() {
         /** How many times a refused clip is re-resolved before it is reported. */
         private const val MAX_PLAYBACK_RECOVERIES = 3
 
+        /** Clips resolved ahead of the swipe, while the one on screen plays. */
+        private const val PREFETCH_AHEAD = 2
+
+        /**
+         * Room for a page or two of resolved clips. More than [PREFETCH_AHEAD] so
+         * a swipe does not evict the clip resolved after the one it landed on,
+         * and small enough that the cache cannot grow with the reel.
+         */
+        private const val PREFETCH_CACHE_SIZE = 4
+
         fun factory(locator: ServiceLocator) = viewModelFactory {
             initializer { ShortsViewModel(locator) }
         }
     }
+}
+
+/** A clip that is already resolved and can be handed to the media session. */
+private data class ResolvedClip(
+    val detail: VideoDetail,
+    val item: MediaItem,
+)
+
+/** A resolved clip and the reel it was resolved for; see [prefetchStillApplies]. */
+private data class PrefetchedClip(val clip: ResolvedClip, val stamp: PrefetchStamp)
+
+/**
+ * The clips resolved ahead of the swipe, oldest entry dropped first.
+ *
+ * Insertion order *is* the priority: the entry put in first belongs to the clip
+ * the viewer has already scrolled past, so a full cache pays for a new entry by
+ * forgetting the one least likely to be swiped back to. [take] removes what it
+ * hands over, so one clip is never resolved twice for the same swipe.
+ */
+internal class PrefetchCache<K, V>(private val capacity: Int) {
+
+    private val entries = LinkedHashMap<K, V>()
+
+    fun contains(key: K): Boolean = entries.containsKey(key)
+
+    /**
+     * Hands the entry over; a clip is taken at most once.
+     *
+     * [fresh] decides whether the entry still describes what is on screen. An
+     * entry it refuses is *dropped*, not kept: entries only get staler, so
+     * keeping one would hand out the same stale clip the next time round. Both
+     * ends check this — a resolve can finish before the reel is replaced and
+     * still be taken after it.
+     */
+    fun take(key: K, fresh: (V) -> Boolean = { true }): V? =
+        entries.remove(key)?.takeIf(fresh)
+
+    fun put(key: K, value: V) {
+        // Re-inserted so a refreshed entry counts as the newest again.
+        entries.remove(key)
+        entries[key] = value
+        while (entries.size > capacity) entries.remove(entries.keys.first())
+    }
+
+    fun clear() = entries.clear()
 }
 
 @OptIn(UnstableApi::class)

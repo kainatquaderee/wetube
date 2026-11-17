@@ -65,7 +65,9 @@ easy to demo.
 
 ## 0.1.9 — polish follow-ups
 - [x] Mini-player: keep the current video docked while browsing the rest of the app
-- [ ] Comment composer: post and reply from the app when signed in
+- [x] Comment composer: post a top-level comment from the app when signed in
+- [x] Comment composer: reply to a comment from the app
+- [x] Comment likes from the app when signed in
 - [ ] Fullscreen auto-rotate for landscape video, with a portrait lock option
 
 ## 0.2.0 — account sync (pull-first, shipped in this tree)

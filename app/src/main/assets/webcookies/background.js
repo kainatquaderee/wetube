@@ -1,9 +1,11 @@
-// Hands the app's YouTube session to this browser profile.
+// Hands the app's YouTube session to this browser profile, and takes back the
+// one a sign-in can leave in it.
 //
 // GeckoView's Java API has no cookie accessor, so the only surface that can
 // write a cookie into the engine is one of its own extensions. This one holds
-// no policy of its own: it replaces the profile's YouTube cookies with exactly
-// the set the app sends, and reports back how many it removed and stored.
+// no policy of its own: it replaces the profile's YouTube and Google cookies
+// with exactly the set the app sends, and reports back how many it removed and
+// stored.
 //
 // Values only ever travel app -> engine. Nothing here reads a cookie value out
 // of the profile, and the replies carry names and counts so the app can log
@@ -14,6 +16,12 @@
 const NATIVE_APP = "wetube.session";
 const ORIGIN = "https://www.youtube.com/";
 const DOMAIN = ".youtube.com";
+
+// Every site a session handed to this engine can live on. Google is here
+// because the engine admits accounts.google.com: a sign-in there sets a
+// `.google.com` cookie the app neither made nor holds, and leaving it behind
+// would let the next watch page answer as that Google account.
+const SESSION_DOMAINS = ["youtube.com", "google.com"];
 
 let port = null;
 
@@ -45,23 +53,34 @@ function connect() {
   port.postMessage({ type: "ready" });
 }
 
-// Replaces every YouTube cookie in this profile with `cookies`.
+// Drops every cookie this extension can see for a site a session lives on.
+//
+// Addressed one cookie at a time by its own domain and path: the profile holds
+// cookies for www.youtube.com, m.youtube.com and .google.com alike, and a
+// removal sent to the wrong host leaves the old session in place.
+async function clearSessionCookies() {
+  let removed = 0;
+  for (const domain of SESSION_DOMAINS) {
+    const existing = await browser.cookies.getAll({ domain });
+    for (const cookie of existing) {
+      const gone = await browser.cookies.remove(addressOf(cookie));
+      if (gone) {
+        removed++;
+      }
+    }
+  }
+  return removed;
+}
+
+// Replaces every YouTube and Google cookie in this profile with `cookies`.
 //
 // Clearing first is what makes an account switch land: a leftover session
 // cookie would otherwise outlive the switch and the watch page would keep
-// answering as the account that was just replaced. Each removal is addressed by
-// the cookie's own domain and path — the profile holds cookies for both
-// www.youtube.com and m.youtube.com, and a removal sent to the wrong host leaves
-// the old session in place.
+// answering as the account that was just replaced. Only the app's own jar is
+// written back, so anything the page signed in as is gone by the time the next
+// page loads.
 async function seed(cookies) {
-  const existing = await browser.cookies.getAll({ domain: "youtube.com" });
-  let removed = 0;
-  for (const cookie of existing) {
-    const gone = await browser.cookies.remove(addressOf(cookie));
-    if (gone) {
-      removed++;
-    }
-  }
+  const removed = await clearSessionCookies();
 
   const failed = [];
   for (const cookie of cookies) {
@@ -75,8 +94,10 @@ async function seed(cookies) {
       httpOnly: cookie.httpOnly,
       sameSite: cookie.sameSite,
       // Deliberately no expirationDate: a session cookie lives only as long as
-      // the runtime, and the app re-seeds from its own store on every launch.
-      // The profile therefore keeps no long-lived copy of the account.
+      // the runtime, so the app's own copy of the account is never written to
+      // the profile's cookie database. What the page signs itself in as is a
+      // different matter — that is what clearSessionCookies() is for — and the
+      // app clears the whole profile when its session ends.
     };
     try {
       const stored = await browser.cookies.set(detail);

@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "name": "WeTube session",
   "version": "1.0",
-  "description": "Copies the app's YouTube session into this browser profile.",
+  "description": "Copies the app's YouTube session into this profile and clears the one a sign-in leaves in it.",
   "browser_specific_settings": {
     "gecko": {
       "id": "session@wetube.app"
@@ -14,6 +14,7 @@
   "permissions": [
     "cookies",
     "*://*.youtube.com/*",
+    "*://*.google.com/*",
     "nativeMessaging",
     "geckoViewAddons"
   ]

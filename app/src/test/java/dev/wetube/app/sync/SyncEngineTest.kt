@@ -228,7 +228,7 @@ class SyncEngineTest {
         assertTrue(metadata.state(key).firstSyncDone)
         assertEquals(FakeSyncBackend.CREATED_PLAYLIST_ID, metadata.state(key).favouritesPlaylistId)
         // The seeded favourite is now part of the baseline.
-        assertEquals(true, metadata.entries().getValue(favouriteKey("v1")).basePresent)
+        assertEquals(true, library.syncEntry(key, favouriteKey("v1"))?.basePresent)
     }
 
     @Test
@@ -467,7 +467,7 @@ class SyncEngineTest {
         )
         // The baseline must follow the account: UCc is now gone remotely, so a
         // later re-add is an add, not a "removed locally" delete.
-        assertFalse(metadata.entries().getValue(subscriptionKey("UCc")).basePresent)
+        assertEquals(false, library.syncEntry(key, subscriptionKey("UCc"))?.basePresent)
     }
 
     // ----- Failure handling -------------------------------------------------
@@ -518,7 +518,7 @@ class SyncEngineTest {
 
         assertFalse((status as SyncStatus.Failed).retryable)
         assertEquals(1, backend.calls.count { it.method == FakeSyncBackend.M_ADD_TO_PLAYLIST })
-        assertNotNull(metadata.entries().getValue(favouriteKey("v1")).pendingOp)
+        assertNotNull(library.syncEntry(key, favouriteKey("v1"))?.pendingOp)
         // The failed push moved only the error count; the first sync is not
         // recorded as done, so the next sync still asks for consent.
         val state = metadata.state(key)
@@ -550,7 +550,7 @@ class SyncEngineTest {
 
         assertTrue(status.retryable)
         assertTrue(backend.writes.isEmpty())
-        assertTrue(metadata.entries().none { it.key == favouriteKey("v1") && it.value.basePresent })
+        assertTrue(metadata.entries().none { it.value.id == favouriteKey("v1") && it.value.basePresent })
     }
 
     // ----- Quarantine -------------------------------------------------------

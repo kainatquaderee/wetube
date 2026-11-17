@@ -392,7 +392,10 @@ class SyncEngine(
     }
 
     private suspend fun buildPlan(accountKey: String, remote: RemoteSnapshot): SyncPlan {
-        val snapshot = library.snapshot()
+        // The scope of the account this sync is for, not of whoever is signed in
+        // when it gets here: a sign-out between the pull and this read would turn
+        // an empty "current" library into deletions of the whole remote list.
+        val snapshot = library.snapshot(accountKey)
         val entries = metadata.entries()
         val tombstones = metadata.tombstones().associateBy { it.id }
         val state = metadata.state(accountKey)

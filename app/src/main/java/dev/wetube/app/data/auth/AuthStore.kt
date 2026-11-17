@@ -81,6 +81,25 @@ class AuthStore(
     private val http: JsonHttp,
 ) {
 
+    /**
+     * Told whenever the stored session becomes a different one — or none —
+     * through [signIn], [switchTo], [signOut] or [signOutAll].
+     *
+     * The embedded browser engine keeps a copy of this account in a profile of
+     * its own, and nothing here can reach it: the engine belongs to the player,
+     * which is only alive while a fallback video is on screen. So whoever owns
+     * that copy registers here and is told when the session it was made from is
+     * gone, rather than being asked to poll. Signing in as the account that is
+     * already active does not fire it: nothing about the copy changed.
+     *
+     * The hook is suspended, so the sign-out the user asked for is not reported
+     * as finished while the copy still exists, and a failure inside it is logged
+     * rather than thrown: not being able to clear the engine must not fail the
+     * account change itself.
+     */
+    @Volatile
+    var onSessionReplaced: (suspend () -> Unit)? = null
+
     private val json = http.json
     private val listSerializer = ListSerializer(StoredAccount.serializer())
 
@@ -183,6 +202,7 @@ class AuthStore(
         val existing = accounts.first().indexOfFirst { it.cookies == cookies }
         if (existing >= 0) {
             setActive(existing)
+            notifySessionReplaced()
             return
         }
 
@@ -203,11 +223,13 @@ class AuthStore(
         if (BuildConfig.DEBUG) {
             android.util.Log.d("WeTube", "auth: ${accounts.first().size} account(s)")
         }
+        notifySessionReplaced()
     }
 
     suspend fun switchTo(index: Int) {
         if (index !in accounts.first().indices) return
         setActive(index)
+        notifySessionReplaced()
     }
 
     /** Sign out of the active account; other accounts keep their session. */
@@ -222,10 +244,28 @@ class AuthStore(
             prefs.remove(Keys.legacyName)
             prefs.remove(Keys.legacyAvatar)
         }
+        notifySessionReplaced()
     }
 
     suspend fun signOutAll() {
         context.authDataStore.edit { it.clear() }
+        notifySessionReplaced()
+    }
+
+    /**
+     * Tells [onSessionReplaced] that the stored session is no longer the one the
+     * engine's copy was made from. A hook that fails is logged, not rethrown.
+     */
+    private suspend fun notifySessionReplaced() {
+        val hook = onSessionReplaced ?: return
+        runCatching { hook() }.onFailure { error ->
+            if (BuildConfig.DEBUG) {
+                android.util.Log.d(
+                    "WeTube",
+                    "auth: session hook failed (${error.javaClass.simpleName})",
+                )
+            }
+        }
     }
 
     private suspend fun setActive(index: Int) {

@@ -47,7 +47,15 @@ class InvidiousBackend(
             .filter { it.videoId.isNotBlank() }
             .map { it.toItem() }
 
-    override suspend fun search(query: String, nextPage: String?): SearchResult {
+    // The Invidious API spells its filters as separate query parameters
+    // (sort_by/date/duration/type) of its own; mapping the app's selection onto
+    // them is not wired, so [filters] is dropped here rather than half-applied,
+    // and `supportsSearchFilters` stays at the interface default of false.
+    override suspend fun search(
+        query: String,
+        nextPage: String?,
+        filters: SearchFilters,
+    ): SearchResult {
         val page = nextPage?.toIntOrNull() ?: 1
         val encoded = encodeUrlValue(query)
         val items = http.get("$base/search?q=$encoded&page=$page&type=video", ListSerializer(IvVideo.serializer()))
@@ -57,7 +65,7 @@ class InvidiousBackend(
         )
     }
 
-    override suspend fun video(id: String): VideoDetail {
+    override suspend fun video(id: String, fallback: PlaybackFallback): VideoDetail {
         val local = if (proxyStreams) "?local=true" else ""
         val v = http.get("$base/videos/${encodeVideoId(id)}$local", IvVideo.serializer())
 

@@ -25,8 +25,17 @@ android {
         applicationId = "dev.wetube.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30
-        versionName = "0.3.10"
+        versionCode = 31
+        versionName = "0.3.11"
+
+        // The ABIs this app ships at all. `splits` below decides how they are
+        // divided across APKs, but the universal APK is not filtered by those
+        // splits, so without this it would keep every ABI the dependencies
+        // contain — including the 32-bit x86 GeckoView libraries. Keep this list
+        // and the split list in step: it is the single statement of what ships.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     // Keep the APK free of the dependency metadata block; nothing in the app
@@ -34,6 +43,33 @@ android {
     dependenciesInfo {
         includeInApk = false
         includeInBundle = false
+    }
+
+    // GeckoView carries ~633 MiB of native libraries for four ABIs, so a single
+    // universal APK made every install download — and keep — all of them. A
+    // device now gets only its own ABI's set. The universal APK stays as the
+    // one artifact that installs anywhere: sideloading from a file that was
+    // copied to the phone, and anyone who would rather not pick.
+    //
+    // 32-bit x86 is deliberately absent. Mozilla ended 32-bit x86 Android
+    // support with Firefox 144 (the pinned geckoview 140 still ships the
+    // libraries, but nothing newer will), no current emulator image uses it,
+    // and Google Play has required 64-bit support for years. arm64-v8a is every
+    // recent phone, x86_64 the emulator, armeabi-v7a the older 32-bit ARM
+    // devices that still update apps.
+    //
+    // Splitting does not change how the libraries are packaged: AGP's default
+    // useLegacyPackaging=false keeps them uncompressed and sets
+    // android:extractNativeLibs="false", and the packaging step zipaligns each
+    // APK with 16 KB page alignment (-P 16), so the 64-bit engine libraries
+    // still map straight out of the APK on devices with 16 KB pages.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = true
+        }
     }
 
     signingConfigs {
@@ -108,6 +144,20 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    // The player tests build Media3's own Format/Tracks objects to pin how the
+    // audio menu reads them, and those constructors call into android.text
+    // (Util.normalizeLanguageCode); without this the JVM run dies on the first
+    // unmocked framework method instead of exercising the code under test.
+    //
+    // This is a project-wide weakening, kept because the alternative is a
+    // mocking or Robolectric dependency: every unmocked android.* call now
+    // returns a default value instead of throwing, so a test can pass while
+    // quietly depending on such a default. No test may rely on that — only on
+    // the objects it constructs itself.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 
     lint {

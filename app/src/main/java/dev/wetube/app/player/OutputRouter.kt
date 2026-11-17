@@ -1,6 +1,7 @@
 package dev.wetube.app.player
 
 import androidx.media3.common.MediaItem
+import dev.wetube.app.data.model.AudioStream
 import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.player.remote.RemoteFailure
@@ -120,9 +121,14 @@ class OutputRouter(
      * renderer's last position, which is how opening a different video while
      * casting avoids resuming the new video at the old one's position.
      */
-    suspend fun returnLocal(item: MediaItem, speed: Float = 1f, startAtMs: Long? = null) {
+    suspend fun returnLocal(
+        item: MediaItem,
+        speed: Float = 1f,
+        startAtMs: Long? = null,
+        streams: List<AudioStream> = emptyList(),
+    ) {
         val position = remote.disconnect()
-        local.load(item, speed, startAtMs = startAtMs ?: position)
+        local.load(item, speed, startAtMs = startAtMs ?: position, streams = streams)
         _output.value = PlaybackOutput.Local
     }
 

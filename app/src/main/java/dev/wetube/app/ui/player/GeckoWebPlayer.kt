@@ -6,7 +6,10 @@ import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -35,17 +38,74 @@ import org.mozilla.geckoview.GeckoView
  * That cookie store is also the one thing the engine will not share: there is
  * no cookie API on [GeckoRuntime], so the sign-in the app already holds is
  * handed over by a bundled extension before the page loads ([WebCookieBridge]).
- * The profile is therefore never the place a session is created — it is only
- * ever a copy of the account that is selected in Settings.
+ * The profile it writes into is process-wide and outlives every player screen,
+ * so what it can hold is a security surface rather than a scratch copy:
+ *
+ * - Only two owners are ever admitted: YouTube (`youtube.com`, `*.youtube.com`,
+ *   `youtu.be`) and the handful of Google hosts a sign-in walks through
+ *   ([YouTubeOnlyNavigation]).
+ * - A sign-in on `accounts.google.com` inside the page does create a session in
+ *   the profile while it is in progress — a `.google.com` cookie the app did
+ *   not make, does not hold and cannot show in Settings, and that YouTube
+ *   answers the next page as. Assuming the profile only ever mirrored the
+ *   selected account is what let a Google session outlive the account it was
+ *   created for.
+ * - Two things clear it. Every seeding round drops the profile's `youtube.com`
+ *   and `google.com` cookies before the app's own are written, so a sign-in
+ *   completed inside the page is not carried into the next video. And
+ *   [WebCookieBridge.wipe] empties the profile's whole cookie store — every
+ *   host, regional Google domains included — when the app's account is signed
+ *   out or switched, whether or not a player is on screen. Neither runs once the
+ *   page is on screen: a video that is playing keeps the session it started with
+ *   until the player is left or the account changes.
  *
  * What the app's player adds — background playback, the quality picker,
  * downloads, casting — is unavailable here; the trade is that the video plays
  * at all.
  */
+/**
+ * What the embedded page has done with the screen, and the way back out.
+ *
+ * The page's own fullscreen is the only way to see the picture without
+ * YouTube's title, description and comments around it, and it is not something
+ * the app can arrange: the site asks, the embedder grants
+ * ([EmbeddedPageContentDelegate]), and only then may the app stop drawing its
+ * own bar over the result. This object is that one fact, held outside the
+ * player composable so the screen around it can react to it — and it keeps the
+ * session because leaving the site's fullscreen is a request to the page, not a
+ * layout change the app can make on its own.
+ *
+ * It is deliberately not `@Stable`: [session] is engine plumbing rather than
+ * state any composable reads, and only [fullScreen] is observable.
+ */
+internal class EmbeddedPageState {
+    internal var session: GeckoSession? = null
+
+    /** True while the page has taken the whole screen for a single element. */
+    var fullScreen by mutableStateOf(false)
+        private set
+
+    internal fun update(entered: Boolean) {
+        fullScreen = entered
+    }
+
+    /**
+     * Asks the page to leave fullscreen, exactly as the site's own control does.
+     *
+     * The app's back path calls this first: dropping the window's fullscreen
+     * while the page stayed in its own would leave a picture drawn under a page
+     * that has hidden every control it owns.
+     */
+    fun exitFullScreen() {
+        session?.exitFullScreen()
+    }
+}
+
 @Composable
 internal fun EmbeddedGeckoPlayer(
     videoId: String,
     cookies: String,
+    state: EmbeddedPageState,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -60,6 +120,10 @@ internal fun EmbeddedGeckoPlayer(
         ).apply {
             permissionDelegate = AutoplayPermissionDelegate
             navigationDelegate = YouTubeOnlyNavigation
+            // Without this the page cannot go fullscreen at all; see the
+            // delegate for why that is the embedder's decision.
+            contentDelegate = EmbeddedPageContentDelegate(state)
+            state.session = this
             open(runtime)
         }
     }
@@ -83,6 +147,11 @@ internal fun EmbeddedGeckoPlayer(
         onDispose {
             view.releaseSession()
             session.close()
+            // The state outlives this player (it is remembered by the screen
+            // around it), so a closed session must not be left behind for the
+            // next video's back press to talk to.
+            if (state.session === session) state.session = null
+            state.update(false)
         }
     }
 
@@ -90,8 +159,12 @@ internal fun EmbeddedGeckoPlayer(
         // The account selected in Settings is written into the profile before
         // the page is asked for anything: YouTube answers the watch page as
         // whoever the cookies say, so arriving first is what keeps the video
-        // from being refused once and reloaded. A round that fails is not fatal
-        // — the page then loads with whatever session the profile already had.
+        // from being refused once and reloaded. The same round drops the
+        // profile's own `youtube.com` and `google.com` cookies first, so a
+        // session created inside the page — a sign-in for an age gate, say —
+        // does not carry over to the next video. A round that fails is not
+        // fatal: the page then loads with whatever session the profile already
+        // had.
         WebCookieBridge.seed(sessionCookies(cookies))
         // The watch page, and not an embed of the video.
         //
@@ -141,6 +214,32 @@ private object GeckoEngine {
 }
 
 /**
+ * Hands the page the one privilege GeckoView keeps for its embedder: going
+ * fullscreen.
+ *
+ * The mobile watch page draws the picture inside itself, with the title,
+ * description and comments below it, and offers its own button to drop all of
+ * that. A browser answers that button by hiding its chrome; an embedded engine
+ * has no chrome to hide and no way to ask its host, so the request is delivered
+ * here instead — and if nothing listens, the request is simply refused. That is
+ * why the site's fullscreen button did nothing in this player.
+ *
+ * Nothing is resized in reply. The fallback already opens as the whole screen
+ * with the system bars hidden, so granting the request only means the page may
+ * now draw the picture alone; [EmbeddedPageState] carries the fact outward so
+ * the app's own bar can step aside and so back can hand the page back its
+ * chrome before it hands the window back to the feed.
+ */
+private class EmbeddedPageContentDelegate(
+    private val state: EmbeddedPageState,
+) : GeckoSession.ContentDelegate {
+    override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
+        state.update(fullScreen)
+        if (BuildConfig.DEBUG) Log.d("WeTube", "embedded page fullscreen=$fullScreen")
+    }
+}
+
+/**
  * Grants the page the one permission it needs to start playing by itself.
  *
  * The watch page begins playback without a tap, which browsers treat as a
@@ -170,16 +269,27 @@ private object AutoplayPermissionDelegate : GeckoSession.PermissionDelegate {
 }
 
 /**
- * Keeps the embedded player on YouTube and on the one other site it needs, the
- * same way the rest of the app keeps a hostile or injected link from driving it
- * elsewhere: the watch page's own links and Google's sign-in pages are https
- * pages on those two owners and stay usable, while a custom scheme, `file:`,
- * `content:` or any other host is refused.
+ * Keeps the embedded player on YouTube and on the exact Google pages an age
+ * confirmation walks through, the same way the rest of the app keeps a hostile
+ * or injected link from driving it elsewhere: an https page on one of those
+ * hosts is usable, while a custom scheme, `file:`, `content:` or any other host
+ * is refused.
  *
- * The sign-in pages are not optional. YouTube confirms an age with an account,
- * and it collects that account on `accounts.google.com`; refusing that host
- * leaves the page's Sign in button doing nothing at all, which looks like a
- * broken player rather than a blocked navigation.
+ * A refusal is still [AllowOrDeny.DENY], so the page the viewer is on stays
+ * where it is and a load that cannot happen ends on the engine's own error page.
+ * Nothing was loosened to make the shorter Google list easier to live with.
+ *
+ * The Google side is a list of hosts rather than a domain. `accounts.google.com`
+ * (and the regional `accounts.google.<tld>` the account flow picks for itself)
+ * collects the account; `www.google.com` serves the reCAPTCHA frame an unusual
+ * sign-in is challenged with; `consent.google.com` is the consent interstitial
+ * in front of an account that was just granted. Everything else Google
+ * publishes is refused — `sites.google.com` above all, because that host serves
+ * anybody's published page and a `.google.com` session cookie travels with every
+ * request to any host under that domain.
+ *
+ * `accounts.youtube.com`, where the sign-in hands its result back to YouTube, is
+ * admitted by the YouTube wildcard.
  */
 private object YouTubeOnlyNavigation : GeckoSession.NavigationDelegate {
     override fun onLoadRequest(
@@ -251,8 +361,8 @@ private fun originOf(uri: android.net.Uri?): String {
 }
 
 /**
- * True for a page the embedded player may open: YouTube itself, and Google's
- * account pages, which is where an age gets confirmed.
+ * True for a page the embedded player may open: YouTube itself, and the Google
+ * host a sign-in is collected on, which is where an age gets confirmed.
  *
  * `accounts.google.<tld>` is matched as well as `accounts.google.com` because
  * the sign-in flow picks the viewer's own regional domain.
@@ -261,6 +371,24 @@ private fun isPlayablePage(uri: String?): Boolean {
     val parsed = uri?.toUri() ?: return false
     return isPlayableAddress(parsed.scheme, parsed.host)
 }
+
+/**
+ * The Google hosts the account flow itself visits.
+ *
+ * A list rather than the whole `google.com` family. The session a sign-in leaves
+ * behind is a `.google.com` cookie, and a domain cookie is sent with every
+ * request to every host under that domain — including `sites.google.com`, which
+ * serves anybody's published page. Only the pages that take part in a sign-in
+ * are worth handing that to.
+ */
+private val SIGN_IN_HOSTS = setOf(
+    // The form itself, and the regional domain the flow may pick instead.
+    "accounts.google.com",
+    // The reCAPTCHA challenge frame an unusual sign-in is answered with.
+    "www.google.com",
+    // The consent interstitial in front of an account that was just granted.
+    "consent.google.com",
+)
 
 /**
  * The allowlist itself, as a comparison of the two parts of an address it cares
@@ -276,8 +404,7 @@ internal fun isPlayableAddress(scheme: String?, host: String?): Boolean {
     return name == "youtu.be" ||
         name == "youtube.com" ||
         name.endsWith(".youtube.com") ||
-        name == "google.com" ||
-        name.endsWith(".google.com") ||
+        name in SIGN_IN_HOSTS ||
         REGIONAL_SIGN_IN_HOST.matches(name)
 }
 

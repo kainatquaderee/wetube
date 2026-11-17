@@ -52,14 +52,47 @@ data class StreamFormat(
 )
 
 /**
+ * One dubbed audio rendition YouTube resolved for a video.
+ *
+ * A dub is not a track of the stream the player is handed: YouTube publishes
+ * every language as its own adaptive audio format, so nothing inside a single
+ * `MediaItem` can switch languages. Carrying the whole set on [Playback] is what
+ * lets the picker offer the languages and the player be rebuilt on a pick.
+ */
+data class AudioStream(
+    /** Progressive audio URL, signed like every other format URL. */
+    val url: String,
+    /** Container/codec of [url], e.g. `audio/mp4`. */
+    val mime: String,
+    /** ISO-639 code YouTube states, taken from `audioTrack.id` (`en` in `en.4`). */
+    val languageCode: String = "",
+    /** YouTube's own name for the dub ("English (US)"), "" when it gave none. */
+    val displayName: String = "",
+    /** True for the track YouTube flags `audioIsDefault`. */
+    val isDefault: Boolean = false,
+    /**
+     * True for the recording's own language.
+     *
+     * YouTube lists the original's formats before any dub and does not always
+     * flag it, so this is the row that starts playing when nothing else matches.
+     */
+    val original: Boolean = false,
+)
+
+/**
  * Everything the player needs. Backends differ wildly in what they expose, so
  * the player negotiates instead of assuming one container.
+ *
+ * [audioStreams] is the one field that is not a plain media list: it holds every
+ * dub the backend resolved, and an empty list means the backend cannot resolve
+ * dubs at all, which is exactly the behaviour of a single-audio video.
  */
 data class Playback(
     val muxed: List<StreamFormat> = emptyList(),
     val videoOnly: List<StreamFormat> = emptyList(),
     val audioOnly: List<StreamFormat> = emptyList(),
     val hls: String? = null,
+    val audioStreams: List<AudioStream> = emptyList(),
 ) {
     val isEmpty: Boolean get() = muxed.isEmpty() && videoOnly.isEmpty() && audioOnly.isEmpty() && hls == null
 
@@ -124,7 +157,50 @@ data class Comment(
     val publishedText: String = "",
     val replyCount: Int = 0,
     val id: String = "",
+    val liked: Boolean = false,
+    val own: Boolean = false,
+    val actions: CommentActions = CommentActions(),
+    val replies: CommentReplies? = null,
 )
+
+/**
+ * A pointer to one comment's replies.
+ *
+ * The replies are not on the page that shows the comment: the row carries only
+ * a count and the opaque [token] that asks for them, and that token answers a
+ * page of its own. [label] is the server's own wording for the count ("45
+ * replies"), kept verbatim so the row and the page it opens agree.
+ *
+ * Only a top-level comment has one. A reply inside a thread arrives without
+ * this, because a thread is one level deep by design — and that absence is
+ * exactly what keeps a reply from offering a thread of its own.
+ */
+data class CommentReplies(
+    val token: String = "",
+    val label: String = "",
+)
+
+/**
+ * The write commands YouTube handed out for one comment.
+ *
+ * Each field is the server's own opaque parameter, carried back verbatim:
+ * [like] and [unlike] are the `action` a `comment/perform_comment_action`
+ * request takes, and [reply] is the `createCommentParams` that places a new
+ * comment underneath this one. They are minted per comment *and per session*,
+ * which is why they are read off the answer instead of being built here.
+ *
+ * A signed-out answer carries none of them: YouTube offers no commands on a
+ * page it does not know you on. [canLike] and [canReply] are false there, and
+ * the sheet shows no buttons rather than a button that cannot do anything.
+ */
+data class CommentActions(
+    val like: String? = null,
+    val unlike: String? = null,
+    val reply: String? = null,
+) {
+    val canLike: Boolean get() = like != null && unlike != null
+    val canReply: Boolean get() = reply != null
+}
 
 /**
  * One page of results.

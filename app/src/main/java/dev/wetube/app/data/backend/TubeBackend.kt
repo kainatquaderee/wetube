@@ -3,6 +3,7 @@ package dev.wetube.app.data.backend
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.Comment
 import dev.wetube.app.data.model.CommentPage
+import dev.wetube.app.data.model.CommentThreadInfo
 import dev.wetube.app.data.model.FeedPage
 import dev.wetube.app.data.model.FeedBlock
 import dev.wetube.app.data.model.HomePage
@@ -68,14 +69,57 @@ interface TubeBackend {
      * them — so [SearchResult.blocks] is what preserves that order. A transport
      * that cannot produce shelves leaves it empty, and Search then renders
      * [SearchResult.videos] instead of showing nothing.
+     *
+     * [filters] narrows and orders the search. Only the first page states it: the
+     * continuation token a page hands back is minted for that same selection, so
+     * later pages inherit it rather than repeating it. A transport that cannot
+     * express YouTube's filter message drops the selection and reports
+     * [supportsSearchFilters] as `false`, so the screen can say so instead of
+     * pretending the list is filtered.
      */
-    suspend fun search(query: String, nextPage: String? = null): SearchResult
+    suspend fun search(
+        query: String,
+        nextPage: String? = null,
+        filters: SearchFilters = SearchFilters(),
+    ): SearchResult
 
-    suspend fun video(id: String): VideoDetail
+    /**
+     * Whether [search] can honour a [SearchFilters] selection.
+     *
+     * Building the filter message is a property of the transport, not of the
+     * screen: it is YouTube's own protobuf, and a public-feed API that spells its
+     * filters differently cannot be handed it. Defaulting to `false` keeps every
+     * transport honest without each one restating it.
+     */
+    val supportsSearchFilters: Boolean get() = false
+
+    /**
+     * One video in full, for the player and the detail sheets.
+     *
+     * [fallback] is what *this* resolve should do about the playback fallback
+     * profile, and it is a per-call decision rather than a flag on the transport
+     * because resolves overlap: the Shorts section resolves the clips ahead of
+     * the viewer while the full player recovers from a rejected URL, and a flag
+     * is taken by whichever resolve reaches the transport first. A recovery that
+     * asks for itself ([PlaybackFallback.Force]) cannot be eaten by a prefetch,
+     * and a prefetch ([PlaybackFallback.Never]) cannot inherit one.
+     */
+    suspend fun video(id: String, fallback: PlaybackFallback = PlaybackFallback.Inherit): VideoDetail
 
     suspend fun channel(id: String): ChannelInfo
 
     suspend fun comments(id: String): List<Comment>
+
+    /**
+     * The comment entry point of a video: the count text and the tokens the
+     * first page and the sorts are addressed by.
+     *
+     * The watch response already carries this for the transport that reads its
+     * comments off it, so the default is empty and [comments] stays the only
+     * source. A backend with a session answers it from the signed surface
+     * instead, whose pages are the only ones carrying like and reply commands.
+     */
+    suspend fun commentThread(id: String): CommentThreadInfo = CommentThreadInfo()
 
     /**
      * One page of comments, starting from a token handed out by the watch
@@ -130,4 +174,24 @@ interface TubeBackend {
      * so the filter layer never hides the capability.
      */
     val sync: SyncBackend? get() = null
+
+    /**
+     * The account-write side of comments, when this transport has one.
+     *
+     * Reading a thread is anonymous and universal; posting is not, which is why
+     * this is a capability rather than part of [comments]. A public-feed
+     * transport leaves the default `null` and the sheet shows no composer
+     * instead of one that would fail on every keystroke's worth of work.
+     */
+    val commentComposer: CommentComposer? get() = null
+
+    /**
+     * Liking and replying, when this transport can act as the account.
+     *
+     * Separate from [commentComposer] because their parameters come from the
+     * comment itself: a page read without a session has no actions to offer, so
+     * the sheet shows the counts and nothing tappable. Transports without an
+     * account keep the default `null`.
+     */
+    val commentReactions: CommentReactions? get() = null
 }

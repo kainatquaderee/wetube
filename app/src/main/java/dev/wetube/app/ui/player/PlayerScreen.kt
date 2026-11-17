@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CastConnected
@@ -122,6 +123,8 @@ import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
 import dev.wetube.app.di.ServiceLocator
+import dev.wetube.app.data.model.AudioStream
+import dev.wetube.app.player.AudioTrackOption
 import dev.wetube.app.player.CaptionSession
 import dev.wetube.app.player.PlaybackOutput
 import dev.wetube.app.player.StreamResolver
@@ -442,6 +445,16 @@ class PlayerViewModel(
     val captions = CaptionSession(locator, viewModelScope)
 
     /**
+     * The audio tracks the More menu offers, plus the viewer's own pick.
+     *
+     * Owned by the playback controller, not by this ViewModel: the player
+     * outlives the screen, and an audio pick must survive leaving the video and
+     * coming back. It is still dropped for a different video, which is the one
+     * rule the session enforces itself.
+     */
+    val audio = locator.playback.audio
+
+    /**
      * Whether the video in the player is in Watch Later.
      *
      * Derived from the store rather than a private flag so the More-menu label
@@ -556,6 +569,7 @@ class PlayerViewModel(
                         detail,
                         settings.audioOnly || backgroundAudioOnly,
                         settings.videoQuality,
+                        audio = audio.pickedStream(detail.item.id),
                     ) ?: error("No playable stream was available for this video."))
                 // Remembered here, at the one place the local-vs-network choice
                 // is made, so an error later knows whether the bytes it is
@@ -575,12 +589,14 @@ class PlayerViewModel(
                         item = item,
                         speed = settings.playbackSpeed,
                         startAtMs = resumeAt ?: 0L,
+                        streams = detail.playback.audioStreams,
                     )
                 } else {
                     locator.playback.play(
                         item = item,
                         speed = settings.playbackSpeed,
                         startAtMs = resumeAt,
+                        streams = detail.playback.audioStreams,
                     )
                 }
                 locator.library.addToHistory(detail.item)
@@ -892,7 +908,12 @@ class PlayerViewModel(
                 if (id != currentVideoId) return@runCatching
                 val item = local
                     ?.let { StreamResolver.localItem(detail.item, it.file, it.mime) }
-                    ?: StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
+                    ?: StreamResolver.mediaItem(
+                        detail,
+                        settings.audioOnly,
+                        settings.videoQuality,
+                        audio = audio.pickedStream(detail.item.id),
+                    )
                     ?: error("This video has no playable streams any more.")
                 isLocalSource = local != null
                 state = state.copy(detail = merge(state.detail, detail), error = null)
@@ -900,6 +921,7 @@ class PlayerViewModel(
                     item = item,
                     speed = settings.playbackSpeed,
                     startAtMs = positionMs,
+                    streams = detail.playback.audioStreams,
                 )
             }.onFailure {
                 state = state.copy(error = friendlyError(it))
@@ -932,8 +954,12 @@ class PlayerViewModel(
                     settings.videoQuality,
                 ),
             )
-            val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
-                ?: return@launch
+            val item = StreamResolver.mediaItem(
+                detail,
+                settings.audioOnly,
+                settings.videoQuality,
+                audio = audio.pickedStream(detail.item.id),
+            ) ?: return@launch
             // This path always rebuilds from the stream URLs, so the source is
             // the network from here on even if the previous item was the file.
             isLocalSource = false
@@ -944,6 +970,7 @@ class PlayerViewModel(
                 item = item,
                 speed = settings.playbackSpeed,
                 startAtMs = position,
+                streams = detail.playback.audioStreams,
             )
         }
     }
@@ -960,6 +987,18 @@ class PlayerViewModel(
             locator.settings.update { it.copy(videoQuality = height) }
             if (locator.output.isRemote) recastRemote() else applySettings()
         }
+    }
+
+    /**
+     * Applies the viewer's own audio track to the video in the player.
+     *
+     * Deliberately not written to the settings: the pick is about these dubs,
+     * and the next video starts from the device's language again — the same
+     * rule the official player follows. [dev.wetube.app.player.AudioTrackSession]
+     * keeps it across a quality change of this video and drops it for the next.
+     */
+    fun chooseAudio(option: AudioTrackOption) {
+        locator.playback.chooseAudio(option)
     }
 
     /** Drops the picture and plays the audio track only, or brings it back. */
@@ -996,11 +1035,12 @@ class PlayerViewModel(
                     detail,
                     settings.audioOnly,
                     settings.videoQuality,
+                    audio = audio.pickedStream(detail.item.id),
                 ) ?: return@launch
                 if (dev.wetube.app.BuildConfig.DEBUG) {
                     android.util.Log.d("WeTube", "player: background picture restored")
                 }
-                reloadInPlace(item, settings.playbackSpeed)
+                reloadInPlace(item, settings.playbackSpeed, detail.playback.audioStreams)
             }
             return
         }
@@ -1022,12 +1062,13 @@ class PlayerViewModel(
                 detail,
                 audioOnly = true,
                 preferredHeight = settings.videoQuality,
+                audio = audio.pickedStream(detail.item.id),
             ) ?: return@launch
             backgroundAudioOnly = true
             if (dev.wetube.app.BuildConfig.DEBUG) {
                 android.util.Log.d("WeTube", "player: background step-down to audio-only")
             }
-            reloadInPlace(item, settings.playbackSpeed)
+            reloadInPlace(item, settings.playbackSpeed, detail.playback.audioStreams)
         }
     }
 
@@ -1043,12 +1084,12 @@ class PlayerViewModel(
      * Replaces the current media at the same position without forcing playback,
      * so a background step-down never un-pauses a video the viewer paused.
      */
-    private fun reloadInPlace(item: MediaItem, speed: Float) {
+    private fun reloadInPlace(item: MediaItem, speed: Float, streams: List<AudioStream>) {
         // A rebuilt item always comes from the stream URLs, so the source is the
         // network from here on even if the previous bytes were the saved file.
         isLocalSource = false
         val position = locator.playback.controller.value?.currentPosition ?: 0L
-        locator.playback.load(item = item, speed = speed, startAtMs = position)
+        locator.playback.load(item = item, speed = speed, startAtMs = position, streams = streams)
     }
 
     // -- casting ------------------------------------------------------------
@@ -1121,7 +1162,12 @@ class PlayerViewModel(
                 return@launch
             }
             val settings = locator.settings.settings.first()
-            val item = StreamResolver.mediaItem(detail, settings.audioOnly, settings.videoQuality)
+            val item = StreamResolver.mediaItem(
+                detail,
+                settings.audioOnly,
+                settings.videoQuality,
+                audio = audio.pickedStream(detail.item.id),
+            )
             if (item == null) {
                 state = state.copy(castFailure = RemoteFailure.StreamUnavailable)
                 return@launch
@@ -1360,11 +1406,20 @@ fun PlayerScreen(
 
     var fullscreen by remember { mutableStateOf(false) }
 
+    // The embedded page's own fullscreen, for the age-gated fallback. Held here
+    // because the bar drawn over the picture has to leave when the page takes
+    // the whole screen, and because back has to give the page its chrome back
+    // before the window hands the screen back to the feed.
+    val embeddedPage = remember { EmbeddedPageState() }
+
     // The embedded page sizes its player from the height it is handed: inside
     // the 16:9 slice it letterboxes the picture into a fraction of the width
     // rather than filling it, and given the whole screen it fills the width
     // exactly. The fallback therefore opens full screen; the full-screen button
     // in the top bar still leaves it, and the page's own chrome comes with it.
+    // The site's own fullscreen button is the one way to get the picture alone —
+    // it is granted by the player's content delegate — and it is answered here
+    // by nothing but [embeddedPage], because the window is already full screen.
     LaunchedEffect(state.webFallback) {
         if (state.webFallback) fullscreen = true
     }
@@ -1501,6 +1556,11 @@ fun PlayerScreen(
     // on-screen back arrow and the system back gesture share this one path.
     val leavePlayer: () -> Unit = {
         when {
+            // The page's fullscreen is the innermost layer: it comes off first,
+            // and the page restores its own bar as it goes. Leaving the window
+            // fullscreen with the page still full would show a picture under a
+            // page that has hidden every control it owns.
+            state.webFallback && embeddedPage.fullScreen -> embeddedPage.exitFullScreen()
             fullscreen -> fullscreen = false
             canFloat -> onMinimize(viewModel.currentVideoId)
             else -> onBack()
@@ -1662,6 +1722,10 @@ fun PlayerScreen(
                 extraHeight = if (state.webFallback) embeddedPageHeaderHeight else 0.dp,
             )
         }
+        // The page's own fullscreen is the site drawing the picture and its own
+        // controls and nothing else, which is the whole point of the button;
+        // the app's bar would then be drawn on top of controls it duplicates.
+        val pageOwnsTheScreen = state.webFallback && embeddedPage.fullScreen
         Column(modifier = Modifier.fillMaxSize()) {
             // The video surface is composed exactly once. Picture-in-picture only
             // changes the Box that holds it — filling the small window instead of
@@ -1709,6 +1773,7 @@ fun PlayerScreen(
                     EmbeddedGeckoPlayer(
                         videoId = viewModel.currentVideoId,
                         cookies = state.webCookies,
+                        state = embeddedPage,
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
@@ -1738,105 +1803,112 @@ fun PlayerScreen(
                 // position tick, the error listener — still running.
                 if (inPictureInPicture) return@Box
 
-                // A subtle scrim keeps the always-visible top bar legible over a
-                // bright frame; Media3's own gradient only appears with its controls.
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .height(72.dp)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color(0xB3000000), Color.Transparent),
+                // While the page is in its own fullscreen the site has its own
+                // bar, its own exit and its own picture-to-screen fit, so
+                // nothing of the app's belongs over it. Only the site's own
+                // control (or back, which asks the page to leave) brings the
+                // app's bar and the page's chrome back.
+                if (!pageOwnsTheScreen) {
+                    // A subtle scrim keeps the always-visible top bar legible over a
+                    // bright frame; Media3's own gradient only appears with its controls.
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .height(72.dp)
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(Color(0xB3000000), Color.Transparent),
+                                ),
                             ),
-                        ),
-                )
-                IconButton(
-                    onClick = leavePlayer,
-                    modifier = Modifier.align(Alignment.TopStart),
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = Color.White,
                     )
-                }
-                Row(
-                    modifier = Modifier.align(Alignment.TopEnd),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Reachable in windowed and fullscreen playback alike, exactly
-                    // like the other top-bar controls. The waiting count lives in
-                    // the description rather than a separate badge, so the row does
-                    // not need a new layout.
-                    IconButton(onClick = onOpenQueue) {
+                    IconButton(
+                        onClick = leavePlayer,
+                        modifier = Modifier.align(Alignment.TopStart),
+                    ) {
                         Icon(
-                            Icons.AutoMirrored.Filled.PlaylistPlay,
-                            contentDescription = if (queueCount > 0) {
-                                "Queue, $queueCount waiting"
-                            } else {
-                                "Queue"
-                            },
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
                             tint = Color.White,
                         )
                     }
-                    // Both of these open sheets that read the local player or
-                    // the watch-page detail, and the embedded web player has
-                    // neither: showing them would offer controls that cannot
-                    // work, so the age-gated fallback leaves them out and keeps
-                    // only what still applies — back, queue, rotate, fullscreen.
-                    if (!state.webFallback) {
-                        IconButton(onClick = { showCastSheet = true }) {
+                    Row(
+                        modifier = Modifier.align(Alignment.TopEnd),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // Reachable in windowed and fullscreen playback alike, exactly
+                        // like the other top-bar controls. The waiting count lives in
+                        // the description rather than a separate badge, so the row does
+                        // not need a new layout.
+                        IconButton(onClick = onOpenQueue) {
                             Icon(
-                                imageVector = if (isRemote) {
-                                    Icons.Default.CastConnected
+                                Icons.AutoMirrored.Filled.PlaylistPlay,
+                                contentDescription = if (queueCount > 0) {
+                                    "Queue, $queueCount waiting"
                                 } else {
-                                    Icons.Default.Cast
+                                    "Queue"
                                 },
-                                contentDescription = if (isRemote) {
-                                    "Casting — open device controls"
-                                } else {
-                                    "Play on a device"
-                                },
-                                // The connected icon is the one piece of state the top
-                                // bar carries; the accent colour makes "casting" visible
-                                // at a glance even before the surface text is read.
-                                tint = if (isRemote) MaterialTheme.colorScheme.primary else Color.White,
-                            )
-                        }
-                        // Media3's own gear lives in a control row it hides in portrait,
-                        // so the player exposes its own always-reachable settings entry.
-                        IconButton(onClick = { showSettings = true }) {
-                            Icon(
-                                Icons.Default.Settings,
-                                contentDescription = "Settings",
                                 tint = Color.White,
                             )
                         }
-                    }
-                    // A manual orientation toggle. It is offered beside the other
-                    // top-bar controls so a viewer whose device is locked (or simply
-                    // lying flat) can turn the picture without the system setting.
-                    IconButton(
-                        onClick = {
-                            val activity = hostActivity
-                            val current = activity?.resources?.configuration?.orientation
-                                ?: Configuration.ORIENTATION_PORTRAIT
-                            activity?.requestedOrientation = rotatedOrientation(current)
-                        },
-                    ) {
-                        Icon(
-                            Icons.Default.ScreenRotation,
-                            contentDescription = "Rotate",
-                            tint = Color.White,
-                        )
-                    }
-                    IconButton(onClick = { fullscreen = !fullscreen }) {
-                        Icon(
-                            if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                            contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
-                            tint = Color.White,
-                        )
+                        // Both of these open sheets that read the local player or
+                        // the watch-page detail, and the embedded web player has
+                        // neither: showing them would offer controls that cannot
+                        // work, so the age-gated fallback leaves them out and keeps
+                        // only what still applies — back, queue, rotate, fullscreen.
+                        if (!state.webFallback) {
+                            IconButton(onClick = { showCastSheet = true }) {
+                                Icon(
+                                    imageVector = if (isRemote) {
+                                        Icons.Default.CastConnected
+                                    } else {
+                                        Icons.Default.Cast
+                                    },
+                                    contentDescription = if (isRemote) {
+                                        "Casting — open device controls"
+                                    } else {
+                                        "Play on a device"
+                                    },
+                                    // The connected icon is the one piece of state the top
+                                    // bar carries; the accent colour makes "casting" visible
+                                    // at a glance even before the surface text is read.
+                                    tint = if (isRemote) MaterialTheme.colorScheme.primary else Color.White,
+                                )
+                            }
+                            // Media3's own gear lives in a control row it hides in portrait,
+                            // so the player exposes its own always-reachable settings entry.
+                            IconButton(onClick = { showSettings = true }) {
+                                Icon(
+                                    Icons.Default.Settings,
+                                    contentDescription = "Settings",
+                                    tint = Color.White,
+                                )
+                            }
+                        }
+                        // A manual orientation toggle. It is offered beside the other
+                        // top-bar controls so a viewer whose device is locked (or simply
+                        // lying flat) can turn the picture without the system setting.
+                        IconButton(
+                            onClick = {
+                                val activity = hostActivity
+                                val current = activity?.resources?.configuration?.orientation
+                                    ?: Configuration.ORIENTATION_PORTRAIT
+                                activity?.requestedOrientation = rotatedOrientation(current)
+                            },
+                        ) {
+                            Icon(
+                                Icons.Default.ScreenRotation,
+                                contentDescription = "Rotate",
+                                tint = Color.White,
+                            )
+                        }
+                        IconButton(onClick = { fullscreen = !fullscreen }) {
+                            Icon(
+                                if (fullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
+                                tint = Color.White,
+                            )
+                        }
                     }
                 }
                 if (!isRemote && !state.webFallback && (controller == null || buffering)) {
@@ -1921,6 +1993,11 @@ fun PlayerScreen(
                     speed = state.speed,
                     captionsEnabled = viewModel.captions.enabled,
                     captionsAvailable = viewModel.captions.tracks.isNotEmpty(),
+                    // Casting hands the picture to a renderer we cannot steer,
+                    // so the local track list means nothing then — the same
+                    // reason Captions is unavailable while casting.
+                    audioOptions = viewModel.audio.options,
+                    audioAvailable = !isRemote && viewModel.audio.options.size > 1,
                     commentCount = detail.comments.countText,
                     qualities = detail.playback.videoQualities,
                     videoQuality = state.videoQuality,
@@ -1938,6 +2015,7 @@ fun PlayerScreen(
                     onSpeed = viewModel::setSpeed,
                     onQuality = viewModel::setQuality,
                     onCaptions = { showCaptionSheet = true },
+                    onAudio = viewModel::chooseAudio,
                     onComments = { showComments = true },
                     onSeek = { if (isRemote) viewModel.remoteSeek(it) else controller?.seekTo(it) },
                     onVideoClick = onVideoClick,
@@ -2097,6 +2175,8 @@ private fun PlayerInfo(
     speed: Float,
     captionsEnabled: Boolean,
     captionsAvailable: Boolean,
+    audioOptions: List<AudioTrackOption>,
+    audioAvailable: Boolean,
     commentCount: String,
     qualities: List<Int>,
     videoQuality: Int,
@@ -2114,6 +2194,7 @@ private fun PlayerInfo(
     onSpeed: (Float) -> Unit,
     onQuality: (Int) -> Unit,
     onCaptions: () -> Unit,
+    onAudio: (AudioTrackOption) -> Unit,
     onComments: () -> Unit,
     onSeek: (Long) -> Unit,
     onVideoClick: (String) -> Unit,
@@ -2121,9 +2202,13 @@ private fun PlayerInfo(
 ) {
     var speedMenu by remember { mutableStateOf(false) }
     var qualityMenu by remember { mutableStateOf(false) }
+    var audioMenu by remember { mutableStateOf(false) }
     var moreMenu by remember { mutableStateOf(false) }
     var confirmUnsubscribe by remember { mutableStateOf(false) }
     val qualityChip = qualityValue(videoQuality, effectiveHeight)
+    // The language that is actually playing: the track list is the truth, not
+    // the steering preference or the pick that produced it.
+    val audioNow = audioOptions.firstOrNull { it.selected }
     val chapters = remember(detail.item.id) { parseChapters(detail.description) }
     val scroll = rememberScrollState()
     val chipsScroll = rememberScrollState()
@@ -2280,6 +2365,20 @@ private fun PlayerInfo(
                             },
                         )
                     }
+                    // A video with one audio track has nothing to choose, so the
+                    // row stays in place — the menu keeps its shape — but is not
+                    // tappable, exactly like Captions without any captions.
+                    DropdownMenuItem(
+                        text = {
+                            Text(audioNow?.let { "Audio: ${it.label}" } ?: "Audio")
+                        },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.VolumeUp, null) },
+                        enabled = audioAvailable,
+                        onClick = {
+                            moreMenu = false
+                            audioMenu = true
+                        },
+                    )
                     DropdownMenuItem(
                         text = { Text(if (captionsEnabled) "Captions: On" else "Captions: Off") },
                         leadingIcon = { Icon(Icons.Default.Subtitles, null) },
@@ -2330,6 +2429,27 @@ private fun PlayerInfo(
                                 onClick = {
                                     qualityMenu = false
                                     onQuality(height)
+                                },
+                            )
+                        }
+                    }
+                }
+                if (audioAvailable) {
+                    DropdownMenu(expanded = audioMenu, onDismissRequest = { audioMenu = false }) {
+                        audioOptions.forEach { option ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (option.selected) {
+                                            "${option.label}  ✓"
+                                        } else {
+                                            option.label
+                                        },
+                                    )
+                                },
+                                onClick = {
+                                    audioMenu = false
+                                    onAudio(option)
                                 },
                             )
                         }

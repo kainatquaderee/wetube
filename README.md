@@ -43,10 +43,13 @@ resolves.
 - **Subtitles/CC** from the video's own tracks, with YouTube auto-translation and
   a fallback to the original track when translation is unavailable
 - **Comments** read natively: top/newest sort, paging, likes, reply counts and
-  avatars, with the watch page in the browser as a fallback
+ avatars. A comment's replies open in the sheet and page in the same way. Signed
+ in, we post, like and reply as the account, and when YouTube refuses the thread
+ the sheet offers the watch page instead.
 - Chapters detected from the description, tap to seek
 - **Share** the video from the player as its canonical watch link
-- **Dislike count** on the player: one honest, read-only figure from Return YouTube
+- **Dislike count** on the player: one honest, read-only figure from Return
+ YouTube
   Dislike, shown only when the "Show dislikes" switch is on
 - **End screen**: when a video finishes, its next related video appears over the
   final frame; one tap plays it in the same player
@@ -62,8 +65,19 @@ resolves.
   progress and lets you retry or remove an item; a saved video plays with no
   connection, and a Downloads section in Settings caps how much is kept
 
+- **A browser engine for the one refusal our own player can't answer.** A video
+ can refuse to play for any client the app asks as, but only an age wall gives
+ the app something else to try: that one opens YouTube's own watch page in the
+ engine we ship — Firefox's GeckoView, rather than Android's WebView, whose
+ provider belongs to the system and answers to nobody we control. It needs an
+ account signed in and "Show mature content" on, it plays as the account
+ selected in Settings, and it is offered only for that refusal; background
+ playback, captions, the quality picker, downloads and casting are our own
+ player's, so they are not there.
+
 **Discovery**
-- Home feed by region, or your own recommendations and subscriptions when signed in
+- Home feed by region, or your own recommendations and subscriptions when signed
+ in
 - Dedicated **Shorts** section: swipe up for the next clip, with its own progress
   bar, tap-to-pause, 2× hold gesture, the CC menu, and a rail with like, dislike
   and comment counts whose channel line opens the channel. Signed in, it follows
@@ -98,15 +112,17 @@ resolves.
   portrait videos both letterbox correctly
 - **SponsorBlock** auto-skip (sponsor / self-promo / interaction)
 - **Return YouTube Dislike** counts
-- Local history, favourites, resume points, local subscriptions — stored on device only
+- Local history, favourites, resume points, local subscriptions — stored on
+ device only
 - Deep links: `youtu.be/ID`, `youtube.com/watch?v=ID`
 - Choose backend and instance at runtime
-- **Show mature content** switch: age-restricted videos are hidden from feeds and search
-  until you turn it on. YouTube does not label them in listings, so WeTube learns an id the
-  first time playback hits the age wall and remembers it locally. Turning the switch on
-  stops the app from hiding the video, but it does not fake YouTube's JavaScript challenge,
-  so an age-gated video can still refuse to play even when signed in — the player says
-  plainly which wall it hit.
+- **Show mature content** switch: age-restricted videos are hidden from feeds
+ and search until you turn it on. YouTube does not label listings, so WeTube
+ learns the id the first time playback hits an age wall and remembers it
+ locally. Turning the switch on stops the app hiding the video; it does not fake
+ YouTube's JavaScript challenge, so the video can still refuse our own player —
+ and when it does, the player names the wall and, with an account signed in,
+ hands the video to the browser engine we ship, which plays it.
 - **Credits** screen listing the people who build WeTube
 
 **Privacy**
@@ -124,13 +140,15 @@ resolves.
 
 ## Install
 
-Grab `app-release.apk` from the
-[latest release](https://github.com/kainatquaderee/wetube/releases/latest), or
-from the artifacts of any successful
-[CI run](https://github.com/kainatquaderee/wetube/actions), then:
+Grab the APK for your phone's architecture from the
+[latest release](https://github.com/[CUSTOM_REDACTED]/wetube/releases/latest) or the
+artifacts of any successful
+[CI run](https://github.com/[CUSTOM_REDACTED]/wetube/actions) — `app-arm64-v8a-release.apk` for
+every phone from the last several years, `app-armeabi-v7a-release.apk` for older 32-bit ARM
+devices, `app-universal-release.apk` when you would rather not pick — then:
 
 ```bash
-adb install -r app-release.apk
+adb install app-arm64-v8a-release.apk
 ```
 
 **Prefer automatic updates?** Add this repository to
@@ -160,9 +178,19 @@ Requirements: JDK 17+, Android SDK 35, Android Studio or the Gradle CLI.
 # local.properties
 sdk.dir=/path/to/Android/Sdk
 
-./gradlew assembleDebug     # app/build/outputs/apk/debug/app-debug.apk
-./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
+./gradlew assembleDebug     # app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+                            # plus -armeabi-v7a-debug, -x86_64-debug, -universal-debug
+./gradlew assembleRelease   # app/build/outputs/apk/release/app-arm64-v8a-release.apk
+                            # plus -armeabi-v7a, -x86_64, -universal
 ```
+
+APKs are split by CPU architecture, so each task writes one file per ABI plus a
+universal one — there is no `app-debug.apk` or `app-release.apk`.
+`assembleRelease` needs release signing material in `keystore.properties` at the
+repository root — `storeFile`, `storePassword`, `keyAlias` and `keyPassword` —
+and fails at packaging without it rather than falling back to the debug key;
+`-PallowDebugSigning=true` is the explicit opt-in for a local test build on a
+key-less checkout.
 
 
 ## Architecture
@@ -304,22 +332,26 @@ menu with caption loading, the comment section (top/newest sort and paging), the
 dislike count and Share chips on the player, Subscribe/Subscribed from the
 player, the end screen, and video playback over `HTTP 206` from the CDN.
 
-Known limits: the comment section is read-only — liking, replying and viewing
-replies need a signed-in Google session, which WeTube does not fake, so the sheet
-offers the watch page in the browser instead.
+Known limits: the sheet reads the top-level comments and the replies under them,
+ paging both in as they are reached; when YouTube refuses the thread, the
+ browser fallback stays for that. Signed in, liking a comment and replying to
+ one are sent from the app as the account: both ride the signed web surface,
+ which is the only one that hands out the parameters they are addressed with.
 
 Two network details matter on mobile and are handled in one place: DNS is
 resolved IPv4-first (many carriers advertise IPv6 they then black-hole), and
 ExoPlayer and Coil are given the app's OkHttp client instead of their defaults,
 so streams and thumbnails use the same resolver and connection pool.
 
-Known limits: age-restricted videos need YouTube's JavaScript `n` challenge,
-which WeTube does not fake, so they can refuse to play even when signed in.
-Some networks also get a bot check regardless of client. Neither is bypassed —
-the player reports which wall it hit. Downloads, live chat, Google Cast (which
-needs a registered receiver app id) and in-app audio output routing are tracked
-in `docs/ROADMAP.md`. Sync's write path is implemented but `UNVERIFIED` against a
-live account until the capability check is run — see `docs/SYNC_PROTOCOL.md`.
+Known limits: the age wall is the one refusal the browser engine we ship can
+ answer, and only with an account signed in and "Show mature content" on, so a
+ video that hits it plays there instead, which costs background playback,
+ captions, the quality picker, downloads and casting for that video. Some
+ networks get a bot check regardless of client; we bypass neither. Downloads,
+ live chat, Google Cast (which needs a registered receiver application id) and
+ in-app audio output routing are tracked in `docs/ROADMAP.md`. Sync's write
+ path is implemented `UNVERIFIED` against a live account until its capability
+ check is run; see `docs/SYNC_PROTOCOL.md`.
 
 ## Keep Android Open
 

@@ -11,6 +11,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebExtension
 
 /**
@@ -100,14 +101,16 @@ internal data class SeedReport(
 }
 
 /**
- * Puts the app's session into the engine, and keeps it current.
+ * Puts the app's session into the engine, takes it back out, and keeps it
+ * current.
  *
  * GeckoView has no cookie API of its own — `StorageController` can only clear
  * data, and the loader can only add headers to the one request it starts, which
  * is not the request an authenticated watch page actually makes. The engine's
  * extension API is the one supported way in, so the cookies are written by a
  * bundled extension ([dev.wetube.app]'s `assets/webcookies`) over native
- * messaging.
+ * messaging; the same `StorageController` is the one supported way to empty the
+ * profile, so [wipe] uses it.
  *
  * The bridge is process-wide because the runtime is: one extension, one port,
  * and one seeding round at a time. A round that fails or times out is not fatal
@@ -122,11 +125,28 @@ internal object WebCookieBridge {
     /** Long enough for a cold engine to start the extension, short enough not to stall a page. */
     private const val TIMEOUT_MS = 4_000L
 
+    /**
+     * A profile clear is a call into the parent process, not a message round, so
+     * it is quicker than a seeding round; this only bounds a stuck engine.
+     */
+    private const val WIPE_TIMEOUT_MS = 5_000L
+
     private val seeding = Mutex()
     private val firstPort = CompletableDeferred<WebExtension.Port>()
 
     /** The thread the engine's extension API is bound on. */
     private val main = Handler(Looper.getMainLooper())
+
+    /**
+     * The engine this bridge belongs to, once it exists.
+     *
+     * Null means no engine has been created in this process, and therefore that
+     * nothing has been seeded into one here. It is never created on demand: see
+     * [wipe] for why starting a browser engine just to empty it would cost more
+     * than it buys.
+     */
+    @Volatile
+    private var runtime: GeckoRuntime? = null
 
     @Volatile
     private var port: WebExtension.Port? = null
@@ -144,6 +164,7 @@ internal object WebCookieBridge {
      * `installBuiltIn`) keeps restarts from reinstalling it.
      */
     fun prepare(runtime: GeckoRuntime) {
+        this.runtime = runtime
         runtime.webExtensionController
             .ensureBuiltIn(EXTENSION_URI, EXTENSION_ID)
             .accept(
@@ -169,10 +190,11 @@ internal object WebCookieBridge {
     }
 
     /**
-     * Replaces the engine's YouTube cookies with [cookies].
+     * Replaces the engine's YouTube and Google cookies with [cookies].
      *
-     * An empty list clears the profile instead, which is what signing out
-     * leaves behind. Returns whether the extension confirmed the round.
+     * The profile's own cookies for those two domains are dropped first, so an
+     * empty list — what a signed-out app sends — leaves both cleared. Returns
+     * whether the extension confirmed the round.
      */
     suspend fun seed(cookies: List<SessionCookie>): Boolean = seeding.withLock {
         val channel = port ?: withTimeoutOrNull(TIMEOUT_MS) { firstPort.await() } ?: run {
@@ -215,6 +237,57 @@ internal object WebCookieBridge {
             }
         }
         result != null
+    }
+
+    /**
+     * Empties the profile's whole cookie store.
+     *
+     * This is the one lever GeckoView gives an embedder over a profile it does
+     * not own, and the one to use when the app's session ends: `clearData` drops
+     * the cookies the engine keeps, including the ones a previous process wrote
+     * to disk. It is deliberately not scoped to a host, because the surface it
+     * has to cover is not. A sign-in inside the page sets a `.google.com` cookie
+     * — and, on a regional flow, a `.google.<tld>` one — that nothing in the app
+     * holds and that [seed] does not address, so anything narrower than the whole
+     * store can leave a Google session standing after the account it was created
+     * for is gone. Nothing else ever uses this profile, so nothing else is lost.
+     *
+     * Only [StorageController.ClearFlags.COOKIES] is set. Caches and DOM storage
+     * belong to whatever page is open, and dropping those would interrupt a
+     * video rather than end a session.
+     *
+     * Called from the account flow — sign-out, sign-out of every account, and a
+     * switch to another one — so the copy ends with the session it was made from
+     * even when no player is on screen. An engine that has never been created in
+     * this process is not started just to be emptied: it holds nothing yet. What
+     * a previous process left in the profile on disk is still there, but nothing
+     * can read it until the engine starts, and the seeding round that precedes
+     * the first page load drops the `youtube.com` and `google.com` cookies before
+     * anything is asked for.
+     *
+     * Returns whether the engine confirmed the clear.
+     */
+    suspend fun wipe(): Boolean = seeding.withLock {
+        val engine = runtime ?: run {
+            if (BuildConfig.DEBUG) Log.d(TAG, "web session: no engine to wipe")
+            return@withLock false
+        }
+
+        val cleared = CompletableDeferred<Boolean>()
+        // Serialised with seeding: a clear and a seed are the only two writers of
+        // this jar, and the one that runs second has to see the other's work.
+        engine.storageController.clearData(StorageController.ClearFlags.COOKIES).accept(
+            { cleared.complete(true) },
+            { error ->
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "web session: wipe refused (${error?.javaClass?.simpleName})")
+                }
+                cleared.complete(false)
+            },
+        )
+        val done = withTimeoutOrNull(WIPE_TIMEOUT_MS) { cleared.await() } ?: false
+        if (BuildConfig.DEBUG) Log.d(TAG, "web session: profile wiped=$done")
+        done
     }
 
     private object NativePort : WebExtension.MessageDelegate {

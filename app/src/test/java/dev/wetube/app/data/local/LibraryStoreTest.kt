@@ -3,6 +3,7 @@ package dev.wetube.app.data.local
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
 import dev.wetube.app.data.model.VideoItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,8 +35,9 @@ import java.io.File
  * The real DataStore engine is used so the shared-transaction behaviour is
  * exercised, not a mock.
  *
- * It also covers account scoping (history, playlists and the metadata cache
- * carry the signed-in account's key, everything else stays bare), the
+ * It also covers account scoping (history, favourites, playlists and the
+ * metadata cache carry the signed-in account's key; resume points,
+ * subscriptions, Watch Later and the queue stay bare), the
  * [LibraryStore.adoptLegacyContent] migration, and the read-only mirrors of the
  * account's own playlists ([LibraryStore.applyRemotePlaylistPull]).
  */
@@ -113,6 +115,82 @@ class LibraryStoreTest {
         val entry = store.syncEntries().getValue(favouriteKey(video.id))
         assertEquals(OpKind.UPSERT, entry.pendingOp?.kind)
         assertEquals(1, store.favourites.first().size)
+    }
+
+    @Test
+    fun `another account's favourite of the same clip does not take over the queued change`() =
+        runBlocking {
+            val other = libraryFor("other-key")
+            store.toggleFavourite(video)
+
+            other.toggleFavourite(video)
+
+            // The queue is keyed by entity and owner: with one slot per entity
+            // the second write erased the first, and the reconciler then had only
+            // the other account's record — quarantined as foreign — so this
+            // account's favourite never reached its mirror.
+            val mine = store.syncEntries().getValue(favouriteKey(video.id))
+            assertEquals("acc-key", mine.accountKey)
+            assertEquals(OpKind.UPSERT, mine.pendingOp?.kind)
+
+            val theirs = other.syncEntries().getValue(favouriteKey(video.id))
+            assertEquals("other-key", theirs.accountKey)
+            assertEquals(OpKind.UPSERT, theirs.pendingOp?.kind)
+        }
+
+    @Test
+    fun `one account's confirmed push leaves the other account's queued change alone`() = runBlocking {
+        val other = libraryFor("other-key")
+        store.toggleFavourite(video)
+        other.toggleFavourite(video)
+
+        store.markSynced(listOf(favouriteKey(video.id)), "acc-key", at = 5L)
+
+        assertNull(store.syncEntries().getValue(favouriteKey(video.id)).pendingOp)
+        // The other account has not pushed anything: its change is still waiting,
+        // and its own baseline is still "never sent".
+        val theirs = other.syncEntries().getValue(favouriteKey(video.id))
+        assertEquals(OpKind.UPSERT, theirs.pendingOp?.kind)
+        assertFalse(theirs.basePresent)
+    }
+
+    @Test
+    fun `metadata written before the per-account keys still loads`() = runBlocking {
+        // An earlier build keyed the metadata map by entity alone. Nothing may be
+        // forgotten by the upgrade: a dropped record reads as "never sent" and as
+        // no queued change, so the next sync would leave the entity out of the
+        // account's mirror.
+        val id = subscriptionKey(channel.id)
+        store.toggleSubscription(channel)
+        val codec = SyncMetadataCodec(json)
+        dataStore.edit { prefs ->
+            prefs[SyncPreferencesKeys.meta] = codec.encodeEntries(
+                mapOf(
+                    id to SyncEntry(
+                        id = id,
+                        accountKey = "acc-key",
+                        localUpdatedAt = 4L,
+                        basePresent = true,
+                        pendingOp = PendingOp(OpKind.UPSERT, 4L),
+                    ),
+                ),
+            )
+        }
+
+        val loaded = store.syncEntries().getValue(id)
+
+        assertEquals("acc-key", loaded.accountKey)
+        assertEquals(OpKind.UPSERT, loaded.pendingOp?.kind)
+        assertTrue(loaded.basePresent)
+
+        // The first write moves it to the current layout and inherits that
+        // baseline, and the old slot is gone rather than left to shadow it.
+        store.toggleSubscription(channel)
+        val rewritten = store.syncEntries().getValue(id)
+        assertEquals(OpKind.DELETE, rewritten.pendingOp?.kind)
+        assertTrue(rewritten.basePresent)
+        val raw = codec.decodeEntries(dataStore.data.first()[SyncPreferencesKeys.meta])
+        assertEquals(1, raw.values.count { it.id == id })
     }
 
     @Test
@@ -342,6 +420,42 @@ class LibraryStoreTest {
     }
 
     @Test
+    fun `favourites are scoped to the signed-in account`() = runBlocking {
+        store.toggleFavourite(video)
+
+        // The same file read by another account holds nothing of ours: the
+        // favourites key carries the account's suffix, exactly like history.
+        assertTrue(libraryFor("other-key").favourites.first().isEmpty())
+        assertEquals(listOf(video.id), store.favourites.first().map { it.id })
+    }
+
+    @Test
+    fun `favouriting under one account leaves the other account untouched`() = runBlocking {
+        val other = libraryFor("other-key")
+        val otherVideo = video.copy(id = "other")
+        other.toggleFavourite(otherVideo)
+
+        store.toggleFavourite(video)
+
+        // Both lists live in one DataStore, so a write under one account must
+        // neither copy into nor prune the other: a shared key used to do both.
+        assertEquals(listOf(video.id), store.favourites.first().map { it.id })
+        assertEquals(listOf(otherVideo.id), other.favourites.first().map { it.id })
+    }
+
+    @Test
+    fun `a favourites pull writes only into the account it ran for`() = runBlocking {
+        val pulled = video.copy(id = "pulled")
+
+        store.applyFavouritePull(listOf(pulled), emptyList(), "other-key", at = 1L)
+
+        // The sync names its account explicitly, so the pull must land there
+        // rather than in the list of whoever is signed in when it finishes.
+        assertTrue(store.favourites.first().isEmpty())
+        assertEquals(listOf(pulled.id), libraryFor("other-key").favourites.first().map { it.id })
+    }
+
+    @Test
     fun `playlists and the metadata cache are scoped to the signed-in account`() = runBlocking {
         store.createPlaylist("Mine")
         store.cacheVideo(video)
@@ -471,7 +585,7 @@ class LibraryStoreTest {
     }
 
     @Test
-    fun `adoption never overwrites a scope that already has content`() = runBlocking {
+    fun `adoption merges into a scope that already has content, newest first`() = runBlocking {
         val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
         val mine = video.copy(id = "mine")
         legacy.addToHistory(video)
@@ -479,8 +593,147 @@ class LibraryStoreTest {
 
         store.adoptLegacyContent()
 
-        assertEquals(listOf(mine.id), store.history.first().map { it.id })
+        // Copying only when the scope is empty would strand the pre-upgrade list
+        // for good: a launch can write history in the account's scope before the
+        // migration reaches this point, and a backup restored while signed out
+        // lands in the bare bucket while the scope still holds the old library.
+        // The scope's own entries stay in front because they are the newer ones,
+        // and the bare bucket keeps them for the signed-out library.
+        assertEquals(listOf(mine.id, video.id), store.history.first().map { it.id })
         assertEquals(listOf(video.id), legacy.history.first().map { it.id })
+    }
+
+    @Test
+    fun `adoption runs once, so a later deletion is not resurrected`() = runBlocking {
+        val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+        legacy.addToHistory(video)
+
+        store.adoptLegacyContent()
+        store.clearHistory()
+        store.adoptLegacyContent()
+
+        // The marker, not the mere presence of legacy content, is what stops the
+        // second run: without it the entry the user just deleted would come back.
+        assertTrue(store.history.first().isEmpty())
+    }
+
+    @Test
+    fun `adoption copies the legacy favourites into the owner's bucket and consumes them`() =
+        runBlocking {
+            val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+            legacy.toggleFavourite(video)
+
+            store.adoptLegacyContent()
+
+            assertEquals(listOf(video.id), store.favourites.first().map { it.id })
+            // Favourites are the account's, not the device's (sync mirrors them
+            // into the account's private playlist), so the legacy copy is
+            // consumed: signing out must not offer a list no account owns any
+            // more. Nothing is lost — the owner's bucket holds it.
+            assertTrue(legacy.favourites.first().isEmpty())
+        }
+
+    @Test
+    fun `adopted legacy favourites are not inherited by a second account`() = runBlocking {
+        val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+        legacy.toggleFavourite(video)
+
+        store.adoptLegacyContent()
+        val second = libraryFor("second-key")
+        second.adoptLegacyContent()
+
+        // The list belongs to the account that claimed the bucket; a later
+        // account must not see another account's favourites.
+        assertEquals(listOf(video.id), store.favourites.first().map { it.id })
+        assertTrue(second.favourites.first().isEmpty())
+    }
+
+    @Test
+    fun `a favourite added while signed out after the migration is still adopted`() = runBlocking {
+        val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+        // The migration has already been spent by this device: sign in, sign out,
+        // then favourite a clip. The bare key is the only place such a clip can
+        // go, and nothing else would ever move it into an account.
+        store.adoptLegacyContent()
+        legacy.toggleFavourite(video)
+
+        store.adoptLegacyContent()
+
+        assertEquals(listOf(video.id), store.favourites.first().map { it.id })
+        // Consumed, which is what keeps the repeated adoption idempotent.
+        assertTrue(legacy.favourites.first().isEmpty())
+    }
+
+    @Test
+    fun `adopting an empty bare favourites key writes nothing`() = runBlocking {
+        store.adoptLegacyContent()
+
+        // The run happens on every sign-in, so it must not manufacture an empty
+        // list in the account's scope (and must not queue anything for sync).
+        assertTrue(store.favourites.first().isEmpty())
+        assertTrue(store.syncEntries().isEmpty())
+    }
+
+    @Test
+    fun `a clip re-favourited while signed out cancels the account's pending delete`() = runBlocking {
+        // Favourite it, let a sync confirm that, then remove it: the account now
+        // holds it remotely and has a delete queued for it.
+        store.toggleFavourite(video)
+        store.markSynced(listOf(favouriteKey(video.id)), "acc-key", at = 1L, present = true)
+        store.toggleFavourite(video)
+
+        LibraryStore(dataStore, json, AccountKeySource.SignedOut).toggleFavourite(video)
+        store.adoptLegacyContent()
+
+        // The re-add is the newer intent, so the delete it contradicts must not
+        // survive: the tombstone would read as "absent locally" and the next sync
+        // would remove the clip from the account the adoption just restored it to.
+        assertEquals(listOf(video.id), store.favourites.first().map { it.id })
+        assertTrue(store.syncTombstones().none { it.id == favouriteKey(video.id) })
+        assertNull(store.syncEntries().getValue(favouriteKey(video.id)).pendingOp)
+    }
+
+    @Test
+    fun `adoption leaves another account's tombstone for the same clip alone`() = runBlocking {
+        val other = libraryFor("other-key")
+        other.toggleFavourite(video)
+        other.toggleFavourite(video) // the other account's own delete
+        LibraryStore(dataStore, json, AccountKeySource.SignedOut).toggleFavourite(video)
+
+        store.adoptLegacyContent()
+
+        // Cancelling it would push a clip back into a mirror whose owner deleted
+        // it; only the adopting account's records are its to rewrite.
+        assertEquals(
+            listOf(favouriteKey(video.id)),
+            other.syncTombstones().filter { it.accountKey == "other-key" }.map { it.id },
+        )
+        assertEquals(OpKind.DELETE, other.syncEntries().getValue(favouriteKey(video.id)).pendingOp?.kind)
+    }
+
+    // ----- Restoring a backup while signed out ------------------------------
+
+    @Test
+    fun `a backup restored while signed out reaches the next account`() = runBlocking {
+        // The marker is spent first: this device has had an account before.
+        store.adoptLegacyContent()
+        val legacy = LibraryStore(dataStore, json, AccountKeySource.SignedOut)
+        val snapshot = LibrarySnapshot(
+            history = listOf(video),
+            favourites = listOf(channel),
+            playlists = listOf(LocalPlaylist(id = "local:1", name = "Restored")),
+        )
+
+        legacy.restore(snapshot)
+
+        // Signed out, the restored library is the signed-out bucket. Clearing the
+        // marker in the same edit is what makes it visible to the account that
+        // signs in next; leaving the marker set would strand the restore.
+        assertEquals(listOf(video.id), legacy.history.first().map { it.id })
+        store.adoptLegacyContent()
+        assertEquals(listOf(video.id), store.history.first().map { it.id })
+        assertEquals(listOf(channel.id), store.favourites.first().map { it.id })
+        assertEquals(listOf("Restored"), store.playlists.first().map { it.name })
     }
 
     // ----- Mirrors of the account's playlists -------------------------------

@@ -7,6 +7,7 @@ import dev.wetube.app.core.encodeUrlValue
 import dev.wetube.app.core.parseCount
 import dev.wetube.app.core.subscriberLabel
 import dev.wetube.app.data.auth.AuthStore
+import dev.wetube.app.data.model.AudioStream
 import dev.wetube.app.data.model.ChannelInfo
 import dev.wetube.app.data.model.CaptionSet
 import dev.wetube.app.data.model.CaptionTrack
@@ -24,6 +25,7 @@ import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.TranslationLanguage
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -132,16 +134,39 @@ class InnerTubeBackend(
         ),
     )
 
-    private val web = Profile(
-        userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    /** The user-agent every `WEB` call is sent with. */
+    private val webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+    /**
+     * The client version to ask as until [visitor] has read the live one.
+     *
+     * A literal is the one thing this app cannot keep true: the site moves on and
+     * the number it was written against ages silently. It is kept so the first
+     * call — the one that reads the version the site is serving — has something
+     * to send; from then on [web] asks as the advertised build.
+     */
+    private val webFallbackVersion = "2.20240101.00.00"
+
+    /**
+     * The web profile: reads and the signed [sync] envelope writes alike.
+     *
+     * The client version is part of the identity a request is matched against,
+     * so it is not something to freeze at the value it had when this was written.
+     * [visitor] scrapes the version youtube.com advertises and rebuilds this
+     * profile on it, which leaves the pinned literal as what the very first call
+     * sends. One writer, under its own lock, so a call sees either the whole old
+     * profile or the whole replacement.
+     */
+    @Volatile
+    private var web: Profile = webProfile(webFallbackVersion)
+
+    /** The `WEB` profile that asks as [version]. */
+    private fun webProfile(version: String) = Profile(
+        userAgent = webUserAgent,
         clientId = "1",
-        version = "2.20240101.00.00",
-        context = clientContext(
-            name = "WEB",
-            version = "2.20240101.00.00",
-            extra = emptyMap(),
-        ),
+        version = version,
+        context = clientContext(name = "WEB", version = version, extra = emptyMap()),
     )
 
     /**
@@ -216,10 +241,6 @@ class InnerTubeBackend(
     @Volatile
     private var visitorCache: String = ""
 
-    /** The `WEB` client version the homepage currently advertises. */
-    @Volatile
-    private var webVersionCache: String = ""
-
     /**
      * The player signature timestamp (`sts`). The desktop player rejects a
      * request that omits it with "The page needs to be reloaded.", and it can
@@ -264,22 +285,26 @@ class InnerTubeBackend(
                             putAll(auth.headers())
                         },
                     )
+                    // The same response names the client version the site is
+                    // running, which is what every later WEB call asks as.
+                    webProfileFrom(html)?.let { web = it }
                     Regex("\"visitorData\":\"([^\"]+)\"")
                         .find(html)
                         ?.groupValues
                         ?.get(1)
                         ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
-                        .also { visitor ->
-                            Regex("\"INNERTUBE_CLIENT_VERSION\":\"([^\"]+)\"")
-                                .find(html)
-                                ?.groupValues
-                                ?.get(1)
-                                ?.takeIf { it.isNotBlank() }
-                                ?.let { webVersionCache = it }
-                        }
                 }.getOrNull().orEmpty().also { visitorCache = it }
             }
         }
+    }
+
+    /**
+     * The web profile for the version [home] advertises, or null when the
+     * response carries no readable version or names the one already in use.
+     */
+    private fun webProfileFrom(home: String): Profile? {
+        val version = clientVersionFrom(home) ?: return null
+        return if (version == web.version) null else webProfile(version)
     }
 
     private fun clientContext(
@@ -357,7 +382,11 @@ class InnerTubeBackend(
      * exception; any HTTP answer (including 4xx/5xx) is passed through verbatim
      * for [InnerTubeSync] to classify.
      */
-    private suspend fun postForSync(path: String, extra: JsonObject): SyncReply = try {
+    private suspend fun postForSync(
+        path: String,
+        extra: JsonObject,
+        label: String = "sync",
+    ): SyncReply = try {
         val visitor = visitor()
         val client = web.context["client"]!!.jsonObject.toMutableMap().apply {
             if (visitor.isNotBlank()) put("visitorData", JsonPrimitive(visitor))
@@ -381,7 +410,7 @@ class InnerTubeBackend(
             if (session.isNotEmpty()) put("X-Youtube-Bootstrap-Logged-In", "true")
         }
         val (code, body) = http.postJsonRaw("$endpoint/$path?prettyPrint=false", payload, headers)
-        if (BuildConfig.DEBUG) logSyncReply(path, code, extra, body)
+        if (BuildConfig.DEBUG) logSignedReply(path, code, extra, body, label)
         SyncReply.Http(code, body)
     } catch (e: IOException) {
         val reason = e.message?.takeIf { it.isNotBlank() } ?: e::class.simpleName ?: "network error"
@@ -389,17 +418,23 @@ class InnerTubeBackend(
     }
 
     /**
-     * Debug-only trace of one sync request and its answer.
+     * Debug-only trace of one signed request and its answer.
      *
-     * A sync call is the one place a non-2xx is *data* rather than a thrown
-     * exception: it becomes a sync status, so without this line a failed sync
-     * names no endpoint at all in the log. The body is appended only for a
-     * non-2xx, because that is where the server states its reason for refusing;
-     * it is truncated, and this never runs in a release build.
+     * A signed call is the one place a non-2xx is *data* rather than a thrown
+     * exception: it becomes a sync status or a refused comment, so without this
+     * line a failure names no endpoint at all in the log. The body is appended
+     * only for a non-2xx, because that is where the server states its reason for
+     * refusing; it is truncated, and this never runs in a release build.
      */
-    private fun logSyncReply(path: String, code: Int, extra: JsonObject, body: String) {
+    private fun logSignedReply(
+        path: String,
+        code: Int,
+        extra: JsonObject,
+        body: String,
+        label: String,
+    ) {
         val reason = if (code in 200..299) "" else " ${body.take(200)}"
-        android.util.Log.d("WeTube", "sync $path ${extra.brief()} -> $code$reason")
+        android.util.Log.d("WeTube", "$label $path ${extra.brief()} -> $code$reason")
     }
 
     // ---- TubeBackend ----------------------------------------------------
@@ -679,9 +714,24 @@ class InnerTubeBackend(
             )
         }
 
-    override suspend fun search(query: String, nextPage: String?): SearchResult {
+    /**
+     * The search filters are YouTube's own protobuf message, so this transport is
+     * the one that can express them; the encoding lives in [searchParamsFor].
+     */
+    override val supportsSearchFilters: Boolean = true
+
+    override suspend fun search(query: String, nextPage: String?, filters: SearchFilters): SearchResult {
         val extra = buildJsonObject {
-            if (nextPage != null) put("continuation", nextPage) else put("query", query)
+            if (nextPage != null) {
+                put("continuation", nextPage)
+            } else {
+                put("query", query)
+                // The filter message belongs to the first page only: the endpoint
+                // mints the continuation token out of it, so a later page would
+                // have nothing useful to add — and "no filters" adds nothing,
+                // rather than sending an empty string the endpoint has to reject.
+                filters.toParams().takeIf { it.isNotEmpty() }?.let { put("params", it) }
+            }
         }
         val response = call("search", web, extra)
         // The answer is read twice: [videos] is the flat list a caller without a
@@ -721,9 +771,12 @@ class InnerTubeBackend(
     private var playerMemo: JsonObject? = null
 
     /**
-     * A one-shot request from [forcePlaybackFallback]. Player calls run under
-     * [playerLock], so a set flag is consumed by the next resolve and cannot
-     * leak into an unrelated one.
+     * The request a caller can leave for its next resolve instead of passing the
+     * answer to [video]: see [PlaybackFallback.Inherit].
+     *
+     * Read under [playerLock] and only by a resolve that inherits, so a prefetch
+     * (which passes [PlaybackFallback.Never]) can neither take it nor be turned
+     * into a fallback by it.
      */
     private val fallbackRequested = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -745,57 +798,63 @@ class InnerTubeBackend(
      * its URLs stop working partway through, so it only helps clips.
      *
      * A recovery may have just had an IOS URL rejected at playback, so it asks
-     * for a fallback: the order then starts at `ANDROID`, skipping the leader
-     * that failed, and the short-lived memo is bypassed because it is likely to
-     * hold exactly the response being retried.
+     * for a fallback ([fallback] is [PlaybackFallback.Force]): the order then
+     * starts at `ANDROID`, skipping the leader that failed, and the short-lived
+     * memo is bypassed because it is likely to hold exactly the response being
+     * retried. A prefetch passes [PlaybackFallback.Never] and is resolved like any
+     * ordinary call, whatever a recovery asked for in parallel.
      *
      * Mobile web and desktop web are not used here: they answer with URLs that
      * need a JavaScript `n` challenge solved, which WeTube does not fake.
      */
-    private suspend fun playerResponse(id: String): JsonObject = playerLock.withLock {
-        val fallback = fallbackRequested.getAndSet(false)
-        val memo = playerMemo
-        val fresh = SystemClock.elapsedRealtime() - playerMemoAt < 3_000
-        if (!fallback && memo != null && playerMemoId == id && fresh) return@withLock memo
+    private suspend fun playerResponse(id: String, fallback: PlaybackFallback): JsonObject =
+        playerLock.withLock {
+            val plan = playbackFallbackPlan(fallback, fallbackRequested.getAndSet(false))
+            // A request left for the resolve that asked for it is still waiting:
+            // put it back, or the next recovery would silently lose it.
+            if (plan.keepArmed) fallbackRequested.set(true)
+            val memo = playerMemo
+            val fresh = SystemClock.elapsedRealtime() - playerMemoAt < 3_000
+            if (!plan.fallback && memo != null && playerMemoId == id && fresh) return@withLock memo
 
-        // Native clients reject a request that carries a session ("invalid
-        // argument"), so playback is anonymous even while signed in. The
-        // session is still used for feeds and subscriptions.
-        //
-        // IOS answers with the resolution ladder; Android is the unbreakable
-        // 360p fallback. Only the VR client wants the desktop signature, and
-        // reading the watch page for it is not free, so that payload is built
-        // only once both of the others come back empty.
-        var answer: JsonObject? = null
-        // A refusal carries YouTube's own explanation in
-        // `playabilityStatus.reason` — "Sign in to confirm your age", for
-        // instance. The first explanation is kept, except that an age wall
-        // replaces it whenever it turns up: the player shows the explanation to
-        // the viewer and the mature-content filter matches on it, and an age
-        // wall becomes an [AgeGateException] instead, which is what tells the
-        // player screen the video is worth reopening in YouTube's own web
-        // player.
-        var refusal: String? = null
-        for (profile in playbackProfileOrder(skipLeading = fallback)) {
-            val attempt = playerFor(profile, id)
-            if (attempt.response != null) {
-                answer = attempt.response
-                break
+            // Native clients reject a request that carries a session ("invalid
+            // argument"), so playback is anonymous even while signed in. The
+            // session is still used for feeds and subscriptions.
+            //
+            // IOS answers with the resolution ladder; Android is the unbreakable
+            // 360p fallback. Only the VR client wants the desktop signature, and
+            // reading the watch page for it is not free, so that payload is built
+            // only once both of the others come back empty.
+            var answer: JsonObject? = null
+            // A refusal carries YouTube's own explanation in
+            // `playabilityStatus.reason` — "Sign in to confirm your age", for
+            // instance. The first explanation is kept, except that an age wall
+            // replaces it whenever it turns up: the player shows the explanation to
+            // the viewer and the mature-content filter matches on it, and an age
+            // wall becomes an [AgeGateException] instead, which is what tells the
+            // player screen the video is worth reopening in YouTube's own web
+            // player.
+            var refusal: String? = null
+            for (profile in playbackProfileOrder(skipLeading = plan.fallback)) {
+                val attempt = playerFor(profile, id)
+                if (attempt.response != null) {
+                    answer = attempt.response
+                    break
+                }
+                // An age wall outranks the order: it is the only refusal the app
+                // can answer, so it must not be lost because another profile
+                // happened to speak first with a reason of its own.
+                if (refusal == null || (!isAgeWallMessage(refusal) && isAgeWallMessage(attempt.refusal))) {
+                    refusal = attempt.refusal
+                }
             }
-            // An age wall outranks the order: it is the only refusal the app can
-            // answer, so it must not be lost because another profile happened to
-            // speak first with a reason of its own.
-            if (refusal == null || (!isAgeWallMessage(refusal) && isAgeWallMessage(attempt.refusal))) {
-                refusal = attempt.refusal
-            }
+            val response = answer ?: throw refusalException(refusal)
+
+            playerMemoId = id
+            playerMemoAt = SystemClock.elapsedRealtime()
+            playerMemo = response
+            response
         }
-        val response = answer ?: throw refusalException(refusal)
-
-        playerMemoId = id
-        playerMemoAt = SystemClock.elapsedRealtime()
-        playerMemo = response
-        response
-    }
 
     /**
      * The failure for a resolve that every profile refused.
@@ -935,8 +994,8 @@ class InnerTubeBackend(
         }
     }
 
-    override suspend fun video(id: String): VideoDetail {
-        val response = playerResponse(id)
+    override suspend fun video(id: String, fallback: PlaybackFallback): VideoDetail {
+        val response = playerResponse(id, fallback)
 
         val status = response["playabilityStatus"].obj()?.str("status")
         if (status != "OK") {
@@ -963,9 +1022,9 @@ class InnerTubeBackend(
         val videoOnly = adaptive
             .filter { it.str("mimeType")?.startsWith("video/") == true }
             .mapNotNull { it.toFormat(audio = false) }
-        val audioOnly = adaptive
-            .filter { it.str("mimeType")?.startsWith("audio/") == true }
-            .mapNotNull { it.toFormat(audio = true) }
+        val audioFormats = adaptive.filter { it.str("mimeType")?.startsWith("audio/") == true }
+        val audioOnly = audioFormats.mapNotNull { it.toFormat(audio = true) }
+        val audioStreams = audioFormats.toAudioStreams()
 
         val lengthSeconds = details?.str("lengthSeconds")?.toIntOrNull() ?: 0
         val live = details?.str("isLiveContent")?.toBoolean() == true
@@ -1032,6 +1091,7 @@ class InnerTubeBackend(
                 videoOnly = videoOnly,
                 audioOnly = audioOnly,
                 hls = hls,
+                audioStreams = audioStreams,
             ),
             related = related,
             isLive = live,
@@ -1062,31 +1122,186 @@ class InnerTubeBackend(
     }
 
     override suspend fun comments(id: String): List<Comment> {
-        val watch = call("next", vr, buildJsonObject { put("videoId", id) })
+        val watch = commentsWatch(id) ?: return emptyList()
         val token = watch.commentThreadInfo().continuation
         if (token.isBlank()) return emptyList()
         return commentsPage(token).comments
     }
 
+    override suspend fun commentThread(id: String): CommentThreadInfo =
+        commentsWatch(id)?.commentThreadInfo() ?: CommentThreadInfo()
+
     override suspend fun commentsPage(token: String): CommentPage {
         if (token.isBlank()) return CommentPage()
-        val response = call("next", vr, buildJsonObject { put("continuation", token) })
-        val comments = response.findAll("commentThreadRenderer").mapNotNull { it.toComment() }
-        val next = response.findAll("nextContinuationData")
-            .firstOrNull()
-            ?.str("continuation")
-            ?.takeIf { it.isNotBlank() }
-        return CommentPage(comments = comments, next = next)
+        val response = commentsPageBody(token) ?: return CommentPage()
+        return response.toCommentPage()
     }
+
+    /**
+     * The watch response the thread is read from.
+     *
+     * With a session this is the signed WEB envelope rather than the native
+     * `vr` profile the rest of the watch page uses, and the difference is not
+     * cosmetic: a signed-out answer carries no like commands and no like state,
+     * so the native profile can describe a thread but cannot act on one. Read
+     * through the session, a comment row knows whether it is already liked, and
+     * the page hands out the parameters a like or a reply needs.
+     *
+     * A signed watch naming no comment panel falls back to the native profile,
+     * so a surface that answers differently cannot leave the sheet empty.
+     */
+    private suspend fun commentsWatch(id: String): JsonObject? {
+        if (signedIn()) {
+            val reply = postForSync(
+                "next",
+                buildJsonObject { put("videoId", id) },
+                label = "comments",
+            )
+            val signed = (reply as? SyncReply.Http)?.let { parsed(it.body) }
+            if (signed != null && signed.commentThreadInfo().continuation.isNotBlank()) return signed
+        }
+        return call("next", vr, buildJsonObject { put("videoId", id) })
+    }
+
+    /**
+     * One page of comments, from the surface that minted the token.
+     *
+     * The signed surface is asked first when there is a session and the native
+     * profile second, because a token minted before signing in belongs to the
+     * native profile and answering it with nothing would read as an empty
+     * thread rather than as the wrong surface.
+     */
+    private suspend fun commentsPageBody(token: String): JsonObject? {
+        if (signedIn()) {
+            val reply = postForSync(
+                "next",
+                buildJsonObject { put("continuation", token) },
+                label = "comments",
+            )
+            val signed = (reply as? SyncReply.Http)?.let { parsed(it.body) }
+            if (signed != null && signed.hasComments()) return signed
+        }
+        return call("next", vr, buildJsonObject { put("continuation", token) })
+    }
+
+    /**
+     * Whether a page carries any comment at all.
+     *
+     * A first page says so with thread renderers, but a replies page lists bare
+     * view models bound to entities instead, so both are accepted — otherwise a
+     * replies page would be discarded as empty and the thread would silently
+     * fall back to a profile that minted no token.
+     */
+    private fun JsonObject.hasComments(): Boolean =
+        findAll("commentThreadRenderer").isNotEmpty() || commentEntities(this).isNotEmpty()
+
+    /** A page in whichever shape the surface answered in. */
+    private fun JsonObject.toCommentPage(): CommentPage = commentPageFrom { it.toComment() }
+
+    override val commentComposer: CommentComposer = CommentWriter()
+
+    override val commentReactions: CommentReactions = CommentReactor()
+
+    /**
+     * Writes a comment as the selected account.
+     *
+     * This rides the same signed WEB envelope sync uses, for the same reason:
+     * the native client profiles refuse a session outright, and a comment is
+     * nothing but a session's opinion. The answer is read as data rather than
+     * trusted by status code, because YouTube accepts the request and then
+     * explains in the body why it will not create the comment.
+     */
+    private inner class CommentWriter : CommentComposer {
+        override suspend fun post(videoId: String, text: String) = sendWrite(
+            "comment/create_comment",
+            buildJsonObject {
+                put("commentText", text)
+                put("createCommentParams", createCommentParams(videoId))
+            },
+            label = "comment",
+        )
+    }
+
+    /**
+     * Liking and replying, sent the way a comment is sent.
+     *
+     * Both take the parameter YouTube handed out with the comment and hand it
+     * back unchanged: it names the comment, the video and the page's sort, so
+     * only the server's own copy of it is accepted. Nothing here is derived
+     * from the model, which is why a signed-out page — offering no such
+     * parameters — cannot be made to like anything.
+     */
+    private inner class CommentReactor : CommentReactions {
+        override suspend fun like(action: String) = sendWrite(
+            "comment/perform_comment_action",
+            commentLikeBody(action),
+            label = "comment like",
+        )
+
+        override suspend fun reply(params: String, text: String) = sendWrite(
+            "comment/create_comment_reply",
+            commentReplyBody(params, text),
+            label = "comment reply",
+        )
+    }
+
+    /**
+     * Sends one comment write and returns only once YouTube accepted it.
+     *
+     * The status code decides nothing: the same `200` covers both a created
+     * comment and a refused one, so the body is read as data and the server's
+     * own sentence is what the caller is given. [label] is what the log calls
+     * the write, which is the only trace a refusal leaves besides "-> 200".
+     */
+    private suspend fun sendWrite(path: String, body: JsonObject, label: String) {
+        val reply = postForSync(path, body, label)
+        val (code, raw) = when (reply) {
+            is SyncReply.Unreachable -> throw IOException(reply.reason)
+            is SyncReply.Http -> reply.code to reply.body
+        }
+        // A non-2xx has no action to read, but its body still carries the
+        // server's sentence, so it is parsed the same way and only the fallback
+        // wording differs.
+        val result = parsed(raw)?.let(::commentPostResult)
+        if (BuildConfig.DEBUG) {
+            android.util.Log.d(
+                "WeTube",
+                "$label answered $code: " + when (result) {
+                    is CommentPost.Posted -> "created"
+                    is CommentPost.Refused -> "refused (${result.reason})"
+                    null -> "unreadable body ${raw.take(200)}"
+                },
+            )
+        }
+        when {
+            result is CommentPost.Refused -> throw CommentRefusedException(result.reason)
+            result is CommentPost.Posted -> Unit
+            code in 200..299 -> throw CommentRefusedException(
+                "YouTube did not accept the comment.",
+            )
+            else -> throw CommentRefusedException("YouTube answered $code.")
+        }
+    }
+
+    /** Whether a session is attached, i.e. whether an ask can be this account's. */
+    private suspend fun signedIn(): Boolean = auth.headers().isNotEmpty()
+
+    /** A response body as a JSON object, or `null` when it is not one. */
+    private fun parsed(body: String): JsonObject? =
+        runCatching { Json.parseToJsonElement(body).obj() }.getOrNull()
 
     /**
      * The comment entry point in a watch response. Its header carries the
      * comment count and the sort menu, and its content holds the continuation
      * token for the first page of the default ("Top") sort.
+     *
+     * The panel is named differently by surface — the native profile calls it
+     * `comment-item-section`, the web one `engagement-panel-comments-section` —
+     * so both are accepted here rather than one being picked by caller.
      */
     private fun JsonObject.commentThreadInfo(): CommentThreadInfo {
         val panel = findAll("engagementPanelSectionListRenderer")
-            .firstOrNull { it.str("panelIdentifier") == "comment-item-section" }
+            .firstOrNull { it.str("panelIdentifier") in COMMENT_PANELS }
             ?: return CommentThreadInfo()
 
         val header = panel["header"].obj()
@@ -1402,6 +1617,57 @@ class InnerTubeBackend(
         return (capped.ifEmpty { mp4.ifEmpty { muxed } }).maxByOrNull { it.height }
     }
 
+    /**
+     * Every dub in an `adaptiveFormats` audio list, one row per `audioTrack.id`.
+     *
+     * YouTube serves each language as a separate audio format; the ones without
+     * an `audioTrack` belong to a video with a single audio track, and they are
+     * left out so such a video keeps resolving exactly as it always has. A dub
+     * arrives once per container and bitrate, so the rows are keyed by
+     * `audioTrack.id` and the best copy (MP4 first, because hardware decoders
+     * are near-universal, then the highest bitrate) speaks for it.
+     *
+     * The first row is the original: YouTube lists it before its dubs and does
+     * not always flag it, and [AudioStream.original] is the last fallback the
+     * default-pick rule has.
+     */
+    private fun List<JsonObject>.toAudioStreams(): List<AudioStream> {
+        val byId = LinkedHashMap<String, Pair<Long, AudioStream>>()
+        for (format in this) {
+            val track = format["audioTrack"].obj() ?: continue
+            val id = track.str("id").orEmpty()
+            if (id.isBlank()) continue
+            val url = format.str("url")?.takeIf { it.isNotBlank() } ?: continue
+            val mime = format.str("mimeType").orEmpty().substringBefore(';').trim()
+            val bitrate = (format["bitrate"] as? JsonPrimitive)?.longOrNull ?: 0L
+            val stream = AudioStream(
+                url = url,
+                mime = mime,
+                languageCode = id.substringBefore('.'),
+                displayName = track.str("displayName").orEmpty(),
+                isDefault = track.str("audioIsDefault")?.toBoolean() == true,
+            )
+            val kept = byId[id]
+            if (kept == null || betterCopy(bitrate, mime, kept.first, kept.second.mime)) {
+                byId[id] = bitrate to stream
+            }
+        }
+        return byId.values.mapIndexed { index, (_, stream) -> stream.copy(original = index == 0) }
+    }
+
+    /** Whether a dub copy of [bitrate]/[mime] beats the one already kept. */
+    private fun betterCopy(
+        bitrate: Long,
+        mime: String,
+        keptBitrate: Long,
+        keptMime: String,
+    ): Boolean {
+        val mp4 = mime.startsWith("audio/mp4")
+        val keptMp4 = keptMime.startsWith("audio/mp4")
+        if (mp4 != keptMp4) return mp4
+        return bitrate > keptBitrate
+    }
+
     private fun JsonObject.toFormat(audio: Boolean): StreamFormat? {
         val url = str("url") ?: return null
         val mime = str("mimeType").orEmpty()
@@ -1447,6 +1713,28 @@ class InnerTubeBackend(
         const val SHORTS_SEQUENCE_TARGET = 24
     }
 }
+
+// ---- site identity ------------------------------------------------------
+//
+// The homepage renders the identity the rest of the site is currently served
+// under: the visitor id the account-less surfaces hand back, and the client
+// version every WEB call asks as. Both are read from that page rather than
+// written down here, because a literal is the one kind of identity this app
+// cannot keep true.
+
+/**
+ * The `WEB` client version a youtube.com response advertises, or null when the
+ * body carries none.
+ *
+ * The homepage renders it exactly once, in the config block it embeds, so what
+ * is found here is the build the site itself is running.
+ */
+internal fun clientVersionFrom(home: String): String? =
+    Regex("\"INNERTUBE_CLIENT_VERSION\":\"([^\"]+)\"")
+        .find(home)
+        ?.groupValues
+        ?.get(1)
+        ?.takeIf { it.isNotBlank() }
 
 // ---- feed readers -------------------------------------------------------
 //
@@ -1664,6 +1952,12 @@ internal fun JsonObject.brief(): String =
     }.take(200)
 
 internal fun JsonObject?.str(key: String): String? = this?.get(key).text()
+
+/**
+ * The panel ids a comment section answers under: the native profile names it
+ * `comment-item-section`, the web surface `engagement-panel-comments-section`.
+ */
+private val COMMENT_PANELS = setOf("comment-item-section", "engagement-panel-comments-section")
 
 /**
  * Human-readable text, decoded at the JSON→model boundary.

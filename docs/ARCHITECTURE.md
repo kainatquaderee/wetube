@@ -292,14 +292,25 @@ therefore costs no extra request.
   `sectionListContinuation` and `itemSectionContinuation` shapes work. The next
   page is requested only once the list's footer is actually on screen, so a
   continuation is not fetched until the viewer reaches it.
-- Comments are read from `commentThreadRenderer` nodes: author, avatar, body,
-  age, like count and reply count. Requests are anonymous, which matches what
-  the rest of the app does.
+- A comment is read from `commentThreadRenderer`. Signed out, the whole comment
+  is in the thread's own `commentRenderer`. Signed in, the thread carries little
+  more than a `commentKey`: the comment itself is a `commentEntityPayload` in a
+  table beside the page, and this account's like state is an
+  `engagementToolbarStateEntityPayload` in a second one. The two are joined by
+  the keys the thread and the entity carry, so nothing above this file sees the
+  difference. Signed-out requests stay anonymous, which matches the rest of the
+  app.
 - **Top/Newest** both come from tokens in the same entry point, so switching
   sort is one call.
-- Replies, likes and reply posting need a signed-in session on a Google surface
-  the app does not impersonate. The sheet says so and offers the watch page in
-  the browser through a chooser instead of pretending to support them.
+- Liking a comment and replying to one are sent as the signed-in account, on the
+  same envelope as posting: `comment/perform_comment_action` with the `action`
+  the toolbar handed out, and `comment/create_comment` with the
+  `createCommentParams` behind the reply button. Neither parameter is built by
+  the app — they name the comment, the video and the page's sort, and only the
+  server's own copy of them is accepted — which is why a signed-out page offers
+  no like or reply affordance. The replies under a comment are read the way the
+  thread is, from the token their own thread carries, so they page in the same
+  sheet instead of sending the viewer to the site.
 
 ## 5. State and storage
 
@@ -444,7 +455,7 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 | Search | Autocomplete and continuation paging; keyboard dismissed on submit, next page loaded at the end of the list |
 | Subtitles | Tracks from the video itself, CC menu, YouTube auto-translation with fallback |
 | Gestures | Hold for 2×, tap to pause in Shorts, vertical pager |
-| Comments | Native top/newest feed with paging, likes, reply counts and avatars; browser fallback |
+| Comments | Top/newest feed with paging, avatars, like and reply counts; a comment's replies paged in the same sheet; posting, liking and replying as the signed-in account; browser fallback |
 | Shorts | Dedicated swipe feed, own progress bar, captions, like/dislike/comment counts, tappable channel, pause indicator |
 | Library | History, favourites, resume points, local subscriptions, Watch Later, play queue, local playlists, video metadata cache |
 | Downloads | Save a video's muxed file for offline play, a Library **Downloads** tab with live progress, retry and remove, play-from-disk with an offline metadata fallback, and a storage cap that trims the oldest finished download first |
@@ -492,8 +503,15 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
 
 ## 10. Known limits
 
-- Age-restricted videos may require a signed-in browser session. WeTube does not
-  fake YouTube's JavaScript challenge; the player says which wall it hit.
+- The age wall is the one refusal the app answers, and it answers it with a
+  browser engine of its own: `ui/player/GeckoWebPlayer.kt` embeds Firefox's
+  GeckoView, not Android's WebView, whose provider belongs to the system and
+  answers to nobody this app controls. Only an `AgeGateException` opens it, only
+  with an account signed in and "Show mature content" on — the page plays as
+  that account, and a wall hit after the fact must not override the switch —
+  and only on this phone, so a cast is never swapped out from under the viewer.
+  Nothing else is bypassed: WeTube does not fake YouTube's JavaScript challenge,
+  and when the engine is not offered the player says which wall it hit.
 - Some networks present a bot check to any third-party client. Nothing is
   bypassed.
 - URLs from the last-resort `ANDROID_VR` profile carry YouTube's `n` throttling
@@ -506,8 +524,11 @@ Nothing else. There is no analytics SDK and no ad SDK in the dependency graph.
   `ROADMAP.md`).
 - Machine-translated caption tracks are rate-limited by YouTube on some
   networks. The original captions are shown instead.
-- Comments are read-only: liking, replying and reading replies need a signed-in
-  session. The sheet offers the watch page in the browser instead.
+- Comments can be posted, liked and replied to from the app as the signed-in
+  account (the signed WEB envelope, `comment/create_comment` and
+  `comment/perform_comment_action`), and a comment's replies page into the sheet
+  itself. What still needs the site is a thread YouTube refuses, which is when
+  the sheet offers the watch page.
 - Live chat is not implemented yet; see `ROADMAP.md`. Account
   sync (§12) pulls subscriptions and a favourites mirror down from the account
   and pushes local changes only after the user consents on the first sync; watch

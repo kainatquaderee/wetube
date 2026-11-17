@@ -31,7 +31,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -98,6 +100,22 @@ private const val FEED_PREFETCH_DISTANCE = 6
  */
 internal fun feedIsStale(lastLoadedAtMs: Long, nowMs: Long, maxAgeMs: Long): Boolean =
     lastLoadedAtMs <= 0L || nowMs - lastLoadedAtMs >= maxAgeMs
+
+/**
+ * Whether a press on the already-selected Home tab should send the feed back to
+ * its first row.
+ *
+ * Reselecting means "start over", but only when there is somewhere to scroll
+ * back from: at the top the feed already is where the viewer wants it, and an
+ * animation there would be a visible nudge for nothing. [reselected] is false
+ * whenever the press is what selected Home in the first place — coming from
+ * another tab, or a screen composed fresh after a configuration change — so the
+ * feed keeps the position the viewer left it in. Extracted so the rule is a
+ * pure value a unit test can pin without a device; the animation itself is the
+ * untested half.
+ */
+internal fun shouldScrollToTop(reselected: Boolean, firstVisibleItemIndex: Int): Boolean =
+    reselected && firstVisibleItemIndex > 0
 
 class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
 
@@ -244,6 +262,15 @@ class HomeViewModel(private val locator: ServiceLocator) : ViewModel() {
     }
 }
 
+/**
+ * The recommended feed.
+ *
+ * [reselectRequests] is the bottom bar's count of presses on Home while Home was
+ * already selected. Home remembers the count it last honoured rather than
+ * treating a non-zero value as a request, so drawing the screen — from another
+ * tab, or after a configuration change — never scrolls a feed the viewer had
+ * deliberately left part-way down.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -251,6 +278,7 @@ fun HomeScreen(
     onVideoClick: (String) -> Unit,
     onChannelClick: (String) -> Unit,
     onShortsClick: (String) -> Unit,
+    reselectRequests: Int,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: HomeViewModel = viewModel(factory = HomeViewModel.factory(locator))
@@ -275,6 +303,22 @@ fun HomeScreen(
     // per crossing instead of one per scroll frame, and the view model guards
     // overlapping calls.
     val listState = rememberLazyListState()
+
+    // Reselecting the Home tab in the bottom bar asks the feed to start over.
+    // The count already honoured is remembered here so that a composition which
+    // merely draws the screen (a tab switch back to Home, a configuration
+    // change) sees no new request and leaves the scroll position untouched;
+    // only a rise in the counter, which the bar raises while Home is showing,
+    // scrolls. Nothing else is touched on the way: no reload, no filter reset.
+    val honouredReselects = remember { mutableIntStateOf(reselectRequests) }
+    LaunchedEffect(reselectRequests) {
+        val reselected = reselectRequests != honouredReselects.intValue
+        honouredReselects.intValue = reselectRequests
+        if (shouldScrollToTop(reselected, listState.firstVisibleItemIndex)) {
+            listState.animateScrollToItem(0)
+        }
+    }
+
     LaunchedEffect(listState, state.nextPage) {
         if (state.nextPage == null) return@LaunchedEffect
         snapshotFlow {

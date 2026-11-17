@@ -28,7 +28,25 @@ class EmbeddedPlayerAddressTest {
         assertTrue(isPlayableAddress("https", "accounts.google.com"))
         assertTrue(isPlayableAddress("https", "accounts.google.co.uk"))
         assertTrue(isPlayableAddress("https", "accounts.google.com.au"))
+        // The reCAPTCHA frame an unusual sign-in is challenged with, and the
+        // consent interstitial in front of a granted account.
         assertTrue(isPlayableAddress("https", "www.google.com"))
+        assertTrue(isPlayableAddress("https", "consent.google.com"))
+    }
+
+    @Test
+    fun `every other google host is refused`() {
+        // A `.google.com` session cookie travels to any host under that domain,
+        // so only the pages a sign-in walks through are admitted — sites.google.com
+        // serves anybody's published page and must not be one of them.
+        assertFalse(isPlayableAddress("https", "sites.google.com"))
+        assertFalse(isPlayableAddress("https", "mail.google.com"))
+        assertFalse(isPlayableAddress("https", "docs.google.com"))
+        assertFalse(isPlayableAddress("https", "myaccount.google.com"))
+        assertFalse(isPlayableAddress("https", "google.com"))
+        // Regional domains are admitted only for the sign-in form itself.
+        assertFalse(isPlayableAddress("https", "consent.google.co.uk"))
+        assertFalse(isPlayableAddress("https", "www.google.co.uk"))
     }
 
     @Test

@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -32,6 +33,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -51,10 +54,15 @@ import dev.wetube.app.ui.library.PlaylistDetailScreen
 import dev.wetube.app.ui.library.QueueScreen
 import dev.wetube.app.ui.player.MiniPlayer
 import dev.wetube.app.ui.player.PlayerScreen
+import dev.wetube.app.ui.player.miniPlayerTargetId
 import dev.wetube.app.ui.search.SearchScreen
 import dev.wetube.app.ui.settings.SettingsScreen
 import dev.wetube.app.ui.shorts.ShortsScreen
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
@@ -91,11 +99,59 @@ fun WeTubeRoot(
     var miniVideoId by remember { mutableStateOf<String?>(null) }
     // A clip tapped in Home's Shorts shelf, delivered to the Shorts section once.
     var shortsStart by remember { mutableStateOf<String?>(null) }
+    // Pressing the tab that is already showing is the "start over" gesture; for
+    // Home it sends the feed back to its first row. A counter rather than a flag
+    // so two presses are two requests, and it is held here, above the navigation
+    // host, so Home's own recompositions cannot lose the request. It starts at
+    // zero, so a host composed fresh (a new activity process) hands Home no
+    // request to replay.
+    var homeReselects by remember { mutableIntStateOf(0) }
     val showMini = miniVideoId != null &&
         !inPictureInPicture &&
         currentRoute?.startsWith("watch") != true
     LaunchedEffect(currentRoute) {
         if (currentRoute?.startsWith("watch") == true) miniVideoId = null
+    }
+
+    // A session outlives the screen that started it: closing the app while a
+    // video plays in the background leaves it running, and relaunching used to
+    // come back to a feed with sound and no picture — and nothing that led back
+    // to the video making it. Seed the window from what the session is actually
+    // playing. Nothing is read from storage on purpose: a session that came
+    // back empty (the process was killed and the media item died with it) seeds
+    // nothing, so no window can pretend to play something that is gone.
+    LaunchedEffect(Unit) {
+        val live = locator.playback.controller.filterNotNull().first()
+        // A launch link owns the picture: it is about to open the player.
+        if (startVideoId != null) return@LaunchedEffect
+        // The session's state arrives with the connection but can settle a beat
+        // after it, so an apparently empty player is given a moment before it is
+        // believed — otherwise a relaunch could look quiet for one read and then
+        // play sound with no window to reach it.
+        if (live.currentMediaItem == null) {
+            withTimeoutOrNull(1_000) {
+                while (live.currentMediaItem == null) delay(50)
+            }
+        }
+        val target = miniPlayerTargetId(
+            screenId = null,
+            liveMediaId = live.currentMediaItem?.mediaId,
+            running = live.stillRunning(),
+        )
+        if (target == null) {
+            // Sound the app cannot reopen is the same dead end that audio with
+            // no picture was: stop it here rather than leave it playing. Only a
+            // running session gets this — a paused one is the viewer's own doing.
+            if (live.stillRunning()) runCatching { live.stop() }
+            return@LaunchedEffect
+        }
+        // Read after the wait for the controller: a watch screen that is
+        // already up owns its own surface, and a window over it would fight it
+        // for the video.
+        if (navController.currentDestination?.route?.startsWith("watch") == true) {
+            return@LaunchedEffect
+        }
+        miniVideoId = target
     }
 
     // "Keep playing in the background" can be switched off; in that case
@@ -133,6 +189,12 @@ fun WeTubeRoot(
                                             launchSingleTop = true
                                             restoreState = true
                                         }
+                                    } else if (tab.route == "home") {
+                                        // Reselecting Home scrolls its feed back
+                                        // to the top. Only Home is wired to the
+                                        // counter; every other tab keeps the
+                                        // plain "nothing to do" reselect.
+                                        homeReselects++
                                     }
                                 },
                                 icon = { Icon(tab.icon, contentDescription = tab.label) },
@@ -161,6 +223,7 @@ fun WeTubeRoot(
                             shortsStart = id
                             navController.navigate("shorts") { launchSingleTop = true }
                         },
+                        reselectRequests = homeReselects,
                     )
                 }
                 composable("shorts") {
@@ -219,9 +282,28 @@ fun WeTubeRoot(
                     route = "watch/{videoId}",
                     arguments = listOf(navArgument("videoId") { type = NavType.StringType }),
                 ) { entry ->
+                    val screenId = entry.arguments?.getString("videoId").orEmpty()
+                    // Every door out of the player that keeps playback going has
+                    // to leave the picture one tap away. Leaving the screen
+                    // detaches its surface but not the media session, so a route
+                    // pushed on top of the player strands the video as sound
+                    // with nothing pointing back at it. That is what "All
+                    // settings" in the player's sheet did: it opens the Settings
+                    // *tab*, which shows the bottom bar, and one tap on any tab
+                    // pops the player's route for good.
+                    val keepVideoReachable: () -> Unit = {
+                        val live = controller
+                        if (live != null) {
+                            miniPlayerTargetId(
+                                screenId = screenId,
+                                liveMediaId = live.currentMediaItem?.mediaId,
+                                running = live.stillRunning(),
+                            )?.let { miniVideoId = it }
+                        }
+                    }
                     PlayerScreen(
                         locator = locator,
-                        videoId = entry.arguments?.getString("videoId").orEmpty(),
+                        videoId = screenId,
                         inPictureInPicture = inPictureInPicture,
                         onBack = { navController.popBackStack() },
                         // Back while playing shrinks the video into the window
@@ -235,9 +317,18 @@ fun WeTubeRoot(
                         onVideoClick = { id ->
                             navController.navigate("watch/$id") { launchSingleTop = true }
                         },
-                        onChannelClick = { id -> navController.navigate("channel/$id") },
-                        onOpenSettings = { navController.navigate("settings") },
-                        onOpenQueue = { navController.navigate("queue") },
+                        onChannelClick = { id ->
+                            keepVideoReachable()
+                            navController.navigate("channel/$id")
+                        },
+                        onOpenSettings = {
+                            keepVideoReachable()
+                            navController.navigate("settings")
+                        },
+                        onOpenQueue = {
+                            keepVideoReachable()
+                            navController.navigate("queue")
+                        },
                     )
                 }
                 // Not one of the five top-level tabs, so `showBottomBar` stays
@@ -323,3 +414,18 @@ fun WeTubeRoot(
         consumeStart.value()
     }
 }
+
+/**
+ * Whether the media session is still producing playback on its own.
+ *
+ * Read from the controller rather than from a player screen, because the screen
+ * may be long gone — out of the foreground, or out of the process — while the
+ * session keeps going. The intent to play counts, so a video that is still
+ * buffering is a video worth keeping reachable, while a paused, finished or
+ * empty player has nothing playing that could be stranded.
+ */
+private fun MediaController.stillRunning(): Boolean =
+    currentMediaItem != null &&
+        playWhenReady &&
+        playbackState != Player.STATE_IDLE &&
+        playbackState != Player.STATE_ENDED

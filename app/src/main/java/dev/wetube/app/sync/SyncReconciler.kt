@@ -68,16 +68,28 @@ object SyncReconciler {
     ): Diff {
         // Index the flat, kind-prefixed metadata by raw id so the table reads in
         // the same id space as `local`/`remote`.
+        //
+        // An entity can have a record for more than one account on the device —
+        // two accounts favouriting the same clip leave one each — and this diff
+        // is about one of them. The account being reconciled wins whenever it
+        // has a record, so its own change is the one decided; another account's
+        // record only survives here (to be quarantined) when it is the only one,
+        // which is what quarantine is for: never touching an id that belongs to
+        // somebody else. Indexing them blindly made the last record in the map
+        // win, so account A's favourite could be quarantined over B's record and
+        // never reach A's mirror.
         val prefix = kind.prefix()
         val entriesOfKind = HashMap<String, SyncEntry>()
         entries.values.forEach { entry ->
-            if (entry.id.startsWith(prefix)) entriesOfKind[entry.id.removePrefix(prefix)] = entry
+            if (!entry.id.startsWith(prefix)) return@forEach
+            val id = entry.id.removePrefix(prefix)
+            if (entriesOfKind[id]?.accountKey != accountKey) entriesOfKind[id] = entry
         }
         val tombstonesOfKind = HashMap<String, Tombstone>()
         tombstones.values.forEach { tombstone ->
-            if (tombstone.id.startsWith(prefix)) {
-                tombstonesOfKind[tombstone.id.removePrefix(prefix)] = tombstone
-            }
+            if (!tombstone.id.startsWith(prefix)) return@forEach
+            val id = tombstone.id.removePrefix(prefix)
+            if (tombstonesOfKind[id]?.accountKey != accountKey) tombstonesOfKind[id] = tombstone
         }
 
         // Candidate universe: everything either side has, plus anything the

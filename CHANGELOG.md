@@ -1,7 +1,42 @@
 # Changelog
 
 Notable changes to WeTube, newest first. Grouped as Added, Fixed, Changed and
-Security. This release is 0.3.10 (versionCode 30).
+Security. This release is 0.3.11 (versionCode 31).
+
+
+## 0.3.11 — a browser engine for the one wall our own player can't pass (2026-11-17)
+
+Some videos stream only to a session a browser can vouch for, so we now carry a browser: Firefox's engine, inside the APK. The rest of the release is the account's own surfaces — its home page, its playlists, its comments — read and written as the account picked in Settings.
+
+### Added
+
+**A browser engine for the one refusal we can't answer.** A video can refuse to play for any client the app asks as, and the refusal arrives as a sentence in `playabilityStatus.reason`. One such refusal has a way past it — an age wall — and only that one opens YouTube's own watch page in an engine we ship. We ship our own engine instead of using Android's WebView because WebView borrows the system's provider and we cannot answer for how that provider behaves; GeckoView brings its own network stack, cookie store and media pipeline, which is exactly why it plays what WebView did not. It is reachable only through that one refusal, only with an account signed in and `Show mature content` on, and every other video keeps the surface it had.
+
+**The embedded page plays as the account selected in Settings.** The engine keeps its own cookie store and its Java API offers no way in — the storage controller only clears and the request loader only adds a header — so the session travels over the one route Mozilla supports: a bundled extension that writes the cookies through `browser.cookies` before the page loads. The app's session only ever travels into that profile and never back out: the round clears the profile's YouTube cookies before storing the account's, what it stores is session-scoped, and a reply carries a name and a count rather than a value. A video opened there therefore plays with that account's likes, subscriptions and history.
+
+**The account's own home page.** Home now asks the surface the web front page asks, so the chip bar is the server's, each chip has its own continuation when it is picked, and the answer arrives as ordered blocks: a titled shelf keeps its place instead of being flattened into one recommendation list. Transports that send no shelves keep the flat list.
+
+**Shorts where a search puts them.** A search result page is read as blocks now, so Shorts rows and a channel's "Latest …" shelf keep their place between the video rows instead of being dropped; tapping a clip opens it in Shorts, the way a Home shelf already did.
+
+**The account's playlists in Library.** Read-only mirrors of the account's own playlists, pulled by sync and scoped to the account that owns them. History and playlists no longer share one bucket across accounts, and a playlist whose pull fails never fails the sync.
+
+**Comments as the account.** Signed in, we post, like and reply from the sheet, over the signed web envelope's `comment/create_comment`, `comment/perform_comment_action` and `comment/create_comment_reply`. The parameters come from the page's own tokens, which is why the signed-out sheet offers no like or reply affordance. Replies are read here too, in a pane of their own that pages in like the thread list, and the sheet still offers the watch page when YouTube refuses the thread.
+
+### Fixed
+
+**A refusal says which wall it is.** The player used to answer every failed playback with the same sentence. It now names the wall in its own words for the refusals it recognises — an age wall, a bot check, a missing video, a dead server — and an age wall reaches the screen as its own type rather than as a sentence the screen matches, so the way past it is offered only when it is really there.
+
+**The way past the wall is named.** The copy no longer claims playback is impossible: it says which wall was hit, offers the two routes we have, and quotes only the app's own words rather than borrowing YouTube's.
+
+**The release build minifies again with the engine in it.** The engine ships SnakeYAML, whose JavaBean support reaches `java.beans`, which Android does not have, so R8 failed the release build on five missing classes. The app never calls the engine code that reaches them, so generated `-dontwarn` rules put the release packages back: 6.3 MB of dex after shrinking.
+
+**Sync reads the account's playlists, counts and edits from the real responses.** Three assumptions about what the web client answers were wrong: the item count is a thumbnail badge rather than metadata text, a large playlist's rows arrive in a shape the parser did not know, and an edit goes to `browse/edit_playlist`, not `playlist/edit`. So membership and counts came back empty and edits were answered with a 404. All three now come from the shapes the responses carry, and a failed item pull keeps the stored ids so the next sync retries.
+
+### Changed
+
+**The embedded player went fullscreen.** The watch page's own fullscreen is the only way to see the picture without its chrome, and the host had no way to ask for it. The app now grants the request and stops drawing its bar while it is up, and the page's own control brings it back.
+
+**The debug log names the sync call and its answer.** Every InnerTube call logs its path and status, so a failed sync names the endpoint instead of ending in one unexplained failure.
 
 ## 0.3.10 — a rotate button, and a top bar clear of the status bar (2026-11-16)
 

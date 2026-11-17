@@ -78,8 +78,7 @@ fun CreditsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                 .padding(horizontal = 16.dp),
         ) {
             Text(
-                "WeTube is written and maintained by the community. The list starts with " +
-                    "the project's founder and first contributor.",
+                "WeTube is written and maintained by its contributors.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -134,12 +133,10 @@ fun CreditsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
             )
 
             Divider()
-            Text("Clean-room", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("Independent", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
             Text(
-                "WeTube was written from scratch after studying how the shipped clients are " +
-                    "structured. No decompiled code, resources or strings from the official app " +
-                    "are included. If you find something that looks copied, please open an issue.",
+                "Written from scratch. No code, resources or strings from any other client are included.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

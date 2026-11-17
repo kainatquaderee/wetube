@@ -624,7 +624,7 @@ fun SettingsScreen(
             Column(Modifier.weight(1f)) {
                 Text("Credits", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "The people who build WeTube, founder first.",
+                    "Everyone who contributes to WeTube.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

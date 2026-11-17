@@ -43,6 +43,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import dev.wetube.app.core.isValidVideoId
 import kotlin.math.roundToInt
 
 /** How wide the floating window is. Roughly a third of a phone in portrait. */
@@ -199,4 +200,37 @@ fun MiniPlayer(
             }
         }
     }
+}
+
+/**
+ * The video the floating window should hold, or `null` when nothing is worth
+ * keeping reachable.
+ *
+ * Two exits need the same rule, which is why it lives here rather than at
+ * either call site. Leaving the player screen for another destination detaches
+ * its surface but not the media session, so the video that is still playing has
+ * to follow the viewer: the settings sheet's "All settings" opens the Settings
+ * *tab*, and that tab's own tab-bar clicks pop the player's route, so the back
+ * stack is not a way back on its own. And the session can outlive the whole UI:
+ * closing the app while a video plays in the background leaves the session
+ * running, so a relaunch that reads nothing from it comes back to a feed with
+ * sound and no picture.
+ *
+ * [liveMediaId] wins over [screenId] because the session is the truth — the end
+ * screen and the queue swap the item in place, so the id a screen was opened
+ * with can already be stale. [screenId] is only the answer while the session is
+ * still loading that video and has no item of its own yet. [running] is what
+ * keeps the hand-over honest: a paused, finished or empty player has nothing
+ * playing that could be stranded, so nothing is offered and no window pretends
+ * to play. An id the app cannot open is never a target either — a window whose
+ * tap goes nowhere would be the very dead end this prevents.
+ */
+internal fun miniPlayerTargetId(
+    screenId: String?,
+    liveMediaId: String?,
+    running: Boolean,
+): String? {
+    if (!running) return null
+    if (isValidVideoId(liveMediaId)) return liveMediaId
+    return screenId?.takeIf(::isValidVideoId)
 }

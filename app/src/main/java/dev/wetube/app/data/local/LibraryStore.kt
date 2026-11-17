@@ -2,6 +2,7 @@ package dev.wetube.app.data.local
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -166,16 +167,19 @@ data class LibrarySnapshot(
  * queue, local-playlist collections and the video-metadata cache are device-only
  * and never touch the sync metadata.
  *
- * History, playlists and the video-metadata cache are *account-scoped*: their
- * DataStore keys carry an `@<accountKey>` suffix while an account is signed in,
- * so two accounts on one device never see each other's history or playlists and
- * a mirror of one account's playlists can never be read as another's. Signed
- * out (and for every record written before scoping existed) the bare key is
- * used, which stays the "signed out" bucket; [adoptLegacyContent] copies the
- * legacy bucket into the scope of the first account this installation resolves.
- * The remaining lists — favourites, resume points, subscriptions, Watch Later and
- * the queue — stay global, because they are reconciled with the account by sync
- * rather than by key.
+ * History, favourites, playlists and the video-metadata cache are
+ * *account-scoped*: their DataStore keys carry an `@<accountKey>` suffix while an
+ * account is signed in, so two accounts on one device never see each other's
+ * history, favourites or playlists and a mirror of one account's playlists can
+ * never be read as another's. Signed out (and for every record written before
+ * scoping existed) the bare key is used, which stays the "signed out" bucket;
+ * [adoptLegacyContent] moves the legacy bucket into the scope of the first
+ * account this installation resolves. Favourites are scoped by key *and* still
+ * synced: sync mirrors them into a private playlist of the account, which is a
+ * separate concern from where they are stored and does not make them global. The
+ * remaining lists — resume points, subscriptions, Watch Later and the queue —
+ * stay global, because they are reconciled with the account by sync rather than
+ * by key.
  */
 class LibraryStore internal constructor(
     private val dataStore: DataStore<Preferences>,
@@ -231,8 +235,12 @@ class LibraryStore internal constructor(
         decodeVideos(raw).map(::displayDecoded)
     }
 
-    val favourites: Flow<List<VideoItem>> = dataStore.data.map { p ->
-        decodeVideos(p[favouritesKey]).map(::displayDecoded)
+    /**
+     * Favourites of the account that is signed in now (or of the signed-out
+     * bucket), so two accounts on one device never see each other's list.
+     */
+    val favourites: Flow<List<VideoItem>> = scoped(favouritesKey) { raw ->
+        decodeVideos(raw).map(::displayDecoded)
     }
 
     val resumePoints: Flow<Map<String, ResumeEntry>> = dataStore.data.map { p ->
@@ -281,12 +289,13 @@ class LibraryStore internal constructor(
 
     suspend fun toggleFavourite(video: VideoItem): Boolean {
         var added = false
+        val key = keyFor(favouritesKey, accountKeys.current())
         dataStore.edit { p ->
-            val current = decodeVideos(p[favouritesKey])
+            val current = decodeVideos(p[key])
             val exists = current.any { it.id == video.id }
             val next = if (exists) current.filterNot { it.id == video.id } else listOf(video) + current
             added = !exists
-            p[favouritesKey] = json.encodeToString(videoList, next)
+            p[key] = json.encodeToString(videoList, next)
         }
         // Queue the change for sync. No call site has to know: every favourite
         // from any screen goes through here.
@@ -670,34 +679,143 @@ class LibraryStore internal constructor(
     /**
      * Migration for installations that predate account scoping.
      *
-     * History, playlists and the video-metadata cache used to live under bare
-     * keys. The first launch that resolves an account copies them into that
-     * account's scope, so the user's existing history and playlists are still
-     * there; the bare keys stay as the signed-out bucket, so signing out still
-     * shows the library the user had.
+     * History, playlists, favourites and the video-metadata cache used to live
+     * under bare keys. The first launch that resolves an account copies them into
+     * that account's scope, so the user's existing history, playlists and
+     * favourites are still there; the bare keys stay as the signed-out bucket, so
+     * signing out still shows the library the user had.
      *
      * A launch with no account resolves nothing and spends nothing: the records
-     * stay readable as the signed-out library and the launch that does resolve
-     * an account adopts them. Recording the migration as done while signed out
+     * stay readable as the signed-out library and the launch that does resolve an
+     * account adopts them. Recording the migration as done while signed out
      * would strand exactly those records — a playlist written before scoping
      * existed would stay invisible to the account that owns it, for good.
      *
-     * The marker makes it run exactly once *with an owner*: a second run must
-     * not overwrite a scope that has since moved on, and a scoped record that
-     * already exists is left alone for the same reason.
+     * Favourites are the one exception to "the bare key stays": they are the only
+     * adopted list that belongs to the *account* rather than to the device (sync
+     * mirrors them into the account's private playlist), so the legacy value is
+     * consumed once it has been copied. Leaving it behind would show a signed-out
+     * favourites list that no account on this device owns any more, and a
+     * favourite added to it would never reach the account. Nothing is lost: the
+     * copy in the owner's scope is the list the user had.
+     *
+     * Because the bare favourites key is consumed, its adoption cannot be part of
+     * the one-shot marker: a favourite saved while signed out *after* the marker
+     * was spent (sign in, sign out, favourite a clip, sign in again) would
+     * otherwise never reach an account and would be invisible on the next launch.
+     * Consuming the key is what makes running it again harmless, so it runs on
+     * every launch that has an owner. The other lists stay behind the marker.
+     *
+     * The lists are *merged* into the scope, never skipped: a launch writes
+     * history as soon as a clip starts playing, so by the time this runs the
+     * scope usually holds something already, and "copy when absent" would strand
+     * the pre-scoping list for good. [mergedNewestFirst] keeps the scope's own
+     * entries in front because they are the newer ones.
      */
     suspend fun adoptLegacyContent() {
         val owner = accountKeys.current() ?: return
         dataStore.edit { p ->
+            adoptFavourites(p, owner)
             if (p[legacyAdoptedKey] != null) return@edit
-            for (base in listOf(historyKey, playlistsKey, videoMetaKey)) {
-                val legacy = p[base] ?: continue
-                val scoped = keyFor(base, owner)
-                if (p[scoped] == null) p[scoped] = legacy
-            }
+            adoptVideoList(p, historyKey, owner, MAX_HISTORY)
+            adoptPlaylists(p, owner)
+            adoptVideoList(p, videoMetaKey, owner, MAX_VIDEO_META)
             p[legacyAdoptedKey] = "1"
         }
     }
+
+    /**
+     * Merges the bare favourites bucket into [owner]'s scope and consumes it.
+     *
+     * Consuming it is what keeps a repeated launch idempotent; see
+     * [adoptLegacyContent] for why this runs outside the marker.
+     *
+     * A clip can arrive here *after* [owner] deleted it: sign out, favourite it
+     * again, sign in. The list says the clip is wanted, but the record of the
+     * deletion is still queued — a pending `DELETE` and a tombstone — and the
+     * presence-based merge reads the tombstone as "absent locally", so the next
+     * sync would remove the clip from the account the adoption just restored it
+     * to. The list is the newer statement of intent, so the adoption cancels
+     * that account's delete of every id it adopts (see [cancelQueuedDeletes]).
+     */
+    private fun adoptFavourites(p: MutablePreferences, owner: String) {
+        val legacy = decodeVideos(p[favouritesKey])
+        if (legacy.isEmpty()) return
+        val scoped = keyFor(favouritesKey, owner)
+        p[scoped] = encodeVideos(
+            mergedNewestFirst(legacy, decodeVideos(p[scoped]), MAX_FAVOURITES) { it.id },
+        )
+        p.remove(favouritesKey)
+        cancelQueuedDeletes(p, legacy.map { favouriteKey(it.id) }, owner)
+    }
+
+    /**
+     * Drops [owner]'s queued delete of [ids] and the tombstones that carry it.
+     *
+     * A tombstone is what makes the reconciler read an id as absent locally, and
+     * a pending `DELETE` is the same intent stated again, so both have to go or
+     * the next sync recreates the deletion the adoption just undid. Only
+     * [owner]'s records are touched: another account's delete of the same clip
+     * is that account's business, and its own mirror still expects it.
+     */
+    private fun cancelQueuedDeletes(p: MutablePreferences, ids: Collection<String>, owner: String) {
+        if (ids.isEmpty()) return
+        val idSet = ids.toHashSet()
+        val tombstones = syncCodec.decodeTombstones(p[SyncPreferencesKeys.tombstones])
+        val kept = tombstones.filterNot { it.id in idSet && it.accountKey == owner }
+        if (kept.size != tombstones.size) {
+            p[SyncPreferencesKeys.tombstones] = syncCodec.encodeTombstones(kept)
+        }
+
+        val entries = syncCodec.decodeEntries(p[SyncPreferencesKeys.meta])
+        val cancelled = entries.filterValues { it.id in idSet && it.accountKey == owner }
+        if (cancelled.isEmpty()) return
+        val next = entries.toMutableMap()
+        for (entry in cancelled.values) {
+            // The baseline is kept: it describes what the account's mirror held
+            // at the last sync, which the delete never changed.
+            if (entry.pendingOp?.kind == OpKind.DELETE) {
+                next.putEntry(entry.copy(pendingOp = null))
+            }
+        }
+        if (next != entries) {
+            p[SyncPreferencesKeys.meta] = syncCodec.encodeEntries(next)
+        }
+    }
+
+    /**
+     * Merges the bare [base] list into [owner]'s scope, newest first and capped.
+     *
+     * The bare key is left alone: it is still the signed-out library. A missing
+     * or empty bare list is not an adoption and writes nothing.
+     */
+    private fun adoptVideoList(
+        p: MutablePreferences,
+        base: Preferences.Key<String>,
+        owner: String,
+        cap: Int,
+    ) {
+        val legacy = decodeVideos(p[base])
+        if (legacy.isEmpty()) return
+        val scoped = keyFor(base, owner)
+        p[scoped] = encodeVideos(mergedNewestFirst(legacy, decodeVideos(p[scoped]), cap) { it.id })
+    }
+
+    /** The playlist half of [adoptVideoList]; playlists carry their id, not a video. */
+    private fun adoptPlaylists(p: MutablePreferences, owner: String) {
+        val legacy = decodePlaylists(p[playlistsKey])
+        if (legacy.isEmpty()) return
+        val scoped = keyFor(playlistsKey, owner)
+        val merged = mergedNewestFirst(
+            legacy,
+            decodePlaylists(p[scoped]),
+            MAX_PLAYLISTS,
+        ) { it.id }
+        p[scoped] = json.encodeToString(playlistList, merged)
+    }
+
+    /** [videos] in the shape [decodeVideos] reads back. */
+    private fun encodeVideos(videos: List<VideoItem>): String = json.encodeToString(videoList, videos)
 
     // ----- Local video-metadata cache ---------------------------------------
 
@@ -777,12 +895,31 @@ class LibraryStore internal constructor(
         }
     }
 
-    suspend fun snapshot(): LibrarySnapshot {
-        val scope = accountKeys.current()
+    /**
+     * Reads the whole library as one value, for a backup, scoped to the account
+     * signed in now.
+     *
+     * The account is resolved here rather than in a default argument because
+     * resolving it suspends, which a default argument cannot do.
+     */
+    suspend fun snapshot(): LibrarySnapshot = snapshot(accountKeys.current())
+
+    /**
+     * Reads the whole library as one value, for a backup.
+     *
+     * [accountKey] names the scope to read. A caller that already acts on behalf
+     * of one account — the sync engine runs a whole plan for the account it
+     * started with — must pass it: reading "whoever is signed in" turns a
+     * sign-out in the middle of that sync into a local library that looks empty,
+     * and an empty local list next to a populated remote one is a list of
+     * deletions.
+     */
+    suspend fun snapshot(accountKey: String?): LibrarySnapshot {
+        val scope = accountKey
         val prefs = dataStore.data.first()
         return LibrarySnapshot(
             history = decodeVideos(prefs[keyFor(historyKey, scope)]),
-            favourites = decodeVideos(prefs[favouritesKey]),
+            favourites = decodeVideos(prefs[keyFor(favouritesKey, scope)]),
             resume = prefs[resumeKey]
                 ?.let { runCatching { json.decodeFromString(resumeList, it) }.getOrNull() }
                 .orEmpty(),
@@ -814,17 +951,33 @@ class LibraryStore internal constructor(
         stamp(favouriteKey(video.id), added, at)
     }
 
+    /**
+     * Queues a local add/remove of one entity at [at].
+     *
+     * The baseline is taken from the same account's own record for that entity
+     * (see [entryFor]). Two accounts can have a change queued for one clip at
+     * the same time, so the record is keyed by entity *and* owner (see
+     * [syncEntryKey]): keying it by entity alone let account B's favourite of a
+     * clip take over the slot A had queued, and A's mirror never saw it.
+     * Inheriting
+     * the other account's `basePresent` would be just as wrong — it says
+     * *that* account's mirror already holds the entity, so B would never be
+     * sent it.
+     */
     private suspend fun stamp(id: String, added: Boolean, at: Long) {
         val accountKey = accountKeys.current() ?: return
         dataStore.edit { prefs ->
             val entries = syncCodec.decodeEntries(prefs[SyncPreferencesKeys.meta]).toMutableMap()
-            entries[id] = SyncEntry(
-                id = id,
-                accountKey = accountKey,
-                localUpdatedAt = at,
-                basePresent = entries[id]?.basePresent ?: false,
-                baselineRemoteUpdatedAt = entries[id]?.baselineRemoteUpdatedAt ?: 0L,
-                pendingOp = PendingOp(if (added) OpKind.UPSERT else OpKind.DELETE, at),
+            val baseline = entries.entryFor(id, accountKey)
+            entries.putEntry(
+                SyncEntry(
+                    id = id,
+                    accountKey = accountKey,
+                    localUpdatedAt = at,
+                    basePresent = baseline?.basePresent ?: false,
+                    baselineRemoteUpdatedAt = baseline?.baselineRemoteUpdatedAt ?: 0L,
+                    pendingOp = PendingOp(if (added) OpKind.UPSERT else OpKind.DELETE, at),
+                ),
             )
             prefs[SyncPreferencesKeys.meta] = syncCodec.encodeEntries(entries)
             if (!added) {
@@ -835,6 +988,35 @@ class LibraryStore internal constructor(
                 prefs[SyncPreferencesKeys.tombstones] = syncCodec.encodeTombstones(tombstones)
             }
         }
+    }
+
+    /**
+     * The record for entity [id] owned by [accountKey], whichever key it was
+     * stored under.
+     *
+     * The current layout comes from [syncEntryKey], the one definition of it.
+     * A build before it keyed the map by entity alone, which left at most one
+     * record per entity, so falling back to that key is unambiguous: it is
+     * either this account's record or another account's, and the owner is
+     * checked either way. Reading it keeps a queued change from being forgotten
+     * by the upgrade, which would silently drop the entity from the next push.
+     * [putEntry] moves the record to the current layout the first time it is
+     * rewritten.
+     */
+    private fun Map<String, SyncEntry>.entryFor(id: String, accountKey: String): SyncEntry? =
+        (this[syncEntryKey(accountKey, id)] ?: this[id])?.takeIf { it.accountKey == accountKey }
+
+    /**
+     * Stores [entry] as the record of its entity for its account, replacing any
+     * record that account already had under the older, entity-only key.
+     *
+     * Two records for one entity and account would make the merge depend on map
+     * iteration order: it indexes the records it is given by entity, so one of
+     * them would silently win over the other.
+     */
+    private fun MutableMap<String, SyncEntry>.putEntry(entry: SyncEntry) {
+        if (this[entry.id]?.accountKey == entry.accountKey) remove(entry.id)
+        this[syncEntryKey(entry.accountKey, entry.id)] = entry
     }
 
     /**
@@ -861,13 +1043,25 @@ class LibraryStore internal constructor(
             prefs[subscriptionsKey] = json.encodeToString(videoList, current)
 
             val entries = syncCodec.decodeEntries(prefs[SyncPreferencesKeys.meta]).toMutableMap()
-            adds.forEach { channel -> entries[subscriptionKey(channel.id)] = pulled(entries, subscriptionKey(channel.id), accountKey, present = true, at = at) }
-            removeIds.forEach { channelId -> entries[subscriptionKey(channelId)] = pulled(entries, subscriptionKey(channelId), accountKey, present = false, at = at) }
+            adds.forEach { channel ->
+                entries.putEntry(pulled(entries, subscriptionKey(channel.id), accountKey, present = true, at = at))
+            }
+            removeIds.forEach { channelId ->
+                entries.putEntry(
+                    pulled(entries, subscriptionKey(channelId), accountKey, present = false, at = at),
+                )
+            }
             prefs[SyncPreferencesKeys.meta] = syncCodec.encodeEntries(entries)
         }
     }
 
-    /** Applies the remote half of a favourites sync; see [applySubscriptionPull]. */
+    /**
+     * Applies the remote half of a favourites sync; see [applySubscriptionPull].
+     *
+     * Favourites are stored per account, so the write lands in [accountKey]'s
+     * scope — the account the sync ran for — not in whoever is signed in when it
+     * finishes.
+     */
     suspend fun applyFavouritePull(
         adds: List<VideoItem>,
         removeIds: List<String>,
@@ -875,7 +1069,8 @@ class LibraryStore internal constructor(
         at: Long,
     ) {
         dataStore.edit { prefs ->
-            val current = decodeVideos(prefs[favouritesKey]).toMutableList()
+            val key = keyFor(favouritesKey, accountKey)
+            val current = decodeVideos(prefs[key]).toMutableList()
             val removed = removeIds.toHashSet()
             current.removeAll { it.id in removed }
             adds.forEach { video ->
@@ -883,11 +1078,19 @@ class LibraryStore internal constructor(
                     current.add(0, video)
                 }
             }
-            prefs[favouritesKey] = json.encodeToString(videoList, current)
+            prefs[key] = json.encodeToString(videoList, current)
 
             val entries = syncCodec.decodeEntries(prefs[SyncPreferencesKeys.meta]).toMutableMap()
-            adds.forEach { video -> entries[favouriteKey(video.id)] = pulled(entries, favouriteKey(video.id), accountKey, present = true, at = at) }
-            removeIds.forEach { videoId -> entries[favouriteKey(videoId)] = pulled(entries, favouriteKey(videoId), accountKey, present = false, at = at) }
+            adds.forEach { video ->
+                entries.putEntry(
+                    pulled(entries, favouriteKey(video.id), accountKey, present = true, at = at),
+                )
+            }
+            removeIds.forEach { videoId ->
+                entries.putEntry(
+                    pulled(entries, favouriteKey(videoId), accountKey, present = false, at = at),
+                )
+            }
             prefs[SyncPreferencesKeys.meta] = syncCodec.encodeEntries(entries)
         }
     }
@@ -904,7 +1107,7 @@ class LibraryStore internal constructor(
         accountKey = accountKey,
         localUpdatedAt = at,
         basePresent = present,
-        baselineRemoteUpdatedAt = entries[id]?.baselineRemoteUpdatedAt ?: at,
+        baselineRemoteUpdatedAt = entries.entryFor(id, accountKey)?.baselineRemoteUpdatedAt ?: at,
         pendingOp = null,
     )
 
@@ -916,6 +1119,9 @@ class LibraryStore internal constructor(
      * removal op passes `false`: the remote no longer has it, and recording
      * `basePresent = true` would let a later re-add look like "present locally,
      * absent remotely with a baseline" and be deleted.
+     *
+     * Only [accountKey]'s records are touched: another account's queued change
+     * for the same entity is still waiting for its own sync.
      */
     suspend fun markSynced(
         ids: Collection<String>,
@@ -927,13 +1133,16 @@ class LibraryStore internal constructor(
         dataStore.edit { prefs ->
             val entries = syncCodec.decodeEntries(prefs[SyncPreferencesKeys.meta]).toMutableMap()
             ids.forEach { id ->
-                entries[id] = SyncEntry(
-                    id = id,
-                    accountKey = accountKey,
-                    localUpdatedAt = at,
-                    basePresent = present,
-                    baselineRemoteUpdatedAt = entries[id]?.baselineRemoteUpdatedAt ?: at,
-                    pendingOp = null,
+                entries.putEntry(
+                    SyncEntry(
+                        id = id,
+                        accountKey = accountKey,
+                        localUpdatedAt = at,
+                        basePresent = present,
+                        baselineRemoteUpdatedAt = entries.entryFor(id, accountKey)
+                            ?.baselineRemoteUpdatedAt ?: at,
+                        pendingOp = null,
+                    ),
                 )
             }
             prefs[SyncPreferencesKeys.meta] = syncCodec.encodeEntries(entries)
@@ -942,15 +1151,21 @@ class LibraryStore internal constructor(
 
     /**
      * Notes a failed push of [ids]. The queued `pendingOp` is deliberately left
-     * in place so the next sync retries it; only the owning account's error
-     * count moves. [reason] is accepted for the caller's diagnostics — the
+     * in place so the next sync retries it; only the owning accounts' error
+     * counts move. [reason] is accepted for the caller's diagnostics — the
      * schema has no per-operation error field to store it in.
      */
     suspend fun markPushFailed(ids: Collection<String>, reason: String) {
         if (ids.isEmpty()) return
         dataStore.edit { prefs ->
-            val entries = syncCodec.decodeEntries(prefs[SyncPreferencesKeys.meta])
-            val owners = ids.mapNotNull { entries[it]?.accountKey }.toSet()
+            val failed = ids.toHashSet()
+            // One entity can be queued for several accounts, and the caller only
+            // names the entity: every account that has a change pending for it
+            // gets the error.
+            val owners = syncCodec.decodeEntries(prefs[SyncPreferencesKeys.meta])
+                .values
+                .filter { it.id in failed }
+                .mapTo(HashSet()) { it.accountKey }
             if (owners.isEmpty()) return@edit
             val states = syncCodec.decodeStates(prefs[SyncPreferencesKeys.state]).toMutableMap()
             owners.forEach { owner ->
@@ -981,9 +1196,35 @@ class LibraryStore internal constructor(
         }
     }
 
-    /** Current queued entries, for a future sync engine or debug screen. */
-    suspend fun syncEntries(): Map<String, SyncEntry> =
+    /**
+     * The queued entries of the account signed in now, keyed by entity id.
+     *
+     * Scoped like the content lists, because a record belongs to one account's
+     * mirror: an entity can be queued for several accounts at once, and only the
+     * signed-in one's change is this store's answer. Nothing is queued while
+     * signed out, so a signed-out library returns none.
+     */
+    suspend fun syncEntries(): Map<String, SyncEntry> {
+        val accountKey = accountKeys.current() ?: return emptyMap()
+        return syncCodec.decodeEntries(dataStore.data.first()[SyncPreferencesKeys.meta])
+            .values
+            .filter { it.accountKey == accountKey }
+            .associateBy { it.id }
+    }
+
+    /**
+     * The queued record of one entity [id] as owned by [accountKey], or `null`
+     * when that account has none.
+     *
+     * The account is named rather than read from [accountKeys] so a caller that
+     * acts on behalf of an account — or checks what a finished sync left behind
+     * — asks about that account, not about whoever is signed in now. Where the
+     * record is *stored* is not the caller's business: the lookup goes through
+     * [entryFor], so a record still under an older layout is answered too.
+     */
+    suspend fun syncEntry(accountKey: String, id: String): SyncEntry? =
         syncCodec.decodeEntries(dataStore.data.first()[SyncPreferencesKeys.meta])
+            .entryFor(id, accountKey)
 
     /** Current tombstones, for a future sync engine or debug screen. */
     suspend fun syncTombstones(): List<Tombstone> =
@@ -1023,6 +1264,7 @@ class LibraryStore internal constructor(
     suspend fun restore(snapshot: LibrarySnapshot) {
         val scope = accountKeys.current()
         val historyKey = keyFor(this.historyKey, scope)
+        val favouritesKey = keyFor(this.favouritesKey, scope)
         val playlistsKey = keyFor(this.playlistsKey, scope)
         val videoMetaKey = keyFor(this.videoMetaKey, scope)
         dataStore.edit { p ->
@@ -1039,6 +1281,12 @@ class LibraryStore internal constructor(
                 },
             )
             p[videoMetaKey] = json.encodeToString(videoList, snapshot.videoMeta.take(MAX_VIDEO_META))
+
+            // A restore made while signed out lands in the bare bucket, which the
+            // next account adopts only while the migration marker is unspent.
+            // Leaving the marker set would hide the whole restored library behind
+            // an adoption that has already happened.
+            if (scope == null) p.remove(legacyAdoptedKey)
 
             // Invalidate the sync baseline so a restored (possibly smaller)
             // backup can never be read as a list of local removals.
@@ -1119,6 +1367,26 @@ class LibraryStore internal constructor(
 }
 
 /**
+ * The sync-metadata map key of entity [entityId] as queued by [accountKey].
+ *
+ * The metadata is one flat map, so keying a record by entity alone gave one
+ * slot to every account on the device: account B favouriting a clip that A had
+ * just favourited erased A's queued change, and the reconciler then had only
+ * B's record for it — which it quarantines as foreign, so A's favourite never
+ * reached A's mirror. The owner is part of the key instead, one slot per entity
+ * *and* account. `@` cannot occur in an entity key (a kind prefix plus a
+ * YouTube id), so the two parts stay unambiguous.
+ *
+ * This function is the *only* place that layout is spelled out: every build and
+ * every read of a metadata key goes through it (see [LibraryStore.syncEntry]),
+ * so the format cannot drift between the writer and the reader. A record
+ * written before this layout exists under its bare entity key and is still
+ * read, which is the one other shape a lookup may try; see
+ * [LibraryStore.syncEntry] and the store's own fallback.
+ */
+internal fun syncEntryKey(accountKey: String, entityId: String): String = "$entityId@$accountKey"
+
+/**
  * Returns [list] with the item at [from] moved to [to], preserving order.
  *
  * A pure, single definition of "reorder" shared by [LibraryStore.moveInQueue]
@@ -1152,15 +1420,36 @@ internal fun mergeVideoMeta(
     existing: List<VideoItem>,
     incoming: List<VideoItem>,
     cap: Int,
-): List<VideoItem> {
+): List<VideoItem> = mergedNewestFirst(existing, incoming, cap) { it.id }
+
+/**
+ * The generic form of [mergeVideoMeta]: the same "incoming first, then the
+ * existing items whose [id] is not among them, de-duplicated, capped from the
+ * tail" union, for any list whose items carry a stable id.
+ *
+ * A merge of two user lists is where ordering turns into data loss: putting the
+ * stale copy in front resurrects an entry the newer list has already dropped out
+ * of its cap, and appending the newer copy leaves the stale one on top. Both
+ * callers of this — the metadata cache and the migration in
+ * [LibraryStore.adoptLegacyContent] — must therefore share this one definition.
+ *
+ * Returns [existing] itself when nothing would change, so a caller can treat
+ * reference identity as "nothing to write". The inputs are never mutated.
+ */
+internal fun <T> mergedNewestFirst(
+    existing: List<T>,
+    incoming: List<T>,
+    cap: Int,
+    id: (T) -> String,
+): List<T> {
     if (incoming.isEmpty()) return existing
     val seen = HashSet<String>(existing.size + incoming.size)
-    val merged = ArrayList<VideoItem>(existing.size + incoming.size)
-    for (video in incoming) {
-        if (seen.add(video.id)) merged.add(video)
+    val merged = ArrayList<T>(existing.size + incoming.size)
+    for (item in incoming) {
+        if (seen.add(id(item))) merged.add(item)
     }
-    for (video in existing) {
-        if (seen.add(video.id)) merged.add(video)
+    for (item in existing) {
+        if (seen.add(id(item))) merged.add(item)
     }
     val capped = if (merged.size > cap) merged.subList(0, cap).toList() else merged
     val unchanged = capped.size == existing.size && capped.indices.all { capped[it] == existing[it] }

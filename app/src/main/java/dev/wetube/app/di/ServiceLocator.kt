@@ -40,6 +40,7 @@ import dev.wetube.app.sync.DEFAULT_FAVOURITES_TITLE
 import dev.wetube.app.sync.PlaylistTarget
 import dev.wetube.app.sync.SyncDeps
 import dev.wetube.app.sync.SyncEngine
+import dev.wetube.app.ui.player.WebCookieBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -97,6 +98,17 @@ class ServiceLocator(context: Context) {
     private val jsonHttp = JsonHttp(http, json)
 
     val auth = AuthStore(appContext, jsonHttp)
+
+    init {
+        // The embedded player keeps a copy of the session in a browser profile of
+        // its own, and no flow through the store can reach it. Told about a
+        // sign-out or a switch here, the bridge empties that profile — including
+        // the Google session a sign-in inside the page left behind — whether or
+        // not the player is on screen. This is the one place the container
+        // reaches into `ui`, and only to end a session: the runtime the wipe
+        // talks to is created by the player, not by this graph.
+        auth.onSessionReplaced = { WebCookieBridge.wipe() }
+    }
 
     val settings = SettingsStore(appContext)
     /**
@@ -177,23 +189,26 @@ class ServiceLocator(context: Context) {
     }
 
     /**
-     * Claims history, playlists and cached video metadata written before those
-     * lists became account-scoped (see [LibraryStore.adoptLegacyContent]).
+     * Claims history, playlists, favourites and cached video metadata written
+     * before those lists became account-scoped (see
+     * [LibraryStore.adoptLegacyContent]).
      *
      * Off the main thread and behind the same process scope as
-     * [resumePendingDownloads], because it is a one-time DataStore write and
-     * nothing on screen depends on it finishing first.
+     * [resumePendingDownloads], because it is a DataStore write and nothing on
+     * screen depends on it finishing first.
      *
      * The migration is only spent once an account exists to own the records, so
      * this waits for one instead of running immediately: a launch that happens
      * signed out must not consume it (the records would be stranded in the
-     * signed-out bucket), and waiting here also covers a sign-in later in the
-     * same process rather than only the next launch.
+     * signed-out bucket). It runs again for every account that signs in, because
+     * a favourite added while signed out *after* the migration was spent (sign
+     * in, sign out, favourite a clip) is only visible to an account that adopts
+     * it — and consuming the bare favourites key is what keeps the repeat
+     * harmless.
      */
     fun adoptLegacyContent() {
         appScope.launch {
-            auth.accountKey.filterNotNull().first()
-            library.adoptLegacyContent()
+            auth.accountKey.filterNotNull().collect { library.adoptLegacyContent() }
         }
     }
 

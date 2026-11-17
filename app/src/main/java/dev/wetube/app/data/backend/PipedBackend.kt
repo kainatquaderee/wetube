@@ -38,7 +38,14 @@ class PipedBackend(
         )
             .map { it.toItem() }
 
-    override suspend fun search(query: String, nextPage: String?): SearchResult {
+    // Piped's search takes one `filter` (all/videos/channels/playlists) and has no
+    // sort or feature vocabulary, so [filters] is dropped rather than
+    // half-applied; `supportsSearchFilters` stays at the interface default.
+    override suspend fun search(
+        query: String,
+        nextPage: String?,
+        filters: SearchFilters,
+    ): SearchResult {
         val encoded = encodeUrlValue(query)
         val url = if (nextPage.isNullOrBlank()) {
             "$base/search?q=$encoded&filter=videos"
@@ -52,7 +59,7 @@ class PipedBackend(
         )
     }
 
-    override suspend fun video(id: String): VideoDetail {
+    override suspend fun video(id: String, fallback: PlaybackFallback): VideoDetail {
         val s = http.get("$base/streams/${encodeVideoId(id)}", PipedStreams.serializer())
 
         val muxed = s.videoStreams

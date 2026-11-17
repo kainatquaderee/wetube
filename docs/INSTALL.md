@@ -18,13 +18,19 @@ route below suits you.
 
 - An Android phone or tablet running **Android 8.0 (API 26) or newer**. WeTube
   targets Android 15 (API 35).
-- Roughly 30 MB of free space for the app, plus room for anything you download
-  for offline playback.
+- About 170 MB for the download on a current 64-bit phone, or about 464 MB for
+  the universal APK that installs on any device, plus room for anything you
+  download for offline playback.
 - No account, no Google Play Services and no sign-in are required to install or
   watch. Signing in is optional and only adds your own feed and subscriptions.
 
-There is one build for every device; there are no per-architecture variants to
-choose between.
+Releases ship one APK per CPU architecture — `app-arm64-v8a-release.apk` for every
+recent phone, `app-armeabi-v7a-release.apk` for older 32-bit ARM devices, and
+`app-x86_64-release.apk` for emulators — plus `app-universal-release.apk`, which
+carries all three. A per-architecture APK installs the same app but downloads
+only its own copy of the embedded browser engine, which is most of the size. Use
+the universal APK when you would rather not pick, or when you are sideloading one
+file onto several devices. 32-bit x86 devices are not supported.
 
 ## Recommended: install with Obtainium and get updates automatically
 
@@ -66,7 +72,10 @@ A few things worth knowing about the Obtainium route:
 If you would rather not use an updater, install each release yourself:
 
 1. Open the [latest release](https://github.com/kainatquaderee/wetube/releases/latest) and download
-   `app-release.apk` from its **Assets**.
+   `app-arm64-v8a-release.apk` from its **Assets** — that is every phone from
+   the last several years. If you are unsure of the device's architecture, or
+   you are copying one file to several devices, take
+   `app-universal-release.apk` instead.
 2. Open the downloaded file. Android asks once to allow installs from your
    browser or file manager — allow it, then confirm the install.
 3. Launch **WeTube**.
@@ -75,7 +84,7 @@ Alternatively, with a computer and `adb` (Android platform-tools) connected over
 USB:
 
 ```bash
-adb install -r app-release.apk
+adb install -r app-arm64-v8a-release.apk
 ```
 
 `-r` reinstalls over an existing copy, keeping your data. An update will only be
@@ -91,7 +100,8 @@ release:
 1. Open the [Actions tab](https://github.com/kainatquaderee/wetube/actions/workflows/android.yml) and pick
    the most recent successful run.
 2. Under **Artifacts**, download the debug APK zip, unzip it, and install the
-   APK on the device.
+   APK built for your device's architecture — `app-arm64-v8a-debug.apk` on a
+   current phone, or `app-universal-debug.apk` if you are unsure.
 
 The debug build has a `.debug` application id, so it can sit beside a release
 install without replacing it. Debug builds are signed with a debug key and are
@@ -106,14 +116,16 @@ CLI.
 # local.properties
 sdk.dir=/path/to/Android/Sdk
 
-./gradlew assembleDebug     # app/build/outputs/apk/debug/app-debug.apk
-./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
+./gradlew assembleDebug     # app/build/outputs/apk/debug/app-<abi>-debug.apk
+./gradlew assembleRelease   # app/build/outputs/apk/release/app-<abi>-release.apk
+                            # and app/build/outputs/apk/release/app-universal-release.apk
 ```
 
 Then install whichever one you built:
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+adb install -r app/build/outputs/apk/release/app-arm64-v8a-release.apk
 ```
 
 Signing a release build yourself means it will *not* update over the published
@@ -126,17 +138,18 @@ Release APKs are signed with the project key. With Android platform-tools you ca
 confirm the signer before installing:
 
 ```bash
-apksigner verify --print-certs app-release.apk
+apksigner verify --print-certs app-arm64-v8a-release.apk
 ```
 
 The certificate subject prints `CN=WeTube`. If it does not, the file did not come
-from this project — do not install it.
+from this project — do not install it. The same command works on any of the
+release APKs.
 
 ## Updating
 
 - **With Obtainium**, updates appear in the app automatically; tap to install.
 - **By hand**, download the APK from the newest release and install it over the
-  old one. `adb install -r app-release.apk` does the same.
+  old one. `adb install -r app-arm64-v8a-release.apk` does the same.
 - Your history, favourites, resume points, local subscriptions and preferences
   are kept across an update. Back them up any time from **Settings → Backup &
   restore** if you want an extra copy.

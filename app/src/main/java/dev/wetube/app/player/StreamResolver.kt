@@ -4,11 +4,14 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
+import dev.wetube.app.data.model.AudioStream
 import dev.wetube.app.data.model.Playback
 import dev.wetube.app.data.model.StreamFormat
 import dev.wetube.app.data.model.VideoDetail
 import dev.wetube.app.data.model.VideoItem
 import java.io.File
+import java.net.URLDecoder
+import java.net.URLEncoder
 
 /**
  * Turns a backend's [dev.wetube.app.data.model.Playback] into a Media3 item.
@@ -40,11 +43,17 @@ object StreamResolver {
      * [preferredHeight] is the user's quality choice: `0` means Auto (play the
      * best the network can carry), any other value asks for that resolution and
      * falls back to the closest one the video actually offers.
+     *
+     * [audio] is the dub the viewer picked for this video, or `null` for the
+     * default pick. Every rebuild of the same video — a quality change, the
+     * audio-only toggle, a background step-down — passes it, or the language
+     * silently reverts to the one the video was first opened in.
      */
     fun mediaItem(
         detail: VideoDetail,
         audioOnly: Boolean,
         preferredHeight: Int = 0,
+        audio: AudioStream? = null,
     ): MediaItem? {
         val p = detail.playback
         if (p.isEmpty) return null
@@ -63,7 +72,7 @@ object StreamResolver {
                 .build()
         }
 
-        val bestAudio = pickAudio(p.audioOnly)
+        val bestAudio = audioPick(p, audio)
 
         if (audioOnly) {
             val track = bestAudio ?: p.muxed.filter { it.url.isNotBlank() }.maxByOrNull { it.height }
@@ -78,15 +87,15 @@ object StreamResolver {
             return build(video.format.url, video.format.mime, detail.item.id, metadata)
         }
         if (video != null && bestAudio != null) {
-            val uri = Uri.Builder()
-                .scheme(MERGE_SCHEME)
-                .appendQueryParameter("video", video.format.url)
-                .appendQueryParameter("audio", bestAudio.url)
-                .appendQueryParameter("vmime", video.format.mime)
-                .appendQueryParameter("amime", bestAudio.mime)
-                .build()
             return MediaItem.Builder()
-                .setUri(uri)
+                .setUri(
+                    mergeUrl(
+                        video = video.format.url,
+                        vmime = video.format.mime,
+                        audio = bestAudio.url,
+                        amime = bestAudio.mime,
+                    ),
+                )
                 .setMediaId(detail.item.id)
                 .setMediaMetadata(metadata)
                 .build()
@@ -113,6 +122,79 @@ object StreamResolver {
             .setMimeType(mime.ifBlank { MimeTypes.VIDEO_MP4 })
             .setMediaMetadata(metadataFor(video))
             .build()
+
+    /**
+     * The same media speaking [audio], or `null` when its audio cannot be swapped.
+     *
+     * A dub is a separate adaptive format, so choosing one means a new item: this
+     * rewrites the audio half of the `wetube-merge://` URI and leaves the video
+     * half, the media id and the metadata exactly as they were. An audio-only
+     * item is one URL with no video half, so the dub becomes the whole item.
+     *
+     * `null` answers a muxed progressive item (its audio is baked into the video
+     * file), whose URLs are also never among [streams]; such an item must be left
+     * alone rather than be turned into a video-less stream.
+     */
+    fun withAudio(item: MediaItem, audio: AudioStream, streams: List<AudioStream>): MediaItem? {
+        val url = item.localConfiguration?.uri?.toString() ?: return null
+        val swapped = audioSwapUrl(url, audio, streams) ?: return null
+        return item.buildUpon()
+            .setUri(Uri.parse(swapped))
+            .setMimeType(
+                if (isMergeUrl(url)) null else audio.mime.ifBlank { MimeTypes.AUDIO_MP4 },
+            )
+            .build()
+    }
+
+    /** True when [url] is one of the merge URIs [mediaItem] builds. */
+    internal fun isMergeUrl(url: String): Boolean = url.startsWith("$MERGE_SCHEME://")
+
+    /**
+     * The URL [url] becomes when it speaks [audio], or `null` when it cannot.
+     *
+     * Split out of [withAudio] as plain text so the rule is pinned by a test that
+     * needs no Android plumbing: a merge URI keeps its video half and swaps the
+     * audio half, an audio-only URL is replaced whole, and anything else — a
+     * muxed file with its audio baked in — is left alone.
+     */
+    internal fun audioSwapUrl(
+        url: String,
+        audio: AudioStream,
+        streams: List<AudioStream>,
+    ): String? {
+        if (isMergeUrl(url)) {
+            val query = url.substringAfter('?', missingDelimiterValue = "")
+            val video = queryParameter(query, "video")?.takeIf { it.isNotBlank() } ?: return null
+            return mergeUrl(
+                video = video,
+                vmime = queryParameter(query, "vmime") ?: MimeTypes.VIDEO_MP4,
+                audio = audio.url,
+                amime = audio.mime.ifBlank { MimeTypes.AUDIO_MP4 },
+            )
+        }
+        if (streams.none { it.url == url }) return null
+        return audio.url
+    }
+
+    /**
+     * The `wetube-merge://` URI for a video/audio pair.
+     *
+     * Built as text rather than through `Uri.Builder` so the encoding is plain
+     * UTF-8 percent-encoding of the two URLs: `StreamSourceFactory` reads the
+     * parts back with `Uri.getQueryParameter`, which decodes exactly that.
+     */
+    internal fun mergeUrl(video: String, vmime: String, audio: String, amime: String): String =
+        "$MERGE_SCHEME://?video=${encode(video)}&audio=${encode(audio)}" +
+            "&vmime=${encode(vmime)}&amime=${encode(amime)}"
+
+    private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    /** One parameter out of a raw query string, decoded; `null` when absent. */
+    private fun queryParameter(query: String, name: String): String? =
+        query.split('&')
+            .firstOrNull { it.substringBefore('=') == name }
+            ?.substringAfter('=', missingDelimiterValue = "")
+            ?.let { URLDecoder.decode(it, "UTF-8") }
 
     /** The title/channel/artwork shared by the streaming and local items. */
     private fun metadataFor(video: VideoItem): MediaMetadata =
@@ -202,7 +284,33 @@ object StreamResolver {
         ).first()
     }
 
-    private fun pickAudio(tracks: List<StreamFormat>): StreamFormat? {
+    /**
+     * The audio track the item should start with.
+     *
+     * A video with dubs resolved more than one language, and the language the
+     * viewer speaks outranks the bitrate then: picking the loudest copy is what
+     * made a video start speaking Japanese to an English viewer. Bitrate only
+     * decides when there is nothing to choose, which is every single-audio video.
+     */
+    internal fun audioPick(p: Playback, audio: AudioStream? = null): StreamFormat? {
+        if (p.audioStreams.size > 1) {
+            (audio ?: defaultAudioStream(p.audioStreams))?.let { dub ->
+                return StreamFormat(
+                    url = dub.url,
+                    label = dub.displayName.ifBlank { dub.languageCode },
+                    mime = dub.mime,
+                    audio = true,
+                )
+            }
+        }
+        val usable = p.audioOnly.filter { it.url.isNotBlank() }
+        if (usable.isEmpty()) return null
+        val mp4 = usable.filter { it.mime == MimeTypes.AUDIO_MP4 }
+        return (mp4.ifEmpty { usable }).maxByOrNull { it.bitrate }
+    }
+
+    /** The loudest playable audio track of [tracks], for the casting profile. */
+    private fun pickAudioTrack(tracks: List<StreamFormat>): StreamFormat? {
         val usable = tracks.filter { it.url.isNotBlank() }
         if (usable.isEmpty()) return null
         val mp4 = usable.filter { it.mime == MimeTypes.AUDIO_MP4 }
@@ -229,7 +337,7 @@ object StreamResolver {
         audioOnly: Boolean,
     ): StreamFormat? {
         if (audioOnly) {
-            return (pickAudio(p.audioOnly) ?: pickMuxed(p.muxed, preferredHeight = 0))
+            return (pickAudioTrack(p.audioOnly) ?: pickMuxed(p.muxed, preferredHeight = 0))
                 ?.takeIf { it.url.isNotBlank() }
         }
 
