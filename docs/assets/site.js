@@ -125,5 +125,49 @@
   var year = document.getElementById("year");
   if (year) year.textContent = String(new Date().getFullYear());
 
-  root.classList.add("ready");
+  /* --- GitHub star count: one request, cached, the page never waits for it --- */
+ var starCount = document.querySelector("[data-star-count]");
+ if (starCount) {
+   var starLink = starCount.closest("[data-star-repo]");
+   var starRepo = starLink ? starLink.getAttribute("data-star-repo") : "";
+   var starSep = document.querySelector("[data-star-sep]");
+   var starKey = "wetube:stars:" + starRepo;
+   var starTtl = 6 * 60 * 60 * 1000;
+
+   var paintStars = function (count) {
+     if (typeof count !== "number" || !isFinite(count)) return;
+     starCount.textContent = count >= 1000
+       ? (count >= 100000 ? Math.round(count / 1000) : Math.round(count / 100) / 10) + "k"
+       : String(count);
+     starCount.hidden = false;
+     if (starSep) starSep.hidden = false;
+   };
+
+   var cachedStars = null;
+   try {
+     cachedStars = JSON.parse(window.localStorage.getItem(starKey) || "null");
+   } catch (error) {
+     cachedStars = null;
+   }
+   if (cachedStars && typeof cachedStars.count === "number" && Date.now() - cachedStars.at < starTtl) {
+     paintStars(cachedStars.count);
+   }
+
+   if (starCount.hidden && starRepo && window.fetch) {
+     window.fetch("https://api.github.com/repos/" + starRepo, {
+       headers: { Accept: "application/vnd.github+json" }
+     })
+       .then(function (response) { return response.ok ? response.json() : null; })
+       .then(function (data) {
+         if (!data) return;
+         paintStars(data.stargazers_count);
+         try {
+           window.localStorage.setItem(starKey, JSON.stringify({ count: data.stargazers_count, at: Date.now() }));
+         } catch (error) {}
+       })
+       .catch(function () {});
+   }
+ }
+
+root.classList.add("ready");
 })();

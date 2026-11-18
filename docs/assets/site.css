@@ -1363,3 +1363,44 @@ details .a {
   .showcase-visual:hover .phone { transform: none; transition: none; }
   * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* ============================================================
+   GitHub star pill (header)
+   ============================================================ */
+.star-pill {
+  gap: 7px;
+  padding: 11px 14px;
+  font-size: 14px;
+  border-radius: 11px;
+  color: var(--text);
+}
+.star-pill svg { width: 15px; height: 15px; }
+.star-pill-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  transition: color 0.2s;
+}
+.star-pill-sep {
+  display: inline-block;
+  width: 1px;
+  height: 13px;
+  background: var(--line-2);
+}
+.star-pill-count[hidden],
+.star-pill-sep[hidden] { display: none; }
+.star-pill:hover .star-pill-count { color: var(--text); }
+
+@media (max-width: 560px) {
+  .star-pill { padding: 10px 11px; }
+  .star-pill-label,
+  .star-pill-sep { display: none; }
+  .nav-actions .ghost-link span { display: none; }
+}
+
+/* Narrow phones: the star pill is the GitHub entry point, so the icon-only
+   source link and the count step aside to keep Download on screen. */
+@media (max-width: 430px) {
+  .nav-actions .ghost-link,
+  .star-pill-count { display: none; }
+  .star-pill { padding: 10px; }
+}
